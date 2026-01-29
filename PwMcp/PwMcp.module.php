@@ -43,7 +43,7 @@ class PwMcp extends WireData implements Module {
         return [
             'title' => 'PW-MCP',
             'summary' => 'ProcessWire ↔ Cursor MCP Bridge for AI-assisted development',
-            'version' => '0.1.0',
+            'version' => '1.0.0',
             'author' => 'Peter Knight',
             'href' => 'https://github.com/peterknight/pw-mcp',
             'singular' => true,

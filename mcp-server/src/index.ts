@@ -403,7 +403,7 @@ const tools = [
 const server = new Server(
   {
     name: 'pw-mcp',
-    version: '0.3.0',
+    version: '1.0.0',
   },
   {
     capabilities: {
