@@ -614,28 +614,31 @@ class CommandRouter {
     private function getMatrixTypeLabels($field): array {
         $labels = [];
         
-        // Check if field has matrix types configured
-        $types = $field->get('type') ? $field->get('type')->getMatrixTypes($field) : null;
-        
-        if (!$types) {
-            // Try accessing via the repeater_matrix_types property
-            $matrixTypes = $field->get('repeater_matrix_types');
-            if (is_array($matrixTypes)) {
-                foreach ($matrixTypes as $typeId => $typeData) {
-                    if (isset($typeData['label'])) {
-                        $labels[$typeId] = $typeData['label'];
-                    } elseif (isset($typeData['name'])) {
-                        $labels[$typeId] = $typeData['name'];
+        // Method 1: Try the fieldtype's getMatrixTypes method
+        $fieldtype = $field->get('type');
+        if ($fieldtype && method_exists($fieldtype, 'getMatrixTypes')) {
+            $types = $fieldtype->getMatrixTypes($field);
+            if ($types) {
+                foreach ($types as $typeId => $typeInfo) {
+                    if (is_array($typeInfo)) {
+                        $labels[$typeId] = $typeInfo['label'] ?? $typeInfo['name'] ?? "Type $typeId";
+                    } elseif (is_object($typeInfo)) {
+                        $labels[$typeId] = $typeInfo->label ?? $typeInfo->name ?? "Type $typeId";
                     }
                 }
+                if (!empty($labels)) {
+                    return $labels;
+                }
             }
-            return $labels;
         }
         
-        // Process matrix types from fieldtype
-        foreach ($types as $type) {
-            if (isset($type['name'])) {
-                $labels[$type['id'] ?? $type['name']] = $type['label'] ?? $type['name'];
+        // Method 2: Access matrix types from field data directly
+        // RepeaterMatrix stores types as 'matrix1_name', 'matrix1_label', etc.
+        for ($i = 1; $i <= 20; $i++) {
+            $name = $field->get("matrix{$i}_name");
+            $label = $field->get("matrix{$i}_label");
+            if ($name || $label) {
+                $labels[$i] = $label ?: $name ?: "Type $i";
             }
         }
         
