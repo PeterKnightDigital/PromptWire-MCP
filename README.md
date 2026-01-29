@@ -4,6 +4,32 @@ ProcessWire ↔ Cursor MCP Bridge
 
 A ProcessWire module that exposes site structure and content to Cursor IDE via the Model Context Protocol (MCP). Query your ProcessWire site using natural language in Cursor.
 
+## Using in Cursor Chat
+
+Just ask naturally — the AI will use the MCP tools automatically:
+
+**Structure & Schema:**
+- "What templates does this site have?"
+- "Show me the fields on the blog-post template"
+- "Export the full site schema"
+- "What field types are available?"
+
+**Pages & Content:**
+- "Get the homepage"
+- "Get the page at /about/"
+- "Show me page ID 1764"
+- "Query the 5 most recent blog posts"
+
+**Fields & Images:**
+- "What fields does the basic-page template use?"
+- "Show me all image fields"
+- "Get the page at /team/ with file details"
+- "What pages use the sidebar field?"
+
+**With Options:**
+- "Get page /about/ with field labels"
+- "Export schema in YAML format"
+
 ## Features
 
 - **List templates and fields** — Understand your site structure
@@ -32,10 +58,10 @@ Copy or clone the `PwMcp` folder into your ProcessWire site's modules directory:
 
 ```bash
 # Option A: Clone the entire repo, then copy the module
-git clone https://github.com/YOUR_USERNAME/pw-mcp.git
-cp -r pw-mcp/PwMcp /path/to/your-site/site/modules/
+git clone https://github.com/PeterKnightDigital/ProcessWire-MCP.git
+cp -r ProcessWire-MCP/PwMcp /path/to/your-site/site/modules/
 
-# Option B: Download and extract just the PwMcp folder
+# Option B: Download and extract just the PwMcp folder from GitHub
 ```
 
 Then in ProcessWire admin: **Modules → Refresh → Install PwMcp**
@@ -43,7 +69,7 @@ Then in ProcessWire admin: **Modules → Refresh → Install PwMcp**
 ### 2. Build the MCP Server
 
 ```bash
-cd /path/to/pw-mcp/mcp-server
+cd /path/to/ProcessWire-MCP/mcp-server
 npm install
 npm run build
 ```
@@ -57,7 +83,7 @@ Add to `~/.cursor/mcp.json`:
   "mcpServers": {
     "ProcessWire MCP": {
       "command": "node",
-      "args": ["/path/to/pw-mcp/mcp-server/dist/index.js"],
+      "args": ["/path/to/ProcessWire-MCP/mcp-server/dist/index.js"],
       "env": {
         "PW_PATH": "/path/to/your-processwire-site"
       }
