@@ -1386,4 +1386,400 @@ class SyncManager {
         }
         return (string) $value;
     }
+    
+    // ========================================================================
+    // PHASE 3: PAGE CREATION & PUBLISHING
+    // ========================================================================
+    
+    /**
+     * Create a new page scaffold locally
+     * 
+     * Generates page.meta.json (with new: true) and page.yaml with
+     * empty fields based on the template definition.
+     * 
+     * @param string $template Template name for the new page
+     * @param string $parentPath Parent page path (e.g., "/services/")
+     * @param string $pageName URL-safe page name (slug)
+     * @param string|null $title Optional page title
+     * @return array Result with created file paths
+     */
+    public function createPageScaffold(string $template, string $parentPath, string $pageName, ?string $title = null): array {
+        // Validate template exists
+        $templateObj = $this->wire->templates->get($template);
+        if (!$templateObj) {
+            return ['error' => "Template not found: $template"];
+        }
+        
+        // Validate parent exists
+        $parent = $this->wire->pages->get($parentPath);
+        if (!$parent || !$parent->id) {
+            return ['error' => "Parent page not found: $parentPath"];
+        }
+        
+        // Sanitize page name
+        $pageName = $this->wire->sanitizer->pageName($pageName);
+        if (empty($pageName)) {
+            return ['error' => "Invalid page name"];
+        }
+        
+        // Check if page already exists
+        $existingPath = rtrim($parentPath, '/') . '/' . $pageName . '/';
+        $existing = $this->wire->pages->get($existingPath);
+        if ($existing && $existing->id) {
+            return ['error' => "Page already exists: $existingPath"];
+        }
+        
+        // Create local directory
+        $localPath = $this->syncRoot . rtrim($parentPath, '/') . '/' . $pageName;
+        if (is_dir($localPath)) {
+            return ['error' => "Local directory already exists: $localPath"];
+        }
+        
+        mkdir($localPath, 0755, true);
+        
+        // Generate title if not provided
+        $title = $title ?: ucwords(str_replace('-', ' ', $pageName));
+        
+        // Create metadata file (marked as new)
+        $meta = [
+            'pageId' => null,
+            'new' => true,
+            'canonicalPath' => $existingPath,
+            'template' => $template,
+            'parentId' => $parent->id,
+            'parentPath' => $parent->path,
+            'title' => $title,
+            'createdAt' => date('c'),
+            'status' => 'new',
+        ];
+        
+        $metaPath = $localPath . '/page.meta.json';
+        file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        
+        // Create content file with empty fields based on template
+        $fields = $this->getTemplateFieldDefaults($templateObj);
+        $fields['title'] = $title;
+        
+        $content = ['fields' => $fields];
+        $contentPath = $localPath . '/page.yaml';
+        file_put_contents($contentPath, $this->arrayToYaml($content));
+        
+        return [
+            'success' => true,
+            'new' => true,
+            'template' => $template,
+            'parentPath' => $parent->path,
+            'pageName' => $pageName,
+            'title' => $title,
+            'localPath' => $this->getRelativePath($localPath),
+            'files' => [
+                'meta' => $this->getRelativePath($metaPath),
+                'content' => $this->getRelativePath($contentPath),
+            ],
+            'fieldCount' => count($fields),
+        ];
+    }
+    
+    /**
+     * Get default field values for a template
+     * 
+     * @param \ProcessWire\Template $template
+     * @return array Field name => default value
+     */
+    private function getTemplateFieldDefaults($template): array {
+        $fields = [];
+        
+        foreach ($template->fields as $field) {
+            $name = $field->name;
+            
+            // Skip system fields
+            if (strpos($name, '_') === 0 && $name !== '_title') {
+                continue;
+            }
+            
+            // Set appropriate defaults based on field type
+            /** @var string $typeName */
+            $typeName = $field->type->className();
+            
+            switch ($typeName) {
+                case 'FieldtypeText':
+                case 'FieldtypeTextarea':
+                case 'FieldtypeTextLanguage':
+                case 'FieldtypeTextareaLanguage':
+                case 'FieldtypePageTitle':
+                case 'FieldtypePageTitleLanguage':
+                    $fields[$name] = '';
+                    break;
+                    
+                case 'FieldtypeInteger':
+                case 'FieldtypeFloat':
+                    $fields[$name] = 0;
+                    break;
+                    
+                case 'FieldtypeCheckbox':
+                    $fields[$name] = false;
+                    break;
+                    
+                case 'FieldtypeDatetime':
+                    $fields[$name] = null;
+                    break;
+                    
+                case 'FieldtypeFile':
+                case 'FieldtypeImage':
+                case 'FieldtypeCroppableImage3':
+                    $fields[$name] = [];
+                    break;
+                    
+                case 'FieldtypePage':
+                    $fields[$name] = null;
+                    break;
+                    
+                default:
+                    // For repeaters and other complex types, use empty array
+                    if (strpos($typeName, 'Repeater') !== false) {
+                        $fields[$name] = [];
+                    } else {
+                        $fields[$name] = null;
+                    }
+            }
+        }
+        
+        return $fields;
+    }
+    
+    /**
+     * Publish a new page to ProcessWire
+     * 
+     * Creates the page in ProcessWire from local YAML files.
+     * Only works for pages marked with new: true in meta.
+     * 
+     * @param string $localPath Path to local page directory
+     * @param bool $dryRun Preview without creating (default: true)
+     * @param bool $unpublished Create as unpublished (default: true)
+     * @return array Result with created page info
+     */
+    public function publishPage(string $localPath, bool $dryRun = true, bool $unpublished = true): array {
+        // Normalize path
+        if (strpos($localPath, '/') !== 0) {
+            $localPath = $this->wire->config->paths->root . $localPath;
+        }
+        $localPath = rtrim($localPath, '/');
+        
+        // Check for required files
+        $metaPath = $localPath . '/page.meta.json';
+        $yamlPath = $localPath . '/page.yaml';
+        
+        if (!file_exists($metaPath)) {
+            return ['error' => "Meta file not found: $metaPath"];
+        }
+        if (!file_exists($yamlPath)) {
+            return ['error' => "Content file not found: $yamlPath"];
+        }
+        
+        // Read meta file
+        $meta = json_decode(file_get_contents($metaPath), true);
+        if (!$meta) {
+            return ['error' => "Invalid meta file"];
+        }
+        
+        // Verify this is a new page
+        if (empty($meta['new'])) {
+            return ['error' => "Page is not marked as new. Use page:push to update existing pages."];
+        }
+        
+        // Verify parent exists
+        $parent = $this->wire->pages->get($meta['parentId'] ?? $meta['parentPath']);
+        if (!$parent || !$parent->id) {
+            return ['error' => "Parent page not found: " . ($meta['parentPath'] ?? $meta['parentId'])];
+        }
+        
+        // Verify template exists
+        $template = $this->wire->templates->get($meta['template']);
+        if (!$template) {
+            return ['error' => "Template not found: {$meta['template']}"];
+        }
+        
+        // Read content file
+        $content = $this->readContentFile($yamlPath);
+        if (!$content || !isset($content['fields'])) {
+            return ['error' => "Invalid content file"];
+        }
+        
+        // Extract page name from path
+        $pageName = basename($localPath);
+        
+        // Check if page already exists
+        $existingPath = $parent->path . $pageName . '/';
+        $existing = $this->wire->pages->get($existingPath);
+        if ($existing && $existing->id) {
+            return ['error' => "Page already exists in ProcessWire: $existingPath"];
+        }
+        
+        // Dry-run mode - just show what would be created
+        if ($dryRun) {
+            return [
+                'dryRun' => true,
+                'action' => 'create',
+                'template' => $meta['template'],
+                'parent' => $parent->path,
+                'name' => $pageName,
+                'title' => $content['fields']['title'] ?? $meta['title'],
+                'path' => $existingPath,
+                'unpublished' => $unpublished,
+                'fieldCount' => count($content['fields']),
+                'hint' => 'Use --dry-run=0 to create this page',
+            ];
+        }
+        
+        // Create the page
+        $page = new Page();
+        $page->template = $template;
+        $page->parent = $parent;
+        $page->name = $pageName;
+        $page->title = $content['fields']['title'] ?? $meta['title'];
+        
+        // Set as unpublished if requested
+        if ($unpublished) {
+            $page->status = Page::statusUnpublished;
+        }
+        
+        // Save to get an ID
+        $page->save();
+        
+        // Apply field values
+        $page->of(false);
+        foreach ($content['fields'] as $fieldName => $value) {
+            if ($fieldName === 'title') continue; // Already set
+            
+            if (!$page->template->hasField($fieldName)) {
+                continue;
+            }
+            
+            $field = $this->wire->fields->get($fieldName);
+            if ($field) {
+                $this->applyFieldValue($page, $field, $value);
+            }
+        }
+        
+        $page->save();
+        
+        // Update meta file with real page ID
+        $meta['pageId'] = $page->id;
+        $meta['new'] = false;
+        $meta['canonicalPath'] = $page->path;
+        $meta['publishedAt'] = date('c');
+        $meta['status'] = 'clean';
+        $meta['revisionHash'] = $this->generateRevisionHash($this->extractPageFields($page));
+        
+        file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        
+        // Update content file to match what's in ProcessWire
+        $fields = $this->extractPageFields($page);
+        $newContent = ['fields' => $fields];
+        file_put_contents($yamlPath, $this->arrayToYaml($newContent));
+        
+        return [
+            'success' => true,
+            'action' => 'created',
+            'pageId' => $page->id,
+            'path' => $page->path,
+            'template' => $page->template->name,
+            'title' => $page->title,
+            'unpublished' => $unpublished,
+            'localPath' => $this->getRelativePath($localPath),
+        ];
+    }
+    
+    /**
+     * Bulk publish new pages in a directory
+     * 
+     * Finds all pages marked with new: true and publishes them.
+     * 
+     * @param string $directory Directory to scan
+     * @param bool $dryRun Preview without creating (default: true)
+     * @param bool $unpublished Create as unpublished (default: true)
+     * @return array Results with created page info
+     */
+    public function publishPages(string $directory, bool $dryRun = true, bool $unpublished = true): array {
+        // Make path absolute if relative
+        if (strpos($directory, '/') !== 0) {
+            $directory = $this->wire->config->paths->root . $directory;
+        }
+        $directory = rtrim($directory, '/');
+        
+        if (!is_dir($directory)) {
+            return ['error' => "Directory not found: $directory"];
+        }
+        
+        $results = [
+            'success' => true,
+            'dryRun' => $dryRun,
+            'directory' => $this->getRelativePath($directory),
+            'created' => 0,
+            'skipped' => 0,
+            'failed' => 0,
+            'pages' => [],
+            'errors' => [],
+        ];
+        
+        // Find all page.meta.json files
+        $metaFiles = $this->findMetaFiles($directory);
+        
+        if (empty($metaFiles)) {
+            $results['message'] = "No pages found in directory";
+            return $results;
+        }
+        
+        // Filter to only new pages
+        $newPages = [];
+        foreach ($metaFiles as $metaPath) {
+            $meta = json_decode(file_get_contents($metaPath), true);
+            if ($meta && !empty($meta['new'])) {
+                $newPages[] = $metaPath;
+            }
+        }
+        
+        if (empty($newPages)) {
+            $results['message'] = "No new pages to publish (all pages already exist in ProcessWire)";
+            $results['totalScanned'] = count($metaFiles);
+            return $results;
+        }
+        
+        $results['totalNew'] = count($newPages);
+        
+        // Publish each new page
+        foreach ($newPages as $metaPath) {
+            $localDir = dirname($metaPath);
+            $publishResult = $this->publishPage($localDir, $dryRun, $unpublished);
+            
+            if (isset($publishResult['success']) && $publishResult['success']) {
+                $results['created']++;
+                $results['pages'][] = [
+                    'path' => $publishResult['path'],
+                    'title' => $publishResult['title'],
+                    'pageId' => $publishResult['pageId'],
+                    'status' => 'created',
+                ];
+            } elseif (isset($publishResult['dryRun']) && $publishResult['dryRun']) {
+                $results['created']++;
+                $results['pages'][] = [
+                    'path' => $publishResult['path'],
+                    'title' => $publishResult['title'],
+                    'status' => 'preview',
+                ];
+            } elseif (isset($publishResult['error'])) {
+                if (strpos($publishResult['error'], 'already exists') !== false) {
+                    $results['skipped']++;
+                } else {
+                    $results['failed']++;
+                    $results['errors'][] = [
+                        'localPath' => $this->getRelativePath($localDir),
+                        'error' => $publishResult['error'],
+                    ];
+                }
+            }
+        }
+        
+        return $results;
+    }
 }

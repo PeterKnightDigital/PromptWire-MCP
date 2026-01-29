@@ -293,6 +293,82 @@ const tools = [
       },
     },
   },
+  // ========================================================================
+  // PHASE 3: PAGE CREATION & PUBLISHING
+  // ========================================================================
+  {
+    name: 'pw_page_new',
+    description: 'Create a new page scaffold locally. Generates page.yaml and page.meta.json that can be edited and then published.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        template: {
+          type: 'string',
+          description: 'ProcessWire template name for the new page',
+        },
+        parentPath: {
+          type: 'string',
+          description: 'Parent page path (e.g., "/services/")',
+        },
+        pageName: {
+          type: 'string',
+          description: 'URL-safe page name/slug (e.g., "new-service")',
+        },
+        title: {
+          type: 'string',
+          description: 'Optional page title (defaults to titlecase of pageName)',
+        },
+      },
+      required: ['template', 'parentPath', 'pageName'],
+    },
+  },
+  {
+    name: 'pw_page_publish',
+    description: 'Publish a new page to ProcessWire. Only works for pages created with page:new (marked new: true).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        localPath: {
+          type: 'string',
+          description: 'Path to local page directory (e.g., "site/syncs/services/new-service")',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), preview what would be created. Set to false to create.',
+          default: true,
+        },
+        published: {
+          type: 'boolean',
+          description: 'Create as published (default: false, creates as unpublished)',
+          default: false,
+        },
+      },
+      required: ['localPath'],
+    },
+  },
+  {
+    name: 'pw_pages_publish',
+    description: 'Bulk publish all new pages in a directory. Only publishes pages marked new: true.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Directory to scan for new pages (default: site/syncs)',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), preview what would be created. Set to false to create.',
+          default: true,
+        },
+        published: {
+          type: 'boolean',
+          description: 'Create pages as published (default: false, creates as unpublished)',
+          default: false,
+        },
+      },
+    },
+  },
 ];
 
 // ============================================================================
@@ -309,7 +385,7 @@ const tools = [
 const server = new Server(
   {
     name: 'pw-mcp',
-    version: '0.2.0',
+    version: '0.3.0',
   },
   {
     capabilities: {
@@ -506,6 +582,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { directory } = args as { directory?: string };
       const cmdArgs = directory ? [directory] : [];
       const result = await runPwCommand('sync:status', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // ========================================================================
+    // PHASE 3: PAGE CREATION & PUBLISHING
+    // ========================================================================
+
+    // Create new page scaffold locally
+    case 'pw_page_new': {
+      const { template, parentPath, pageName, title } = args as {
+        template: string;
+        parentPath: string;
+        pageName: string;
+        title?: string;
+      };
+      const cmdArgs = [template, parentPath, pageName];
+      if (title) {
+        cmdArgs.push(`--title=${title}`);
+      }
+      const result = await runPwCommand('page:new', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Publish a new page to ProcessWire
+    case 'pw_page_publish': {
+      const { localPath, dryRun, published } = args as {
+        localPath: string;
+        dryRun?: boolean;
+        published?: boolean;
+      };
+      const cmdArgs = [localPath];
+      if (dryRun === false) {
+        cmdArgs.push('--dry-run=0');
+      }
+      if (published) {
+        cmdArgs.push('--published');
+      }
+      const result = await runPwCommand('page:publish', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Bulk publish new pages
+    case 'pw_pages_publish': {
+      const { directory, dryRun, published } = args as {
+        directory?: string;
+        dryRun?: boolean;
+        published?: boolean;
+      };
+      const cmdArgs = directory ? [directory] : ['site/syncs'];
+      if (dryRun === false) {
+        cmdArgs.push('--dry-run=0');
+      }
+      if (published) {
+        cmdArgs.push('--published');
+      }
+      const result = await runPwCommand('pages:publish', cmdArgs);
       return formatToolResponse(result);
     }
 

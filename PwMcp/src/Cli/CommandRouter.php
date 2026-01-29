@@ -174,6 +174,35 @@ class CommandRouter {
             case 'sync:status':
                 $directory = $positional[0] ?? null;
                 return $this->syncStatus($directory);
+            
+            // ================================================================
+            // PHASE 3: PAGE CREATION & PUBLISHING
+            // ================================================================
+            
+            case 'page:new':
+                $template = $positional[0] ?? null;
+                $parentPath = $positional[1] ?? null;
+                $pageName = $positional[2] ?? null;
+                if (!$template || !$parentPath || !$pageName) {
+                    return ['error' => 'Usage: page:new [template] [parent-path] [page-name] [--title="Page Title"]'];
+                }
+                $title = $flags['title'] ?? null;
+                return $this->pageNew($template, $parentPath, $pageName, $title);
+            
+            case 'page:publish':
+                $localPath = $positional[0] ?? null;
+                if (!$localPath) {
+                    return ['error' => 'Local path to new page directory required'];
+                }
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                $published = isset($flags['published']);
+                return $this->pagePublish($localPath, $dryRun, !$published);
+            
+            case 'pages:publish':
+                $directory = $positional[0] ?? 'site/syncs';
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                $published = isset($flags['published']);
+                return $this->pagesPublish($directory, $dryRun, !$published);
                 
             case 'help':
             default:
@@ -1052,6 +1081,64 @@ class CommandRouter {
         return $syncManager->getSyncStatus($directory);
     }
     
+    // ========================================================================
+    // PHASE 3: PAGE CREATION & PUBLISHING
+    // ========================================================================
+    
+    /**
+     * Create a new page scaffold locally
+     * 
+     * Generates page.meta.json and page.yaml for a new page
+     * that can be published to ProcessWire.
+     * 
+     * @param string $template Template name
+     * @param string $parentPath Parent page path
+     * @param string $pageName URL-safe page name
+     * @param string|null $title Optional page title
+     * @return array Result with created file paths
+     */
+    private function pageNew(string $template, string $parentPath, string $pageName, ?string $title = null): array {
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->createPageScaffold($template, $parentPath, $pageName, $title);
+    }
+    
+    /**
+     * Publish a new page to ProcessWire
+     * 
+     * Creates the page from local YAML files.
+     * Only works for pages marked with new: true.
+     * 
+     * @param string $localPath Path to local page directory
+     * @param bool $dryRun Preview without creating (default: true)
+     * @param bool $unpublished Create as unpublished (default: true)
+     * @return array Result with created page info
+     */
+    private function pagePublish(string $localPath, bool $dryRun = true, bool $unpublished = true): array {
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->publishPage($localPath, $dryRun, $unpublished);
+    }
+    
+    /**
+     * Bulk publish new pages
+     * 
+     * Finds all pages marked with new: true and publishes them.
+     * 
+     * @param string $directory Directory to scan
+     * @param bool $dryRun Preview without creating (default: true)
+     * @param bool $unpublished Create as unpublished (default: true)
+     * @return array Results with created page info
+     */
+    private function pagesPublish(string $directory, bool $dryRun = true, bool $unpublished = true): array {
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->publishPages($directory, $dryRun, $unpublished);
+    }
+    
     /**
      * Export complete site schema
      * 
@@ -1080,7 +1167,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PW-MCP CLI',
-            'version' => '0.2.0',
+            'version' => '0.3.0',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
@@ -1098,6 +1185,9 @@ class CommandRouter {
                 'pages:pull [selector]' => 'Pull multiple pages by selector, parent, or template',
                 'pages:push [directory]' => 'Push all local changes in directory (--dry-run=0 to apply)',
                 'sync:status [directory]' => 'Check sync status of all pulled pages',
+                'page:new [template] [parent] [name]' => 'Create new page scaffold locally',
+                'page:publish [path]' => 'Publish new page to ProcessWire (--dry-run=0 to create)',
+                'pages:publish [directory]' => 'Bulk publish new pages (--dry-run=0 to create)',
                 'help' => 'Show this help',
             ],
             'flags' => [
@@ -1109,10 +1199,12 @@ class CommandRouter {
                 '--truncate=N' => 'Truncate text fields to N characters (get-page)',
                 '--summary' => 'Return field structure only, no content (get-page)',
                 '--limit=N' => 'Limit search/pull results',
-                '--dry-run=0' => 'Apply changes instead of preview (page:push, pages:push)',
+                '--dry-run=0' => 'Apply changes instead of preview (push/publish commands)',
                 '--force' => 'Force push even if remote has changed',
                 '--no-parent' => 'Exclude parent page when pulling by path (pages:pull)',
                 '--content-format=yaml|json' => 'Sync file format (default: yaml)',
+                '--title="Title"' => 'Page title (page:new)',
+                '--published' => 'Create page as published instead of unpublished',
             ],
         ];
     }
