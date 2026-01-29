@@ -817,6 +817,13 @@ class SyncManager {
         if ($value === 'false') {
             return false;
         }
+        // Empty array/object inline syntax
+        if ($value === '[]') {
+            return [];
+        }
+        if ($value === '{}') {
+            return [];
+        }
         if (is_numeric($value)) {
             return strpos($value, '.') !== false ? (float) $value : (int) $value;
         }
@@ -862,11 +869,81 @@ class SyncManager {
     /**
      * Normalize a value for comparison
      * 
+     * Handles equivalence of empty values:
+     * - null, [], "", and 0 for certain field types should be treated consistently
+     * - Empty arrays and null are equivalent for comparison purposes
+     * - Nested arrays are recursively normalized
+     * 
      * @param mixed $value
      * @return string JSON representation for comparison
      */
     private function normalizeForComparison($value): string {
-        return json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $normalized = $this->normalizeEmptyValues($value);
+        return json_encode($normalized, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+    
+    /**
+     * Recursively normalize empty values
+     * 
+     * Treats null, empty arrays, and empty strings as equivalent null.
+     * For file/image arrays, empty array becomes null.
+     * 
+     * @param mixed $value
+     * @return mixed Normalized value
+     */
+    private function normalizeEmptyValues($value) {
+        // Null stays null
+        if ($value === null) {
+            return null;
+        }
+        
+        // Empty string becomes null
+        if ($value === '') {
+            return null;
+        }
+        
+        // Empty array becomes null
+        if (is_array($value) && empty($value)) {
+            return null;
+        }
+        
+        // For arrays, recursively normalize and check if result is all nulls
+        if (is_array($value)) {
+            $normalized = [];
+            $allNull = true;
+            
+            foreach ($value as $key => $val) {
+                $normVal = $this->normalizeEmptyValues($val);
+                $normalized[$key] = $normVal;
+                if ($normVal !== null) {
+                    $allNull = false;
+                }
+            }
+            
+            // If array only contains null values, treat whole array as null
+            // But only for simple arrays, not for structured data with keys
+            if ($allNull && $this->isSequentialArray($value)) {
+                return null;
+            }
+            
+            return $normalized;
+        }
+        
+        // Scalar values pass through
+        return $value;
+    }
+    
+    /**
+     * Check if array is sequential (numeric keys 0, 1, 2...)
+     * 
+     * @param array $arr
+     * @return bool
+     */
+    private function isSequentialArray(array $arr): bool {
+        if (empty($arr)) {
+            return true;
+        }
+        return array_keys($arr) === range(0, count($arr) - 1);
     }
     
     /**
