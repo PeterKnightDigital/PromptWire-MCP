@@ -498,13 +498,37 @@ class SyncManager {
             }
         }
         
-        // Handle page references
+        // Handle single page reference (new format with _pageRef)
+        if (is_array($value) && isset($value['_pageRef']) && $value['_pageRef'] === true) {
+            $refId = (int) $value['id'];
+            // Validate the referenced page exists
+            $refPage = $this->wire->pages->get($refId);
+            if ($refPage && $refPage->id) {
+                $page->set($fieldName, $refId);
+            }
+            return;
+        }
+        
+        // Handle array of page references (new format)
+        if (is_array($value) && !empty($value) && isset($value[0]['_pageRef'])) {
+            $pageIds = [];
+            foreach ($value as $ref) {
+                $refId = (int) $ref['id'];
+                // Validate each referenced page exists
+                $refPage = $this->wire->pages->get($refId);
+                if ($refPage && $refPage->id) {
+                    $pageIds[] = $refId;
+                }
+            }
+            $page->set($fieldName, $pageIds);
+            return;
+        }
+        
+        // Handle legacy page reference format (for backwards compatibility)
         if (is_array($value) && isset($value['_ref']) && $value['_ref'] === 'page') {
             $page->set($fieldName, $value['id']);
             return;
         }
-        
-        // Handle arrays of page references
         if (is_array($value) && !empty($value) && isset($value[0]['_ref']) && $value[0]['_ref'] === 'page') {
             $pageIds = array_map(fn($p) => $p['id'], $value);
             $page->set($fieldName, $pageIds);
@@ -517,14 +541,94 @@ class SyncManager {
             return;
         }
         
-        // Handle repeaters - skip for now (complex)
+        // Handle repeaters - update existing items by ID
         if (strpos($typeName, 'Repeater') !== false) {
-            // TODO: Implement repeater updates in Phase 2
+            $this->applyRepeaterValue($page, $field, $value);
             return;
         }
         
         // Simple scalar values
         $page->set($fieldName, $value);
+    }
+    
+    /**
+     * Apply changes to repeater/matrix field items
+     * 
+     * Updates existing items by _itemId. Does NOT add, delete, or reorder.
+     * Validates that each item belongs to this page's repeater field.
+     * 
+     * @param Page $page Parent page
+     * @param \ProcessWire\Field $field Repeater field
+     * @param array $items Array of item data from YAML
+     * @return array Stats about what was updated
+     */
+    private function applyRepeaterValue(Page $page, $field, $items): array {
+        $fieldName = $field->name;
+        $stats = ['updated' => 0, 'skipped_missing' => 0, 'skipped_invalid' => 0];
+        
+        if (!is_array($items)) {
+            return $stats;
+        }
+        
+        // Get the current repeater items for this page
+        $repeater = $page->get($fieldName);
+        if (!$repeater) {
+            return $stats;
+        }
+        
+        // Build a set of allowed item IDs (items that belong to this page's repeater)
+        $allowedIds = [];
+        foreach ($repeater as $existingItem) {
+            $allowedIds[$existingItem->id] = $existingItem;
+        }
+        
+        // Process each item from the YAML
+        foreach ($items as $itemData) {
+            // Must have _itemId
+            if (!isset($itemData['_itemId'])) {
+                $stats['skipped_invalid']++;
+                continue;
+            }
+            
+            $itemId = (int) $itemData['_itemId'];
+            
+            // Validate: item must belong to this page's repeater field
+            // This prevents accidentally updating a random repeater item
+            if (!isset($allowedIds[$itemId])) {
+                $stats['skipped_missing']++;
+                continue;
+            }
+            
+            $repeaterPage = $allowedIds[$itemId];
+            $repeaterPage->of(false);
+            
+            // Update fields on this repeater item
+            foreach ($itemData as $key => $val) {
+                // Skip metadata fields
+                if (strpos($key, '_') === 0) {
+                    continue;
+                }
+                
+                // Check if field exists on repeater template
+                if (!$repeaterPage->template->hasField($key)) {
+                    continue;
+                }
+                
+                $itemField = $this->wire->fields->get($key);
+                if ($itemField) {
+                    // Recursively apply field value (handles nested types)
+                    $this->applyFieldValue($repeaterPage, $itemField, $val);
+                } else {
+                    // Simple value
+                    $repeaterPage->set($key, $val);
+                }
+            }
+            
+            $repeaterPage->save();
+            $stats['updated']++;
+        }
+        
+        return $stats;
     }
     
     /**
@@ -617,30 +721,34 @@ class SyncManager {
             return date('Y-m-d', (int) $value);
         }
         
-        // Single page reference
+        // Single page reference — store as ID with comment info
+        // Format: { _pageRef: true, id: 1816, _comment: "Title @ /path/" }
+        // The _comment is for human readability, ignored on push
         if ($value instanceof \ProcessWire\Page) {
+            if (!$value->id) {
+                return null;
+            }
             return [
-                '_ref' => 'page',
+                '_pageRef' => true,
                 'id' => $value->id,
-                'path' => $value->path,
-                'title' => $value->title,
+                '_comment' => $value->title . ' @ ' . $value->path,
             ];
         }
         
-        // Page array (multi-page reference)
+        // Page array (multi-page reference) — store as array of IDs with comments
         if ($value instanceof \ProcessWire\PageArray && 
             !($value instanceof \ProcessWire\RepeaterPageArray) &&
             strpos(get_class($value), 'Repeater') === false) {
-            $pages = [];
+            $refs = [];
             foreach ($value as $p) {
-                $pages[] = [
-                    '_ref' => 'page',
+                if (!$p->id) continue;
+                $refs[] = [
+                    '_pageRef' => true,
                     'id' => $p->id,
-                    'path' => $p->path,
-                    'title' => $p->title,
+                    '_comment' => $p->title . ' @ ' . $p->path,
                 ];
             }
-            return $pages;
+            return $refs;
         }
         
         // Repeater/Matrix fields
@@ -679,6 +787,9 @@ class SyncManager {
     /**
      * Format repeater/matrix items for export
      * 
+     * Includes _itemId for stable matching on push (not position-based).
+     * Also includes _sort for human readability.
+     * 
      * @param \ProcessWire\Field $field
      * @param \ProcessWire\PageArray $repeater
      * @return array
@@ -686,14 +797,21 @@ class SyncManager {
     private function formatRepeaterForExport($field, $repeater): array {
         $items = [];
         
-        foreach ($repeater as $item) {
+        foreach ($repeater as $index => $item) {
             $itemData = [];
+            
+            // Store the repeater item's page ID for stable matching
+            // This is critical — matching by position breaks if items are reordered
+            $itemData['_itemId'] = $item->id;
             
             // Include matrix type if present
             $typeId = $item->get('repeater_matrix_type');
             if ($typeId !== null) {
                 $itemData['_matrixType'] = (int) $typeId;
             }
+            
+            // Include sort order for human readability (informational only)
+            $itemData['_sort'] = $item->sort;
             
             // Get field values
             foreach ($item->template->fields as $f) {
