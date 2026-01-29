@@ -176,6 +176,9 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `pages:pull [selector]` | Bulk pull pages by selector, parent, or template |
 | `pages:push [directory]` | Bulk push all changes in a directory |
 | `sync:status [directory]` | Check sync status of pulled pages |
+| `page:new [template] [parent] [name]` | Create new page scaffold locally |
+| `page:publish [path]` | Publish new page to ProcessWire |
+| `pages:publish [directory]` | Bulk publish new pages |
 | `help` | Show available commands |
 
 ## CLI Flags
@@ -189,10 +192,12 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `--include=labels` | Include field labels and descriptions |
 | `--truncate=N` | Truncate text fields to N characters (get-page) |
 | `--summary` | Return field structure only, no content (get-page) |
-| `--dry-run=0` | Apply changes instead of preview (page:push, pages:push) |
+| `--dry-run=0` | Apply changes instead of preview (push/publish commands) |
 | `--force` | Force push even if remote has changed |
 | `--no-parent` | Exclude parent page when pulling by path |
 | `--limit=N` | Limit number of pages to pull |
+| `--title="Title"` | Page title (page:new) |
+| `--published` | Create page as published instead of unpublished |
 
 ## Example Output
 
@@ -294,15 +299,57 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:push site/syncs/services --dry-run=0
 
 - **Page references** in YAML show `id` (editable) and `_comment` (read-only display info)
 - **Repeater items** use `_itemId` for stable matching — don't change these
-- **Files/images** are not modified during push (Phase 3 feature)
+- **Files/images** are read-only (file uploads planned for Phase 4)
 - Use `--force` to push even if remote changed (overwrites remote)
 
-## Phase 3 (Coming Soon)
+## Creating New Pages
 
-- Create new pages from YAML templates
-- Bulk publish/unpublish operations
+Create pages locally, edit them, then publish to ProcessWire.
+
+### 1. Scaffold a New Page
+
+```bash
+# Create a new page scaffold
+php site/modules/PwMcp/bin/pw-mcp.php page:new blog-post /news/posts/ my-new-article --title="My New Article" --pretty
+```
+
+This creates:
+- `site/syncs/news/posts/my-new-article/page.meta.json` (with `new: true`)
+- `site/syncs/news/posts/my-new-article/page.yaml` (with template fields)
+
+### 2. Edit the Content
+
+Edit the `page.yaml` file to fill in your content.
+
+### 3. Publish to ProcessWire
+
+```bash
+# Preview what will be created (dry-run, default)
+php site/modules/PwMcp/bin/pw-mcp.php page:publish site/syncs/news/posts/my-new-article --pretty
+
+# Actually create the page
+php site/modules/PwMcp/bin/pw-mcp.php page:publish site/syncs/news/posts/my-new-article --dry-run=0 --pretty
+
+# Create as published (default is unpublished)
+php site/modules/PwMcp/bin/pw-mcp.php page:publish site/syncs/news/posts/my-new-article --dry-run=0 --published --pretty
+```
+
+### 4. Bulk Publish
+
+```bash
+# Preview all new pages in a directory
+php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/syncs/news --pretty
+
+# Create all new pages
+php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/syncs/news --dry-run=0 --pretty
+```
+
+## Phase 4 (Coming Soon)
+
 - File and image uploads
 - Page deletion with safety checks
+- Sync-aware UI in ProcessWire admin
+- Status dashboard and bulk actions
 
 ## License
 
