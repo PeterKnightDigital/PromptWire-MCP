@@ -589,8 +589,11 @@ class CommandRouter {
         if ($truncate > 0 && is_string($value) && strlen($value) > $truncate) {
             // Strip HTML tags before truncating for cleaner output
             $plainText = strip_tags($value);
-            if (strlen($plainText) > $truncate) {
-                return substr($plainText, 0, $truncate) . '...';
+            $totalLength = strlen($plainText);
+            
+            if ($totalLength > $truncate) {
+                $remaining = $totalLength - $truncate;
+                return substr($plainText, 0, $truncate) . "... [truncated at {$truncate} chars. {$remaining} remaining]";
             }
             return $plainText;
         }
