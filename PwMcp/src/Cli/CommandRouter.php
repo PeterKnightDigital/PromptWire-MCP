@@ -128,6 +128,21 @@ class CommandRouter {
                 }
                 $limit = isset($flags['limit']) ? (int) $flags['limit'] : 20;
                 return $this->searchFiles($query, $limit);
+            
+            // ================================================================
+            // SYNC COMMANDS (Phase 2)
+            // ================================================================
+            
+            case 'page:pull':
+                $idOrPath = $positional[0] ?? null;
+                if (!$idOrPath) {
+                    return ['error' => 'Page ID or path required'];
+                }
+                // Use --content-format for sync file format (default: yaml)
+                // --format is reserved for CLI output format
+                $contentFormat = $flags['content-format'] ?? 'yaml';
+                $root = $flags['root'] ?? null;
+                return $this->pagePull($idOrPath, $contentFormat, $root);
                 
             case 'help':
             default:
@@ -906,6 +921,29 @@ class CommandRouter {
         ];
     }
     
+    // ========================================================================
+    // SYNC COMMANDS
+    // ========================================================================
+    
+    /**
+     * Pull a page into local sync directory
+     * 
+     * Creates a mirrored directory structure with page.meta.json
+     * (identity/sync state) and page.yaml (editable content).
+     * 
+     * @param int|string $idOrPath Page ID or path
+     * @param string $format Content format (yaml or json)
+     * @param string|null $root Custom sync root directory
+     * @return array Result with file paths
+     */
+    private function pagePull($idOrPath, string $format = 'yaml', ?string $root = null): array {
+        // Load sync manager
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire, $root);
+        return $syncManager->pullPage($idOrPath, $format);
+    }
+    
     /**
      * Export complete site schema
      * 
@@ -947,6 +985,7 @@ class CommandRouter {
                 'search [query]' => 'Search page content across text fields',
                 'search-files [query]' => 'Search files by name, extension, or description',
                 'export-schema' => 'Export full schema (--format=yaml for YAML output)',
+                'page:pull [id|path]' => 'Pull page into local sync directory',
                 'help' => 'Show this help',
             ],
             'flags' => [

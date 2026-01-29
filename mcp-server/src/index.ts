@@ -191,6 +191,23 @@ const tools = [
       required: ['query'],
     },
   },
+  // ========================================================================
+  // SYNC TOOLS (Phase 2)
+  // ========================================================================
+  {
+    name: 'pw_page_pull',
+    description: 'Pull a ProcessWire page into local sync directory (site/syncs/) as editable YAML file. Creates page.meta.json (identity) and page.yaml (editable content).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        pageIdOrPath: {
+          type: 'string',
+          description: 'Page ID (number) or path (e.g., "/about/" or "/services/web-design/")',
+        },
+      },
+      required: ['pageIdOrPath'],
+    },
+  },
 ];
 
 // ============================================================================
@@ -330,6 +347,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         cmdArgs.push(`--limit=${limit}`);
       }
       const result = await runPwCommand('search-files', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // ========================================================================
+    // SYNC TOOLS
+    // ========================================================================
+
+    // Pull page to local sync directory
+    case 'pw_page_pull': {
+      const pageIdOrPath = (args as { pageIdOrPath: string }).pageIdOrPath;
+      const result = await runPwCommand('page:pull', [pageIdOrPath]);
       return formatToolResponse(result);
     }
 
