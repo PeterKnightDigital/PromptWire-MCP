@@ -26,6 +26,11 @@ Just ask naturally — the AI will use the MCP tools automatically:
 - "Get the page at /team/ with file details"
 - "What pages use the sidebar field?"
 
+**Search:**
+- "Search for pages containing 'John Doe'"
+- "Find all PDF files on the site"
+- "Search for images with 'team' in the filename"
+
 **With Options:**
 - "Get page /about/ with field labels"
 - "Export schema in YAML format"
@@ -154,6 +159,8 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `get-field [name]` | Get field details and usage |
 | `get-page [id\|path]` | Get page by ID or path with field values |
 | `query-pages [selector]` | Query pages using ProcessWire selectors |
+| `search [query]` | Search page content across text fields |
+| `search-files [query]` | Search files by name, extension, or description |
 | `export-schema` | Export complete site schema |
 | `help` | Show available commands |
 

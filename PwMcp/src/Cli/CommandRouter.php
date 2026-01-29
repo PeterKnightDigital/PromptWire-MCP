@@ -109,6 +109,22 @@ class CommandRouter {
                 
             case 'export-schema':
                 return $this->exportSchema();
+            
+            case 'search':
+                $query = $positional[0] ?? null;
+                if (!$query) {
+                    return ['error' => 'Search query required'];
+                }
+                $limit = isset($flags['limit']) ? (int) $flags['limit'] : 20;
+                return $this->searchContent($query, $limit);
+            
+            case 'search-files':
+                $query = $positional[0] ?? null;
+                if (!$query) {
+                    return ['error' => 'Search query required'];
+                }
+                $limit = isset($flags['limit']) ? (int) $flags['limit'] : 20;
+                return $this->searchFiles($query, $limit);
                 
             case 'help':
             default:
@@ -677,6 +693,189 @@ class CommandRouter {
     }
     
     /**
+     * Search page content across text fields
+     * 
+     * Searches title, body, summary and other common text fields
+     * for pages containing the search term. Returns matching pages
+     * with a content snippet.
+     * 
+     * @param string $query Search term
+     * @param int    $limit Maximum results (default 20)
+     * @return array Matching pages with snippets
+     */
+    private function searchContent(string $query, int $limit = 20): array {
+        $results = [];
+        
+        // Find text-based fields to search
+        $textFields = [];
+        foreach ($this->wire->fields as $field) {
+            $typeName = $field->type->className();
+            // Include text, textarea, and similar text-based fields
+            if (in_array($typeName, [
+                'FieldtypeText',
+                'FieldtypeTextarea',
+                'FieldtypeTextLanguage',
+                'FieldtypeTextareaLanguage',
+                'FieldtypePageTitle',
+                'FieldtypePageTitleLanguage',
+            ])) {
+                $textFields[] = $field->name;
+            }
+        }
+        
+        if (empty($textFields)) {
+            return ['error' => 'No text fields found to search'];
+        }
+        
+        // Build OR selector for all text fields
+        // Using %= for case-insensitive contains
+        $selectors = [];
+        foreach ($textFields as $fieldName) {
+            $selectors[] = "{$fieldName}%=" . $this->wire->sanitizer->selectorValue($query);
+        }
+        
+        // Combine with OR groups
+        $selector = implode('|', $selectors) . ", limit={$limit}, include=all";
+        
+        $pages = $this->wire->pages->find($selector);
+        
+        foreach ($pages as $page) {
+            // Find which field matched and get a snippet
+            $matchedField = null;
+            $snippet = null;
+            
+            foreach ($textFields as $fieldName) {
+                $value = $page->get($fieldName);
+                if ($value && stripos($value, $query) !== false) {
+                    $matchedField = $fieldName;
+                    // Get snippet around the match (strip HTML, limit chars)
+                    $plainText = strip_tags($value);
+                    $pos = stripos($plainText, $query);
+                    $start = max(0, $pos - 50);
+                    $snippet = ($start > 0 ? '...' : '') . 
+                               substr($plainText, $start, 150) . 
+                               (strlen($plainText) > $start + 150 ? '...' : '');
+                    break;
+                }
+            }
+            
+            $results[] = [
+                'id' => $page->id,
+                'title' => $page->title,
+                'path' => $page->path,
+                'template' => $page->template->name,
+                'matchedField' => $matchedField,
+                'snippet' => $snippet,
+            ];
+        }
+        
+        return [
+            'query' => $query,
+            'count' => count($results),
+            'results' => $results,
+        ];
+    }
+    
+    /**
+     * Search files and images across the site
+     * 
+     * Searches for files by filename pattern, extension, or description.
+     * Returns matching files with their parent page context.
+     * 
+     * @param string $query Filename pattern or extension (e.g., "logo", ".pdf")
+     * @param int    $limit Maximum results (default 20)
+     * @return array Matching files with page context
+     */
+    private function searchFiles(string $query, int $limit = 20): array {
+        $results = [];
+        $count = 0;
+        
+        // Find file/image fields
+        $fileFields = [];
+        foreach ($this->wire->fields as $field) {
+            $typeName = $field->type->className();
+            if (in_array($typeName, [
+                'FieldtypeFile',
+                'FieldtypeImage',
+                'FieldtypeCroppableImage3',
+            ])) {
+                $fileFields[] = $field->name;
+            }
+        }
+        
+        if (empty($fileFields)) {
+            return ['error' => 'No file/image fields found'];
+        }
+        
+        // Determine if searching by extension
+        $isExtensionSearch = strpos($query, '.') === 0;
+        $searchPattern = strtolower($query);
+        
+        // Search all pages with file fields
+        $fieldList = implode('|', $fileFields);
+        $pages = $this->wire->pages->find("({$fieldList}!=''), include=all");
+        
+        foreach ($pages as $page) {
+            if ($count >= $limit) break;
+            
+            foreach ($fileFields as $fieldName) {
+                if ($count >= $limit) break;
+                
+                $files = $page->get($fieldName);
+                if (!$files || !($files instanceof \ProcessWire\Pagefiles)) continue;
+                
+                foreach ($files as $file) {
+                    if ($count >= $limit) break;
+                    
+                    $filename = strtolower($file->name);
+                    $description = strtolower($file->description ?: '');
+                    
+                    $matches = false;
+                    if ($isExtensionSearch) {
+                        // Match by extension (e.g., ".pdf")
+                        $matches = substr($filename, -strlen($searchPattern)) === $searchPattern;
+                    } else {
+                        // Match by filename or description
+                        $matches = strpos($filename, $searchPattern) !== false || 
+                                   strpos($description, $searchPattern) !== false;
+                    }
+                    
+                    if ($matches) {
+                        $fileData = [
+                            'filename' => $file->name,
+                            'url' => $file->url,
+                            'size' => $file->filesize,
+                            'sizeStr' => \ProcessWire\wireBytesStr($file->filesize),
+                            'description' => $file->description ?: null,
+                            'field' => $fieldName,
+                            'page' => [
+                                'id' => $page->id,
+                                'title' => $page->title,
+                                'path' => $page->path,
+                            ],
+                        ];
+                        
+                        // Add image dimensions if applicable
+                        if ($file instanceof \ProcessWire\Pageimage) {
+                            $fileData['width'] = $file->width;
+                            $fileData['height'] = $file->height;
+                        }
+                        
+                        $results[] = $fileData;
+                        $count++;
+                    }
+                }
+            }
+        }
+        
+        return [
+            'query' => $query,
+            'count' => count($results),
+            'results' => $results,
+        ];
+    }
+    
+    /**
      * Export complete site schema
      * 
      * Exports all fields and templates as a structured schema.
@@ -714,6 +913,8 @@ class CommandRouter {
                 'get-field [name]' => 'Get field details',
                 'get-page [id|path]' => 'Get page by ID or path',
                 'query-pages [selector]' => 'Query pages by selector',
+                'search [query]' => 'Search page content across text fields',
+                'search-files [query]' => 'Search files by name, extension, or description',
                 'export-schema' => 'Export full schema (--format=yaml for YAML output)',
                 'help' => 'Show this help',
             ],
@@ -723,6 +924,7 @@ class CommandRouter {
                 '--include=usage' => 'Include field usage info (list-fields)',
                 '--include=files' => 'Include full file/image metadata (get-page)',
                 '--include=labels' => 'Include field labels and descriptions (get-page)',
+                '--limit=N' => 'Limit search results (default: 20)',
             ],
         ];
     }

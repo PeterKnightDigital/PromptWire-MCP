@@ -143,6 +143,44 @@ const tools = [
       },
     },
   },
+  {
+    name: 'pw_search',
+    description: 'Search page content across all text fields (title, body, summary, etc.). Returns matching pages with snippets.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Search term to find in page content',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum results to return (default: 20)',
+          default: 20,
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'pw_search_files',
+    description: 'Search for files and images by filename, extension (e.g., ".pdf"), or description',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Filename pattern, extension (e.g., ".pdf", ".jpg"), or description text',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum results to return (default: 20)',
+          default: 20,
+        },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // ============================================================================
@@ -252,6 +290,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const format = (args as { format?: string }).format || 'json';
       const cmdArgs = format === 'yaml' ? ['--format=yaml'] : [];
       const result = await runPwCommand('export-schema', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Search page content
+    case 'pw_search': {
+      const { query, limit } = args as { query: string; limit?: number };
+      const cmdArgs = [query];
+      if (limit) {
+        cmdArgs.push(`--limit=${limit}`);
+      }
+      const result = await runPwCommand('search', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Search files/images
+    case 'pw_search_files': {
+      const { query, limit } = args as { query: string; limit?: number };
+      const cmdArgs = [query];
+      if (limit) {
+        cmdArgs.push(`--limit=${limit}`);
+      }
+      const result = await runPwCommand('search-files', cmdArgs);
       return formatToolResponse(result);
     }
 
