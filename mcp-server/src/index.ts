@@ -208,6 +208,30 @@ const tools = [
       required: ['pageIdOrPath'],
     },
   },
+  {
+    name: 'pw_page_push',
+    description: 'Push local changes from sync directory back to ProcessWire. Shows preview by default (dry-run). Set dryRun=false to apply changes.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        localPath: {
+          type: 'string',
+          description: 'Path to local sync directory or page.yaml file (e.g., "site/syncs/about/why-choose-us")',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), show what would change without applying. Set to false to apply changes.',
+          default: true,
+        },
+        force: {
+          type: 'boolean',
+          description: 'Force push even if remote page has changed since last pull (dangerous)',
+          default: false,
+        },
+      },
+      required: ['localPath'],
+    },
+  },
 ];
 
 // ============================================================================
@@ -358,6 +382,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'pw_page_pull': {
       const pageIdOrPath = (args as { pageIdOrPath: string }).pageIdOrPath;
       const result = await runPwCommand('page:pull', [pageIdOrPath]);
+      return formatToolResponse(result);
+    }
+
+    // Push local changes to ProcessWire
+    case 'pw_page_push': {
+      const { localPath, dryRun, force } = args as {
+        localPath: string;
+        dryRun?: boolean;
+        force?: boolean;
+      };
+      const cmdArgs = [localPath];
+      // dry-run is ON by default, only add flag when explicitly false
+      if (dryRun === false) {
+        cmdArgs.push('--dry-run=0');
+      }
+      if (force) {
+        cmdArgs.push('--force');
+      }
+      const result = await runPwCommand('page:push', cmdArgs);
       return formatToolResponse(result);
     }
 

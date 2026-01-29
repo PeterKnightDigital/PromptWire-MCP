@@ -143,6 +143,16 @@ class CommandRouter {
                 $contentFormat = $flags['content-format'] ?? 'yaml';
                 $root = $flags['root'] ?? null;
                 return $this->pagePull($idOrPath, $contentFormat, $root);
+            
+            case 'page:push':
+                $localPath = $positional[0] ?? null;
+                if (!$localPath) {
+                    return ['error' => 'Local path to page.yaml or sync directory required'];
+                }
+                // Default: dry-run is ON for safety
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                $force = isset($flags['force']);
+                return $this->pagePush($localPath, $dryRun, $force);
                 
             case 'help':
             default:
@@ -945,6 +955,25 @@ class CommandRouter {
     }
     
     /**
+     * Push local changes back to ProcessWire
+     * 
+     * Reads local page.yaml and applies changes to the source page.
+     * Dry-run mode is on by default for safety.
+     * 
+     * @param string $localPath Path to local sync directory or page.yaml
+     * @param bool $dryRun Show changes without applying (default: true)
+     * @param bool $force Force push even if remote has changed
+     * @return array Result with changes applied or preview
+     */
+    private function pagePush(string $localPath, bool $dryRun = true, bool $force = false): array {
+        // Load sync manager
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->pushPage($localPath, $dryRun, $force);
+    }
+    
+    /**
      * Export complete site schema
      * 
      * Exports all fields and templates as a structured schema.
@@ -986,6 +1015,7 @@ class CommandRouter {
                 'search-files [query]' => 'Search files by name, extension, or description',
                 'export-schema' => 'Export full schema (--format=yaml for YAML output)',
                 'page:pull [id|path]' => 'Pull page into local sync directory',
+                'page:push [path]' => 'Push local changes to ProcessWire (--dry-run=0 to apply)',
                 'help' => 'Show this help',
             ],
             'flags' => [
