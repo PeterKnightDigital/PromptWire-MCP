@@ -715,8 +715,9 @@ class SyncManager {
      */
     private function yamlToArray(string $yaml): ?array {
         // Use Symfony YAML if available, otherwise simple parse
-        if (class_exists('Symfony\Component\Yaml\Yaml')) {
-            return \Symfony\Component\Yaml\Yaml::parse($yaml);
+        $symfonyYamlClass = 'Symfony\Component\Yaml\Yaml';
+        if (class_exists($symfonyYamlClass)) {
+            return $symfonyYamlClass::parse($yaml);
         }
         
         // Simple YAML parsing for basic structures
@@ -955,6 +956,7 @@ class SyncManager {
      */
     private function applyFieldValue(Page $page, $field, $value): void {
         $fieldName = $field->name;
+        /** @var string $typeName */
         $typeName = $field->type->className();
         
         // Handle date fields - convert ISO 8601 back to Unix timestamp
