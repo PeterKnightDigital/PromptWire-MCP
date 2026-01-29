@@ -1,27 +1,71 @@
 <?php
+/**
+ * PW-MCP Page Query Handler
+ * 
+ * Provides methods for querying and formatting ProcessWire pages
+ * for JSON output. Handles various field types and formats them
+ * appropriately.
+ * 
+ * @package     PwMcp
+ * @subpackage  Query
+ * @author      Peter Knight
+ * @license     MIT
+ */
+
 namespace PwMcp\Query;
 
 /**
  * Handles page queries and formatting
+ * 
+ * This class provides methods to:
+ * - Get a single page by ID or path
+ * - Query multiple pages using ProcessWire selectors
+ * - Format page data for JSON output
+ * - Handle complex field types (files, images, repeaters, page references)
+ * 
+ * Field values are converted to JSON-serializable formats:
+ * - Page references → {id, title, path}
+ * - Files/images → {filename, url, size, dimensions} or just count
+ * - Repeaters → Array of field value objects
+ * - DateTime → ISO 8601 string
  */
 class PageQuery {
     
+    /**
+     * ProcessWire instance
+     * 
+     * @var \ProcessWire\ProcessWire
+     */
     private $wire;
     
+    /**
+     * Create a new PageQuery
+     * 
+     * @param \ProcessWire\ProcessWire $wire ProcessWire instance
+     */
     public function __construct($wire) {
         $this->wire = $wire;
     }
     
     /**
      * Get a page by ID or path
+     * 
+     * Retrieves a single page and formats it for output. By default,
+     * file/image fields only return counts to keep payloads small.
+     * 
+     * @param int|string $idOrPath    Page ID (numeric) or path (e.g., "/about/")
+     * @param bool       $includeFiles Include full file/image metadata
+     * @return array|null Page data or null if not found
      */
     public function getPage($idOrPath, bool $includeFiles = false): ?array {
+        // Determine if input is an ID or path and fetch page
         if (is_numeric($idOrPath)) {
             $page = $this->wire->pages->get((int) $idOrPath);
         } else {
             $page = $this->wire->pages->get($idOrPath);
         }
         
+        // Return null if page doesn't exist
         if (!$page || !$page->id) {
             return null;
         }
@@ -30,15 +74,23 @@ class PageQuery {
     }
     
     /**
-     * Query pages by selector
+     * Query pages using a ProcessWire selector
+     * 
+     * Finds multiple pages matching the given selector. Automatically
+     * adds include=all to find unpublished/hidden pages, and applies
+     * a default limit.
+     * 
+     * @param string $selector ProcessWire selector string
+     * @param int    $limit    Maximum pages to return (default 100)
+     * @return array Array of formatted page data
      */
     public function query(string $selector, int $limit = 100): array {
-        // Add include=all if not specified
+        // Add include=all if not specified to find all pages
         if (strpos($selector, 'include=') === false) {
             $selector .= ', include=all';
         }
         
-        // Add limit if not specified
+        // Add limit if not specified to prevent huge result sets
         if (strpos($selector, 'limit=') === false) {
             $selector .= ", limit=$limit";
         }
@@ -46,6 +98,7 @@ class PageQuery {
         $pages = $this->wire->pages->find($selector);
         $results = [];
         
+        // Format each page (without field values for performance)
         foreach ($pages as $page) {
             $results[] = $this->formatPage($page, false, false);
         }
@@ -54,9 +107,18 @@ class PageQuery {
     }
     
     /**
-     * Format a page for output
+     * Format a page for JSON output
+     * 
+     * Converts a ProcessWire Page object to an associative array
+     * suitable for JSON encoding.
+     * 
+     * @param \ProcessWire\Page $page          Page to format
+     * @param bool              $includeFiles  Include file/image details
+     * @param bool              $includeFields Include all field values
+     * @return array Formatted page data
      */
     public function formatPage($page, bool $includeFiles = false, bool $includeFields = true): array {
+        // Basic page properties (always included)
         $data = [
             'id' => $page->id,
             'name' => $page->name,
@@ -67,8 +129,9 @@ class PageQuery {
             'status' => $page->status,
         ];
         
+        // Extended properties (when getting a single page)
         if ($includeFields) {
-            $data['created'] = date('c', $page->created);
+            $data['created'] = date('c', $page->created);     // ISO 8601 format
             $data['modified'] = date('c', $page->modified);
             $data['createdUser'] = $page->createdUser ? $page->createdUser->name : null;
             $data['modifiedUser'] = $page->modifiedUser ? $page->modifiedUser->name : null;
@@ -80,6 +143,13 @@ class PageQuery {
     
     /**
      * Format all fields of a page
+     * 
+     * Iterates through all fields in the page's template and formats
+     * each value appropriately.
+     * 
+     * @param \ProcessWire\Page $page         Page to get fields from
+     * @param bool              $includeFiles Include file/image details
+     * @return array Associative array of field name => formatted value
      */
     private function formatFields($page, bool $includeFiles = false): array {
         $fields = [];
@@ -93,20 +163,38 @@ class PageQuery {
     }
     
     /**
-     * Format a single field value
+     * Format a single field value for JSON output
+     * 
+     * Handles various ProcessWire field value types and converts
+     * them to JSON-serializable formats.
+     * 
+     * Supported types:
+     * - null/empty → null
+     * - Page → {id, title, path}
+     * - PageArray → [{id, title, path}, ...]
+     * - Pagefiles/Pageimages → count or full metadata
+     * - RepeaterPageArray → array of formatted field objects
+     * - WireArray → plain array
+     * - DateTime → ISO 8601 string
+     * - Scalars → as-is
+     * 
+     * @param \ProcessWire\Field $field        Field definition
+     * @param mixed              $value        Field value
+     * @param bool               $includeFiles Include file details
+     * @return mixed Formatted value
      */
     private function formatFieldValue($field, $value, bool $includeFiles = false) {
-        // Handle null/empty
+        // Handle null/empty values
         if ($value === null || $value === '') {
             return null;
         }
         
-        // Handle page references
+        // Handle single page reference
         if ($value instanceof \ProcessWire\Page) {
             return $this->formatPageReference($value);
         }
         
-        // Handle page arrays
+        // Handle page array (multi-page reference)
         if ($value instanceof \ProcessWire\PageArray) {
             $pages = [];
             foreach ($value as $p) {
@@ -115,34 +203,40 @@ class PageQuery {
             return $pages;
         }
         
-        // Handle images/files
+        // Handle images and files
         if ($value instanceof \ProcessWire\Pagefiles || $value instanceof \ProcessWire\Pageimages) {
             return $this->formatFiles($value, $includeFiles);
         }
         
-        // Handle repeaters
+        // Handle repeater/matrix fields
         if ($value instanceof \ProcessWire\RepeaterPageArray) {
             return $this->formatRepeater($value, $includeFiles);
         }
         
-        // Handle WireArray (generic)
+        // Handle generic WireArray
         if ($value instanceof \ProcessWire\WireArray) {
             return $value->getArray();
         }
         
-        // Handle DateTime
+        // Handle DateTime objects
         if ($value instanceof \DateTime) {
-            return $value->format('c');
+            return $value->format('c');  // ISO 8601 format
         }
         
-        // Default: return as-is
+        // Default: return scalars as-is (strings, numbers, booleans)
         return $value;
     }
     
     /**
-     * Format a page reference
+     * Format a page reference for output
+     * 
+     * Converts a Page object to a minimal reference array
+     * containing just id, title, and path.
+     * 
+     * @param \ProcessWire\Page $page Page to format
+     * @return array|null Page reference or null if invalid
      */
-    private function formatPageReference($page): array {
+    private function formatPageReference($page): ?array {
         if (!$page || !$page->id) {
             return null;
         }
@@ -155,13 +249,23 @@ class PageQuery {
     }
     
     /**
-     * Format files/images
+     * Format files/images for output
+     * 
+     * By default, returns just the count to keep payloads small.
+     * When $includeFiles is true, returns full metadata including
+     * filename, URL, size, and (for images) dimensions.
+     * 
+     * @param \ProcessWire\Pagefiles $files        Files to format
+     * @param bool                   $includeFiles Include full metadata
+     * @return array File count or array of file metadata
      */
     private function formatFiles($files, bool $includeFiles = false): array {
+        // Default: just return count to avoid large payloads
         if (!$includeFiles) {
             return ['_count' => $files->count()];
         }
         
+        // Return full file metadata
         $result = [];
         foreach ($files as $file) {
             $fileData = [
@@ -171,7 +275,7 @@ class PageQuery {
                 'description' => $file->description ?: null,
             ];
             
-            // Add image-specific data
+            // Add image-specific properties
             if ($file instanceof \ProcessWire\Pageimage) {
                 $fileData['width'] = $file->width;
                 $fileData['height'] = $file->height;
@@ -184,7 +288,14 @@ class PageQuery {
     }
     
     /**
-     * Format repeater items
+     * Format repeater items for output
+     * 
+     * Repeater fields contain nested pages with their own fields.
+     * This method recursively formats each repeater item's fields.
+     * 
+     * @param \ProcessWire\RepeaterPageArray $repeater     Repeater items
+     * @param bool                           $includeFiles Include file details
+     * @return array Array of formatted repeater items
      */
     private function formatRepeater($repeater, bool $includeFiles = false): array {
         $items = [];
@@ -192,7 +303,7 @@ class PageQuery {
         foreach ($repeater as $item) {
             $itemFields = [];
             foreach ($item->template->fields as $field) {
-                // Skip internal repeater fields
+                // Skip internal repeater fields (like repeater_matrix_type)
                 if (strpos($field->name, 'repeater_') === 0) {
                     continue;
                 }

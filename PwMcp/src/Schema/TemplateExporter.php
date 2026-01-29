@@ -1,25 +1,64 @@
 <?php
+/**
+ * PW-MCP Template Schema Exporter
+ * 
+ * Exports ProcessWire template definitions in a stable, consistent format
+ * suitable for schema documentation and cross-site comparison.
+ * 
+ * @package     PwMcp
+ * @subpackage  Schema
+ * @author      Peter Knight
+ * @license     MIT
+ */
+
 namespace PwMcp\Schema;
 
 /**
  * Exports template definitions with stable, consistent naming
+ * 
+ * This class extracts template configuration from ProcessWire and formats
+ * it in a way that:
+ * - Lists fields in their template order
+ * - Includes family settings (parent/child relationships)
+ * - Includes access control settings
+ * - Uses template names instead of IDs for portability
+ * - Sorts output alphabetically for clean diffs
+ * - Excludes system templates
  */
 class TemplateExporter {
     
+    /**
+     * ProcessWire instance
+     * 
+     * @var \ProcessWire\ProcessWire
+     */
     private $wire;
     
+    /**
+     * Create a new TemplateExporter
+     * 
+     * @param \ProcessWire\ProcessWire $wire ProcessWire instance
+     */
     public function __construct($wire) {
         $this->wire = $wire;
     }
     
     /**
-     * Export all templates as schema
+     * Export all non-system templates as a schema array
+     * 
+     * Returns an associative array keyed by template name, with each
+     * value containing the template's fields, family settings, and
+     * access configuration.
+     * 
+     * Output is sorted alphabetically by template name for stable diffs.
+     * 
+     * @return array Associative array of template definitions keyed by name
      */
     public function export(): array {
         $templates = [];
         
         foreach ($this->wire->templates as $template) {
-            // Skip system templates
+            // Skip ProcessWire system templates (admin, user, role, etc.)
             if ($template->flags & \ProcessWire\Template::flagSystem) {
                 continue;
             }
@@ -27,28 +66,42 @@ class TemplateExporter {
             $templates[$template->name] = $this->exportTemplate($template);
         }
         
-        // Sort by template name for stable diffs
+        // Sort alphabetically for stable, predictable output
         ksort($templates);
         
         return $templates;
     }
     
     /**
-     * Export a single template definition
+     * Export a single template's definition
+     * 
+     * Extracts the template's configuration including:
+     * - Field list (in template order)
+     * - Family settings (parent/child rules)
+     * - Access control (roles)
+     * - Cache settings
+     * - Alternative filename (if set)
+     * 
+     * @param \ProcessWire\Template $template Template to export
+     * @return array Template definition array
      */
     public function exportTemplate($template): array {
-        // Get field names in order
+        // Get field names in the order they appear in the template
         $fields = [];
         foreach ($template->fields as $field) {
             $fields[] = $field->name;
         }
         
+        // Build base template data
         $data = [
             'label' => $template->label ?: null,
             'fields' => $fields,
         ];
         
-        // Family settings
+        // ====================================================================
+        // FAMILY SETTINGS
+        // ====================================================================
+        // These control parent/child page relationships
         $family = [];
         
         if ($template->noChildren) {
@@ -59,18 +112,22 @@ class TemplateExporter {
             $family['allowParents'] = false;
         }
         
+        // Allowed child templates (as names, not IDs)
         if (!empty($template->childTemplates)) {
             $family['childTemplates'] = $this->getTemplateNames($template->childTemplates);
         }
         
+        // Allowed parent templates (as names, not IDs)
         if (!empty($template->parentTemplates)) {
             $family['parentTemplates'] = $this->getTemplateNames($template->parentTemplates);
         }
         
+        // Pagination support
         if ($template->allowPageNum) {
             $family['allowPageNum'] = true;
         }
         
+        // URL segment support
         if ($template->urlSegments) {
             $family['urlSegments'] = true;
         }
@@ -79,7 +136,9 @@ class TemplateExporter {
             $data['family'] = $family;
         }
         
-        // Access settings
+        // ====================================================================
+        // ACCESS CONTROL
+        // ====================================================================
         if ($template->useRoles) {
             $data['access'] = [
                 'useRoles' => true,
@@ -87,14 +146,19 @@ class TemplateExporter {
             ];
         }
         
-        // Cache settings
+        // ====================================================================
+        // CACHE SETTINGS
+        // ====================================================================
         if ($template->cache_time) {
             $data['cache'] = [
                 'time' => (int) $template->cache_time,
             ];
         }
         
-        // Template file (if different from name)
+        // ====================================================================
+        // ALTERNATIVE TEMPLATE FILE
+        // ====================================================================
+        // If template uses a different PHP file than its name
         if ($template->altFilename) {
             $data['filename'] = $template->altFilename;
         }
@@ -103,7 +167,13 @@ class TemplateExporter {
     }
     
     /**
-     * Convert template IDs to names
+     * Convert template IDs to template names
+     * 
+     * ProcessWire stores template relationships as IDs, but for
+     * portability we convert these to names in the schema output.
+     * 
+     * @param array $ids Array of template IDs
+     * @return array Array of template names (sorted alphabetically)
      */
     private function getTemplateNames(array $ids): array {
         $names = [];
@@ -113,17 +183,24 @@ class TemplateExporter {
                 $names[] = $template->name;
             }
         }
+        // Sort for consistent output
         sort($names);
         return $names;
     }
     
     /**
-     * Get roles that have access to template
+     * Get roles that have access to a template
+     * 
+     * Returns roles organized by permission type (view, edit, create).
+     * Only includes permission types that have roles assigned.
+     * 
+     * @param \ProcessWire\Template $template Template to check
+     * @return array Roles organized by permission type
      */
     private function getTemplateRoles($template): array {
         $roles = [];
         
-        // Get view roles
+        // Get roles with view permission
         $viewRoles = [];
         foreach ($this->wire->roles as $role) {
             if ($template->hasRole($role, 'view')) {
@@ -135,7 +212,7 @@ class TemplateExporter {
             $roles['view'] = $viewRoles;
         }
         
-        // Get edit roles
+        // Get roles with edit permission
         $editRoles = [];
         foreach ($this->wire->roles as $role) {
             if ($template->hasRole($role, 'edit')) {
@@ -147,7 +224,7 @@ class TemplateExporter {
             $roles['edit'] = $editRoles;
         }
         
-        // Get create roles
+        // Get roles with create (add children) permission
         $createRoles = [];
         foreach ($this->wire->roles as $role) {
             if ($template->hasRole($role, 'create')) {

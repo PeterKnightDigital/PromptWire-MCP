@@ -1,4 +1,27 @@
 #!/usr/bin/env node
+/**
+ * PW-MCP Server
+ * 
+ * Model Context Protocol (MCP) server that bridges Cursor IDE to ProcessWire CMS.
+ * This server exposes ProcessWire structure and content as MCP tools that can
+ * be invoked through Cursor's AI chat interface.
+ * 
+ * Architecture:
+ *   Cursor Chat → MCP Server (this file) → CLI Runner → PHP CLI → ProcessWire
+ * 
+ * The server uses stdio transport for communication with Cursor.
+ * All ProcessWire operations are performed by spawning the PHP CLI script.
+ * 
+ * Environment Variables Required:
+ *   - PW_PATH: Path to ProcessWire installation root
+ *   - PW_MCP_CLI_PATH: Path to the pw-mcp.php CLI script
+ *   - PHP_PATH: Path to PHP binary (optional, defaults to 'php')
+ * 
+ * @package     PwMcp
+ * @author      Peter Knight
+ * @license     MIT
+ */
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -7,7 +30,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { runPwCommand, formatToolResponse } from './cli/runner.js';
 
-// Tool definitions
+// ============================================================================
+// TOOL DEFINITIONS
+// ============================================================================
+// These define the MCP tools that Cursor can invoke. Each tool maps to a
+// CLI command in the ProcessWire module.
+
 const tools = [
   {
     name: 'pw_health',
@@ -117,7 +145,17 @@ const tools = [
   },
 ];
 
-// Create MCP server
+// ============================================================================
+// MCP SERVER SETUP
+// ============================================================================
+
+/**
+ * Create the MCP server instance
+ * 
+ * The server is configured with:
+ * - Name and version for identification
+ * - Tools capability to expose our ProcessWire tools
+ */
 const server = new Server(
   {
     name: 'pw-mcp',
@@ -130,32 +168,50 @@ const server = new Server(
   }
 );
 
-// Handle list tools request
+// ============================================================================
+// REQUEST HANDLERS
+// ============================================================================
+
+/**
+ * Handle ListTools request
+ * 
+ * Returns the list of available tools to Cursor. This is called when
+ * Cursor needs to know what tools are available from this server.
+ */
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools };
 });
 
-// Handle tool calls
+/**
+ * Handle CallTool request
+ * 
+ * Routes tool calls to the appropriate CLI command and returns the result.
+ * Each tool maps to a specific CLI command with appropriate arguments.
+ */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   switch (name) {
+    // Health check - verify connection and get site info
     case 'pw_health': {
       const result = await runPwCommand('health');
       return formatToolResponse(result);
     }
 
+    // List all templates
     case 'pw_list_templates': {
       const result = await runPwCommand('list-templates');
       return formatToolResponse(result);
     }
 
+    // Get template details
     case 'pw_get_template': {
       const templateName = (args as { name: string }).name;
       const result = await runPwCommand('get-template', [templateName]);
       return formatToolResponse(result);
     }
 
+    // List all fields (optionally with usage info)
     case 'pw_list_fields': {
       const includeUsage = (args as { includeUsage?: boolean }).includeUsage;
       const cmdArgs = includeUsage ? ['--include=usage'] : [];
@@ -163,12 +219,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return formatToolResponse(result);
     }
 
+    // Get field details
     case 'pw_get_field': {
       const fieldName = (args as { name: string }).name;
       const result = await runPwCommand('get-field', [fieldName]);
       return formatToolResponse(result);
     }
 
+    // Get page by ID or path
     case 'pw_get_page': {
       const { idOrPath, includeFiles } = args as {
         idOrPath: string;
@@ -182,12 +240,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return formatToolResponse(result);
     }
 
+    // Query pages with selector
     case 'pw_query_pages': {
       const selector = (args as { selector: string }).selector;
       const result = await runPwCommand('query-pages', [selector]);
       return formatToolResponse(result);
     }
 
+    // Export full schema
     case 'pw_export_schema': {
       const format = (args as { format?: string }).format || 'json';
       const cmdArgs = format === 'yaml' ? ['--format=yaml'] : [];
@@ -195,6 +255,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return formatToolResponse(result);
     }
 
+    // Unknown tool
     default:
       return {
         content: [
@@ -208,13 +269,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Start server
+// ============================================================================
+// SERVER STARTUP
+// ============================================================================
+
+/**
+ * Main entry point
+ * 
+ * Creates a stdio transport and connects the server.
+ * The server will then listen for MCP requests from Cursor.
+ */
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Log to stderr so it doesn't interfere with MCP communication on stdout
   console.error('PW-MCP server running on stdio');
 }
 
+// Start the server
 main().catch((error) => {
   console.error('Failed to start server:', error);
   process.exit(1);
