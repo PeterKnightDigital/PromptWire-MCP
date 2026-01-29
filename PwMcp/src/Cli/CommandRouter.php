@@ -94,9 +94,11 @@ class CommandRouter {
                 if (!$idOrPath) {
                     return ['error' => 'Page ID or path required'];
                 }
-                // Check if --include=files was specified
-                $includeFiles = in_array('files', $flags['include'] ?? []);
-                return $this->getPage($idOrPath, $includeFiles);
+                // Check for include flags
+                $includes = $flags['include'] ?? [];
+                $includeFiles = in_array('files', $includes);
+                $includeLabels = in_array('labels', $includes);
+                return $this->getPage($idOrPath, $includeFiles, $includeLabels);
                 
             case 'query-pages':
                 $selector = $positional[0] ?? null;
@@ -352,12 +354,14 @@ class CommandRouter {
      * 
      * Retrieves a page and all its field values. By default, file/image
      * fields return counts and filenames; use --include=files for full metadata.
+     * Use --include=labels for field labels and descriptions.
      * 
-     * @param int|string $idOrPath Page ID (numeric) or path (e.g., "/about/")
-     * @param bool       $includeFiles Include full file/image metadata
+     * @param int|string $idOrPath      Page ID (numeric) or path (e.g., "/about/")
+     * @param bool       $includeFiles  Include full file/image metadata
+     * @param bool       $includeLabels Include field labels and descriptions
      * @return array Page data or error
      */
-    private function getPage($idOrPath, bool $includeFiles = false): array {
+    private function getPage($idOrPath, bool $includeFiles = false, bool $includeLabels = false): array {
         // Determine if input is an ID or path
         if (is_numeric($idOrPath)) {
             $page = $this->wire->pages->get((int) $idOrPath);
@@ -373,7 +377,19 @@ class CommandRouter {
         $fields = [];
         foreach ($page->template->fields as $field) {
             $value = $page->get($field->name);
-            $fields[$field->name] = $this->formatFieldValue($field, $value, $includeFiles);
+            $formattedValue = $this->formatFieldValue($field, $value, $includeFiles);
+            
+            // Optionally wrap value with field metadata
+            if ($includeLabels) {
+                $fields[$field->name] = [
+                    '_label' => $field->label ?: $field->name,
+                    '_description' => $field->description ?: null,
+                    '_type' => $field->type->className(),
+                    '_value' => $formattedValue,
+                ];
+            } else {
+                $fields[$field->name] = $formattedValue;
+            }
         }
         
         return [
@@ -460,6 +476,14 @@ class CommandRouter {
             ];
         }
         
+        // Handle repeater/matrix fields BEFORE generic PageArray
+        // RepeaterMatrixPageArray extends PageArray (not RepeaterPageArray), so we check class name
+        if ($value instanceof \ProcessWire\RepeaterPageArray || 
+            (is_object($value) && $value instanceof \ProcessWire\PageArray && 
+             strpos(get_class($value), 'Repeater') !== false)) {
+            return $this->formatRepeaterItems($field, $value, $includeFiles);
+        }
+        
         // Handle page array (multi-page reference)
         if ($value instanceof \ProcessWire\PageArray) {
             $pages = [];
@@ -522,29 +546,6 @@ class CommandRouter {
             ];
         }
         
-        // Handle repeater/matrix fields
-        if ($value instanceof \ProcessWire\RepeaterPageArray) {
-            $items = [];
-            foreach ($value as $item) {
-                $itemData = [
-                    '_type' => $this->getRepeaterType($item),
-                ];
-                
-                foreach ($item->template->fields as $f) {
-                    // Skip internal repeater fields
-                    if (strpos($f->name, 'repeater_') === 0) {
-                        continue;
-                    }
-                    $itemData[$f->name] = $this->formatFieldValue($f, $item->get($f->name), $includeFiles);
-                }
-                $items[] = $itemData;
-            }
-            return [
-                '_count' => count($items),
-                '_items' => $items,
-            ];
-        }
-        
         // Handle generic WireArray
         if ($value instanceof \ProcessWire\WireArray) {
             return $value->getArray();
@@ -555,24 +556,90 @@ class CommandRouter {
     }
     
     /**
-     * Get the type name for a repeater matrix item
+     * Format repeater/matrix items for output
      * 
-     * @param \ProcessWire\Page $item Repeater item
-     * @return string|null Type name or null for regular repeaters
+     * Handles both regular Repeater fields and RepeaterMatrix fields.
+     * For RepeaterMatrix, includes the type ID and type label.
+     * 
+     * @param \ProcessWire\Field     $field        Parent field definition
+     * @param \ProcessWire\PageArray $repeater     Repeater items
+     * @param bool                   $includeFiles Include file/image details
+     * @return array Formatted repeater with count and items
      */
-    private function getRepeaterType($item): ?string {
-        // Check for RepeaterMatrix type field
-        $typeField = $item->get('repeater_matrix_type');
-        if ($typeField) {
-            // Get the matrix type name from the parent field
-            $parentField = $item->template->name;
-            // Extract field name from template name (e.g., "repeater_matrix" from "repeater_matrix1234")
-            if (preg_match('/^repeater_(.+)$/', $parentField, $matches)) {
-                return $typeField;
+    private function formatRepeaterItems($field, $repeater, bool $includeFiles = false): array {
+        $items = [];
+        
+        // Get matrix type labels if this is a RepeaterMatrix field
+        $matrixTypes = $this->getMatrixTypeLabels($field);
+        
+        foreach ($repeater as $item) {
+            // Get the matrix type info
+            $typeId = $item->get('repeater_matrix_type');
+            
+            $itemData = [];
+            
+            // Include type info for RepeaterMatrix
+            if ($typeId !== null) {
+                $itemData['_typeId'] = (int) $typeId;
+                $itemData['_typeLabel'] = $matrixTypes[$typeId] ?? "Type $typeId";
             }
-            return (string) $typeField;
+            
+            // Get all field values for this repeater item
+            foreach ($item->template->fields as $f) {
+                // Skip internal repeater fields
+                if (strpos($f->name, 'repeater_') === 0) {
+                    continue;
+                }
+                $itemData[$f->name] = $this->formatFieldValue($f, $item->get($f->name), $includeFiles);
+            }
+            
+            $items[] = $itemData;
         }
-        return null;
+        
+        return [
+            '_count' => count($items),
+            '_items' => $items,
+        ];
+    }
+    
+    /**
+     * Get matrix type labels from a RepeaterMatrix field
+     * 
+     * RepeaterMatrix fields have configured types with labels.
+     * This extracts them for display in output.
+     * 
+     * @param \ProcessWire\Field $field Field to get types from
+     * @return array Associative array of typeId => label
+     */
+    private function getMatrixTypeLabels($field): array {
+        $labels = [];
+        
+        // Check if field has matrix types configured
+        $types = $field->get('type') ? $field->get('type')->getMatrixTypes($field) : null;
+        
+        if (!$types) {
+            // Try accessing via the repeater_matrix_types property
+            $matrixTypes = $field->get('repeater_matrix_types');
+            if (is_array($matrixTypes)) {
+                foreach ($matrixTypes as $typeId => $typeData) {
+                    if (isset($typeData['label'])) {
+                        $labels[$typeId] = $typeData['label'];
+                    } elseif (isset($typeData['name'])) {
+                        $labels[$typeId] = $typeData['name'];
+                    }
+                }
+            }
+            return $labels;
+        }
+        
+        // Process matrix types from fieldtype
+        foreach ($types as $type) {
+            if (isset($type['name'])) {
+                $labels[$type['id'] ?? $type['name']] = $type['label'] ?? $type['name'];
+            }
+        }
+        
+        return $labels;
     }
     
     /**
@@ -642,7 +709,7 @@ class CommandRouter {
                 'get-template [name]' => 'Get template details',
                 'list-fields' => 'List all fields (--include=usage for usage info)',
                 'get-field [name]' => 'Get field details',
-                'get-page [id|path]' => 'Get page by ID or path (--include=files for file metadata)',
+                'get-page [id|path]' => 'Get page by ID or path',
                 'query-pages [selector]' => 'Query pages by selector',
                 'export-schema' => 'Export full schema (--format=yaml for YAML output)',
                 'help' => 'Show this help',
@@ -650,8 +717,9 @@ class CommandRouter {
             'flags' => [
                 '--format=json|yaml' => 'Output format (default: json)',
                 '--pretty' => 'Pretty-print JSON',
-                '--include=usage' => 'Include field usage info',
-                '--include=files' => 'Include file/image metadata',
+                '--include=usage' => 'Include field usage info (list-fields)',
+                '--include=files' => 'Include full file/image metadata (get-page)',
+                '--include=labels' => 'Include field labels and descriptions (get-page)',
             ],
         ];
     }
