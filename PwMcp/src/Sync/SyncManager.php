@@ -383,6 +383,12 @@ class SyncManager {
                 
                 $current = &$stack[count($stack) - 1];
                 
+                // Safety check: if current context is a string, we're inside multiline content
+                if (is_string($current)) {
+                    $current .= ($current !== '' ? "\n" : '') . $trimmed;
+                    continue;
+                }
+                
                 if ($value === '' || $value === '|') {
                     // Nested structure or multiline
                     $current[$key] = ($value === '|') ? '' : [];
