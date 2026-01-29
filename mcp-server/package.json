@@ -1,0 +1,26 @@
+{
+  "name": "pw-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for ProcessWire CMS integration",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "pw-mcp-server": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
