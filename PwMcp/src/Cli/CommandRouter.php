@@ -175,6 +175,11 @@ class CommandRouter {
                 $directory = $positional[0] ?? null;
                 return $this->syncStatus($directory);
             
+            case 'sync:reconcile':
+                $directory = $positional[0] ?? null;
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                return $this->syncReconcile($directory, $dryRun);
+            
             // ================================================================
             // PHASE 3: PAGE CREATION & PUBLISHING
             // ================================================================
@@ -1081,6 +1086,23 @@ class CommandRouter {
         return $syncManager->getSyncStatus($directory);
     }
     
+    /**
+     * Reconcile local sync directories with ProcessWire
+     * 
+     * Detects and fixes path drift (page moved/renamed) and orphans
+     * (page deleted in ProcessWire but local folder remains).
+     * 
+     * @param string|null $directory Directory to scan (default: site/syncs)
+     * @param bool $dryRun Preview changes without applying (default: true)
+     * @return array Reconciliation report
+     */
+    private function syncReconcile(?string $directory = null, bool $dryRun = true): array {
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->reconcile($directory, $dryRun);
+    }
+    
     // ========================================================================
     // PHASE 3: PAGE CREATION & PUBLISHING
     // ========================================================================
@@ -1185,6 +1207,7 @@ class CommandRouter {
                 'pages:pull [selector]' => 'Pull multiple pages by selector, parent, or template',
                 'pages:push [directory]' => 'Push all local changes in directory (--dry-run=0 to apply)',
                 'sync:status [directory]' => 'Check sync status of all pulled pages',
+                'sync:reconcile [directory]' => 'Fix path drift and detect orphaned pages',
                 'page:new [template] [parent] [name]' => 'Create new page scaffold locally',
                 'page:publish [path]' => 'Publish new page to ProcessWire (--dry-run=0 to create)',
                 'pages:publish [directory]' => 'Bulk publish new pages (--dry-run=0 to create)',

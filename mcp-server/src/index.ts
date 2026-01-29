@@ -293,6 +293,24 @@ const tools = [
       },
     },
   },
+  {
+    name: 'pw_sync_reconcile',
+    description: 'Reconcile local sync directories with ProcessWire. Detects path drift (page moved/renamed) and orphans (page deleted). Fixes issues when dryRun=false.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Sync directory to reconcile (default: site/syncs)',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), preview changes without applying. Set to false to fix issues.',
+          default: true,
+        },
+      },
+    },
+  },
   // ========================================================================
   // PHASE 3: PAGE CREATION & PUBLISHING
   // ========================================================================
@@ -582,6 +600,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { directory } = args as { directory?: string };
       const cmdArgs = directory ? [directory] : [];
       const result = await runPwCommand('sync:status', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Reconcile sync directories
+    case 'pw_sync_reconcile': {
+      const { directory, dryRun } = args as { directory?: string; dryRun?: boolean };
+      const cmdArgs = directory ? [directory] : [];
+      if (dryRun === false) {
+        cmdArgs.push('--dry-run=0');
+      }
+      const result = await runPwCommand('sync:reconcile', cmdArgs);
       return formatToolResponse(result);
     }
 

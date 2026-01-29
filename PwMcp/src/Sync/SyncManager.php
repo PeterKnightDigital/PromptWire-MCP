@@ -1779,4 +1779,170 @@ class SyncManager {
         
         return $results;
     }
+    
+    // ========================================================================
+    // SYNC RECONCILIATION
+    // ========================================================================
+    
+    /**
+     * Reconcile local sync directories with ProcessWire
+     * 
+     * Detects and fixes:
+     * - Path drift: page path changed in ProcessWire, local folder needs moving
+     * - Orphans: page deleted in ProcessWire, local folder is stale
+     * - New pages: local folders with new: true that haven't been published
+     * 
+     * @param string|null $directory Directory to reconcile (default: site/syncs)
+     * @param bool $dryRun Preview changes without applying (default: true)
+     * @return array Reconciliation report
+     */
+    public function reconcile(?string $directory = null, bool $dryRun = true): array {
+        $directory = $directory ?: $this->syncRoot;
+        
+        // Make path absolute if relative
+        if (strpos($directory, '/') !== 0) {
+            $directory = $this->wire->config->paths->root . $directory;
+        }
+        $directory = rtrim($directory, '/');
+        
+        if (!is_dir($directory)) {
+            return ['error' => "Directory not found: $directory"];
+        }
+        
+        $results = [
+            'success' => true,
+            'dryRun' => $dryRun,
+            'directory' => $this->getRelativePath($directory),
+            'scanned' => 0,
+            'pathDrift' => [],
+            'orphans' => [],
+            'newPages' => [],
+            'clean' => 0,
+            'actions' => [],
+        ];
+        
+        // Find all page.meta.json files
+        $metaFiles = $this->findMetaFiles($directory);
+        $results['scanned'] = count($metaFiles);
+        
+        if (empty($metaFiles)) {
+            $results['message'] = "No synced pages found";
+            return $results;
+        }
+        
+        foreach ($metaFiles as $metaPath) {
+            $localDir = dirname($metaPath);
+            $meta = json_decode(file_get_contents($metaPath), true);
+            
+            if (!$meta) {
+                $results['errors'][] = [
+                    'path' => $this->getRelativePath($localDir),
+                    'error' => 'Invalid meta file',
+                ];
+                continue;
+            }
+            
+            // Skip new pages (not yet published)
+            if (!empty($meta['new'])) {
+                $results['newPages'][] = [
+                    'localPath' => $this->getRelativePath($localDir),
+                    'template' => $meta['template'],
+                    'title' => $meta['title'] ?? basename($localDir),
+                ];
+                continue;
+            }
+            
+            // Get page from ProcessWire by ID
+            $pageId = $meta['pageId'] ?? null;
+            if (!$pageId) {
+                $results['errors'][] = [
+                    'path' => $this->getRelativePath($localDir),
+                    'error' => 'No pageId in meta file',
+                ];
+                continue;
+            }
+            
+            $page = $this->wire->pages->get($pageId);
+            
+            // Check if page still exists
+            if (!$page || !$page->id) {
+                // Page was deleted - this is an orphan
+                $results['orphans'][] = [
+                    'localPath' => $this->getRelativePath($localDir),
+                    'pageId' => $pageId,
+                    'title' => $meta['title'] ?? 'Unknown',
+                    'lastKnownPath' => $meta['canonicalPath'] ?? 'Unknown',
+                ];
+                
+                if (!$dryRun) {
+                    // Mark as orphan in meta
+                    $meta['status'] = 'orphan';
+                    $meta['orphanedAt'] = date('c');
+                    file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                    $results['actions'][] = "Marked orphan: " . $this->getRelativePath($localDir);
+                }
+                continue;
+            }
+            
+            // Check if path has drifted
+            $currentPath = $page->path;
+            $storedPath = $meta['canonicalPath'] ?? null;
+            
+            if ($storedPath && $currentPath !== $storedPath) {
+                // Path has changed - need to move local folder
+                $newLocalPath = $this->syncRoot . rtrim($currentPath, '/');
+                
+                $results['pathDrift'][] = [
+                    'pageId' => $pageId,
+                    'title' => $page->title,
+                    'oldPath' => $storedPath,
+                    'newPath' => $currentPath,
+                    'oldLocalPath' => $this->getRelativePath($localDir),
+                    'newLocalPath' => $this->getRelativePath($newLocalPath),
+                ];
+                
+                if (!$dryRun) {
+                    // Create new directory structure
+                    $newParentDir = dirname($newLocalPath);
+                    if (!is_dir($newParentDir)) {
+                        mkdir($newParentDir, 0755, true);
+                    }
+                    
+                    // Move the folder
+                    if (rename($localDir, $newLocalPath)) {
+                        // Update meta file with new path
+                        $meta['canonicalPath'] = $currentPath;
+                        file_put_contents(
+                            $newLocalPath . '/page.meta.json',
+                            json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+                        );
+                        $results['actions'][] = "Moved: {$storedPath} → {$currentPath}";
+                    } else {
+                        $results['errors'][] = [
+                            'path' => $this->getRelativePath($localDir),
+                            'error' => "Failed to move folder to $newLocalPath",
+                        ];
+                    }
+                }
+                continue;
+            }
+            
+            // Page is in sync
+            $results['clean']++;
+        }
+        
+        // Add summary
+        $results['summary'] = [
+            'clean' => $results['clean'],
+            'pathDrift' => count($results['pathDrift']),
+            'orphans' => count($results['orphans']),
+            'newPages' => count($results['newPages']),
+        ];
+        
+        if ($dryRun && (count($results['pathDrift']) > 0 || count($results['orphans']) > 0)) {
+            $results['hint'] = 'Use --dry-run=0 to apply these changes';
+        }
+        
+        return $results;
+    }
 }

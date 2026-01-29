@@ -176,6 +176,7 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `pages:pull [selector]` | Bulk pull pages by selector, parent, or template |
 | `pages:push [directory]` | Bulk push all changes in a directory |
 | `sync:status [directory]` | Check sync status of pulled pages |
+| `sync:reconcile [directory]` | Fix path drift and detect orphans |
 | `page:new [template] [parent] [name]` | Create new page scaffold locally |
 | `page:publish [path]` | Publish new page to ProcessWire |
 | `pages:publish [directory]` | Bulk publish new pages |
@@ -301,6 +302,22 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:push site/syncs/services --dry-run=0
 - **Repeater items** use `_itemId` for stable matching — don't change these
 - **Files/images** are read-only (file uploads planned for Phase 4)
 - Use `--force` to push even if remote changed (overwrites remote)
+
+### 5. Reconcile (Fix Drift)
+
+If pages are moved or deleted in ProcessWire, local folders can become stale:
+
+```bash
+# Preview what needs fixing
+php site/modules/PwMcp/bin/pw-mcp.php sync:reconcile --pretty
+
+# Apply fixes
+php site/modules/PwMcp/bin/pw-mcp.php sync:reconcile --dry-run=0 --pretty
+```
+
+Detects:
+- **Path drift** — Page moved/renamed in ProcessWire, local folder needs updating
+- **Orphans** — Page deleted in ProcessWire, local folder is stale
 
 ## Creating New Pages
 
