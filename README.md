@@ -1,12 +1,17 @@
-# PW-MCP
+# ProcessWire MCP
 
 ProcessWire ↔ Cursor MCP Bridge
 
-A ProcessWire module that exposes site structure and content to Cursor IDE via the Model Context Protocol (MCP).
+A ProcessWire module that exposes site structure and content to Cursor IDE via the Model Context Protocol (MCP). Query your ProcessWire site using natural language in Cursor.
 
-## Overview
+## Features
 
-PW-MCP allows developers to query, understand, and (in Phase 2) safely operate a live ProcessWire site using natural language inside Cursor.
+- **List templates and fields** — Understand your site structure
+- **Query pages** — Get page data by ID, path, or selector
+- **Export schema** — Full site schema in JSON or YAML
+- **RepeaterMatrix support** — Full content extraction with type labels
+- **File/image metadata** — Filenames, dimensions, URLs
+- **Field labels** — Optional human-readable field descriptions
 
 ## Architecture
 
@@ -18,58 +23,179 @@ Cursor (Chat) → MCP Server (Node.js) → CLI (PHP) → ProcessWire API
 
 - **PwMcp/** — ProcessWire module with CLI interface
 - **mcp-server/** — Node.js/TypeScript MCP server for Cursor integration
-- **examples/** — Example schema outputs
-
-## Phase 1: Read & Understand
-
-- List templates and fields
-- Query pages by selector or path
-- Export site schema (JSON/YAML)
-- Health check for debugging
 
 ## Installation
 
-### 1. Symlink the module
+### 1. Install the ProcessWire Module
+
+Copy or clone the `PwMcp` folder into your ProcessWire site's modules directory:
 
 ```bash
-ln -s ~/Sites/pw-mcp/PwMcp ~/Sites/your-pw-site/site/modules/PwMcp
+# Option A: Clone the entire repo, then copy the module
+git clone https://github.com/YOUR_USERNAME/pw-mcp.git
+cp -r pw-mcp/PwMcp /path/to/your-site/site/modules/
+
+# Option B: Download and extract just the PwMcp folder
 ```
 
-### 2. Install in ProcessWire
+Then in ProcessWire admin: **Modules → Refresh → Install PwMcp**
 
-Go to Modules → Refresh → Install PwMcp
-
-### 3. Configure MCP Server
+### 2. Build the MCP Server
 
 ```bash
-cd mcp-server
+cd /path/to/pw-mcp/mcp-server
 npm install
 npm run build
 ```
 
-### 4. Add to Cursor MCP settings
+### 3. Configure Cursor
 
-Configure with environment variables:
-- `PW_PATH` — Path to ProcessWire installation
-- `PW_MCP_CLI_PATH` — Path to `PwMcp/bin/pw-mcp.php`
-- `PHP_PATH` — Path to PHP binary (optional, defaults to `php`)
+Add to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "ProcessWire MCP": {
+      "command": "node",
+      "args": ["/path/to/pw-mcp/mcp-server/dist/index.js"],
+      "env": {
+        "PW_PATH": "/path/to/your-processwire-site"
+      }
+    }
+  }
+}
+```
+
+**Environment Variables:**
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PW_PATH` | Yes | Path to your ProcessWire installation |
+| `PHP_PATH` | No | Path to PHP binary (defaults to `php`) |
+| `PW_MCP_CLI_PATH` | No | Custom path to CLI script (auto-detected if module is in standard location) |
+
+**Note:** If you're using MAMP, XAMPP, or another local server, you may need to specify `PHP_PATH`:
+
+```json
+"env": {
+  "PW_PATH": "/path/to/your-site",
+  "PHP_PATH": "/Applications/MAMP/bin/php/php8.3.28/bin/php"
+}
+```
+
+### 4. Reload Cursor
+
+Press `Cmd+Shift+P` → "Reload Window"
 
 ## CLI Usage
 
+You can also use the CLI directly for testing:
+
 ```bash
-export PW_PATH=~/Sites/your-pw-site
-php ~/Sites/pw-mcp/PwMcp/bin/pw-mcp.php health --pretty
-php ~/Sites/pw-mcp/PwMcp/bin/pw-mcp.php list-templates --pretty
-php ~/Sites/pw-mcp/PwMcp/bin/pw-mcp.php get-page /some/page/ --pretty
-php ~/Sites/pw-mcp/PwMcp/bin/pw-mcp.php export-schema --format=yaml
+# Set the ProcessWire path
+export PW_PATH=/path/to/your-site
+
+# Health check
+php site/modules/PwMcp/bin/pw-mcp.php health --pretty
+
+# List all templates
+php site/modules/PwMcp/bin/pw-mcp.php list-templates --pretty
+
+# Get a specific page
+php site/modules/PwMcp/bin/pw-mcp.php get-page /about/ --pretty
+
+# Get page with file metadata
+php site/modules/PwMcp/bin/pw-mcp.php get-page /about/ --pretty --include=files
+
+# Get page with field labels
+php site/modules/PwMcp/bin/pw-mcp.php get-page /about/ --pretty --include=labels
+
+# Query pages by selector
+php site/modules/PwMcp/bin/pw-mcp.php query-pages "template=blog-post, limit=10" --pretty
+
+# Export full schema
+php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 ```
+
+## Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `health` | Check connection and get site info |
+| `list-templates` | List all non-system templates |
+| `get-template [name]` | Get template details and fields |
+| `list-fields` | List all non-system fields |
+| `get-field [name]` | Get field details and usage |
+| `get-page [id\|path]` | Get page by ID or path with field values |
+| `query-pages [selector]` | Query pages using ProcessWire selectors |
+| `export-schema` | Export complete site schema |
+| `help` | Show available commands |
 
 ## CLI Flags
 
-- `--format=json|yaml` — Output format (default: json)
-- `--pretty` — Pretty-print JSON
-- `--include=usage` — Include field usage info
-- `--include=files` — Include file/image metadata
+| Flag | Description |
+|------|-------------|
+| `--format=json\|yaml` | Output format (default: json) |
+| `--pretty` | Pretty-print JSON output |
+| `--include=usage` | Include which templates use each field |
+| `--include=files` | Include full file/image metadata (URL, size, dimensions) |
+| `--include=labels` | Include field labels and descriptions |
+
+## Example Output
+
+### Health Check
+
+```json
+{
+  "status": "ok",
+  "pwVersion": "3.0.229",
+  "siteName": "example.com",
+  "moduleLoaded": true,
+  "counts": {
+    "templates": 45,
+    "fields": 72,
+    "pages": 960
+  },
+  "writesEnabled": false
+}
+```
+
+### Page with RepeaterMatrix
+
+```json
+{
+  "id": 1764,
+  "path": "/guides/getting-started-guide/",
+  "template": "blog-post",
+  "fields": {
+    "matrix": {
+      "_count": 11,
+      "_items": [
+        {
+          "_typeId": 1,
+          "_typeLabel": "Body",
+          "Body": "<h2>Content here...</h2>",
+          "Images": null
+        }
+      ]
+    }
+  }
+}
+```
+
+## Requirements
+
+- ProcessWire 3.0.165+
+- PHP 8.0+
+- Node.js 18+
+- Cursor IDE with MCP support
+
+## Phase 2 (Coming Soon)
+
+- Create and update pages
+- Manage files and images
+- Template and field modifications
+- Safe operation with confirmation prompts
 
 ## License
 

@@ -54,9 +54,10 @@ export interface PwCommandResult {
  * 
  * Required Environment Variables:
  * - PW_PATH: Path to ProcessWire installation
- * - PW_MCP_CLI_PATH: Path to pw-mcp.php script
  * 
  * Optional Environment Variables:
+ * - PW_MCP_CLI_PATH: Path to pw-mcp.php script (auto-detected if module
+ *   is installed in standard location: /site/modules/PwMcp/)
  * - PHP_PATH: Path to PHP binary (defaults to 'php')
  * 
  * @param command - CLI command to run (e.g., 'health', 'list-templates')
@@ -81,23 +82,20 @@ export async function runPwCommand(
 ): Promise<PwCommandResult> {
   // Get configuration from environment
   const phpPath = process.env.PHP_PATH || 'php';
-  const cliPath = process.env.PW_MCP_CLI_PATH;
   const pwPath = process.env.PW_PATH;
 
   // Validate required environment variables
-  if (!cliPath) {
-    return {
-      success: false,
-      error: 'PW_MCP_CLI_PATH environment variable not set',
-    };
-  }
-
   if (!pwPath) {
     return {
       success: false,
       error: 'PW_PATH environment variable not set',
     };
   }
+
+  // Auto-detect CLI path if not explicitly set
+  // Standard location: /site/modules/PwMcp/bin/pw-mcp.php
+  const cliPath = process.env.PW_MCP_CLI_PATH || 
+    `${pwPath}/site/modules/PwMcp/bin/pw-mcp.php`;
 
   try {
     // Execute the PHP CLI script
