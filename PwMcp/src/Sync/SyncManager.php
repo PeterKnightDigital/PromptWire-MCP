@@ -1631,20 +1631,17 @@ class SyncManager {
             ];
         }
         
-        // Create the page
-        $page = new Page();
-        $page->template = $template;
-        $page->parent = $parent;
-        $page->name = $pageName;
-        $page->title = $content['fields']['title'] ?? $meta['title'];
+        // Create the page using ProcessWire's Pages API
+        // $pages->add() is the preferred method as it handles all initialization
+        $page = $this->wire->pages->add($template, $parent, $pageName, [
+            'title' => $content['fields']['title'] ?? $meta['title'],
+        ]);
         
-        // Set as unpublished if requested
+        // Set as unpublished if requested (after creation to ensure proper status handling)
         if ($unpublished) {
-            $page->status = Page::statusUnpublished;
+            $page->addStatus(Page::statusUnpublished);
+            $page->save();
         }
-        
-        // Save to get an ID
-        $page->save();
         
         // Apply field values
         $page->of(false);
