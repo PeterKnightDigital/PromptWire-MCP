@@ -719,7 +719,7 @@ class SyncManager {
                     $yaml .= $prefix . "-\n";
                     $yaml .= $this->arrayToYaml($value, $indent + 1);
                 } else {
-                    $yaml .= $prefix . '- ' . $this->yamlValue($value) . "\n";
+                    $yaml .= $prefix . '- ' . $this->yamlValue($value, $indent + 1) . "\n";
                 }
             } else {
                 // Key-value pair
@@ -729,7 +729,7 @@ class SyncManager {
                 } elseif (is_array($value)) {
                     $yaml .= $prefix . $key . ": []\n";
                 } else {
-                    $yaml .= $prefix . $key . ': ' . $this->yamlValue($value) . "\n";
+                    $yaml .= $prefix . $key . ': ' . $this->yamlValue($value, $indent + 1) . "\n";
                 }
             }
         }
@@ -743,7 +743,7 @@ class SyncManager {
      * @param mixed $value
      * @return string
      */
-    private function yamlValue($value): string {
+    private function yamlValue($value, int $indent = 1): string {
         if ($value === null) {
             return 'null';
         }
@@ -757,12 +757,13 @@ class SyncManager {
             return (string) $value;
         }
         if (is_string($value)) {
-            // Multi-line string
+            // Multi-line string - use literal block scalar with proper indentation
             if (strpos($value, "\n") !== false) {
                 $lines = explode("\n", $value);
+                $linePrefix = str_repeat('  ', $indent);
                 $result = "|\n";
                 foreach ($lines as $line) {
-                    $result .= '  ' . $line . "\n";
+                    $result .= $linePrefix . $line . "\n";
                 }
                 return rtrim($result);
             }
