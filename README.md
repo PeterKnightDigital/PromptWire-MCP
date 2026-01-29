@@ -173,6 +173,8 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `--include=usage` | Include which templates use each field |
 | `--include=files` | Include full file/image metadata (URL, size, dimensions) |
 | `--include=labels` | Include field labels and descriptions |
+| `--truncate=N` | Truncate text fields to N characters (get-page) |
+| `--summary` | Return field structure only, no content (get-page) |
 
 ## Example Output
 

@@ -97,7 +97,7 @@ const tools = [
   },
   {
     name: 'pw_get_page',
-    description: 'Get a ProcessWire page by ID or path, including all field values',
+    description: 'Get a ProcessWire page by ID or path, including all field values. Use truncate to limit text size, or summary for structure only.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -108,6 +108,16 @@ const tools = [
         includeFiles: {
           type: 'boolean',
           description: 'Include file/image metadata (filename, URL, dimensions)',
+          default: false,
+        },
+        truncate: {
+          type: 'number',
+          description: 'Truncate text fields to N characters (0 = no truncation)',
+          default: 0,
+        },
+        summary: {
+          type: 'boolean',
+          description: 'Return field structure only (types and labels), no content values',
           default: false,
         },
       },
@@ -266,13 +276,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Get page by ID or path
     case 'pw_get_page': {
-      const { idOrPath, includeFiles } = args as {
+      const { idOrPath, includeFiles, truncate, summary } = args as {
         idOrPath: string;
         includeFiles?: boolean;
+        truncate?: number;
+        summary?: boolean;
       };
       const cmdArgs = [idOrPath];
       if (includeFiles) {
         cmdArgs.push('--include=files');
+      }
+      if (truncate && truncate > 0) {
+        cmdArgs.push(`--truncate=${truncate}`);
+      }
+      if (summary) {
+        cmdArgs.push('--summary');
       }
       const result = await runPwCommand('get-page', cmdArgs);
       return formatToolResponse(result);

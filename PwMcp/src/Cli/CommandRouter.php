@@ -98,7 +98,10 @@ class CommandRouter {
                 $includes = $flags['include'] ?? [];
                 $includeFiles = in_array('files', $includes);
                 $includeLabels = in_array('labels', $includes);
-                return $this->getPage($idOrPath, $includeFiles, $includeLabels);
+                // Check for truncate and summary flags
+                $truncate = isset($flags['truncate']) ? (int) $flags['truncate'] : 0;
+                $summary = isset($flags['summary']) ? true : false;
+                return $this->getPage($idOrPath, $includeFiles, $includeLabels, $truncate, $summary);
                 
             case 'query-pages':
                 $selector = $positional[0] ?? null;
@@ -371,13 +374,17 @@ class CommandRouter {
      * Retrieves a page and all its field values. By default, file/image
      * fields return counts and filenames; use --include=files for full metadata.
      * Use --include=labels for field labels and descriptions.
+     * Use --truncate=N to limit text content to N characters.
+     * Use --summary to return field structure only (no content values).
      * 
      * @param int|string $idOrPath      Page ID (numeric) or path (e.g., "/about/")
      * @param bool       $includeFiles  Include full file/image metadata
      * @param bool       $includeLabels Include field labels and descriptions
+     * @param int        $truncate      Truncate text fields to N characters (0 = no truncation)
+     * @param bool       $summary       Return field structure only, no content
      * @return array Page data or error
      */
-    private function getPage($idOrPath, bool $includeFiles = false, bool $includeLabels = false): array {
+    private function getPage($idOrPath, bool $includeFiles = false, bool $includeLabels = false, int $truncate = 0, bool $summary = false): array {
         // Determine if input is an ID or path
         if (is_numeric($idOrPath)) {
             $page = $this->wire->pages->get((int) $idOrPath);
@@ -392,8 +399,17 @@ class CommandRouter {
         // Build field values array
         $fields = [];
         foreach ($page->template->fields as $field) {
+            // Summary mode: return field type info only, no values
+            if ($summary) {
+                $fields[$field->name] = [
+                    '_type' => $field->type->className(),
+                    '_label' => $field->label ?: $field->name,
+                ];
+                continue;
+            }
+            
             $value = $page->get($field->name);
-            $formattedValue = $this->formatFieldValue($field, $value, $includeFiles);
+            $formattedValue = $this->formatFieldValue($field, $value, $includeFiles, $truncate);
             
             // Optionally wrap value with field metadata
             if ($includeLabels) {
@@ -473,9 +489,10 @@ class CommandRouter {
      * @param \ProcessWire\Field $field        Field definition
      * @param mixed              $value        Field value from page
      * @param bool               $includeFiles Include file/image details
+     * @param int                $truncate     Truncate text to N characters (0 = no truncation)
      * @return mixed Formatted value suitable for JSON encoding
      */
-    private function formatFieldValue($field, $value, bool $includeFiles = false) {
+    private function formatFieldValue($field, $value, bool $includeFiles = false, int $truncate = 0) {
         $type = $field->type->className();
         
         // Handle null/empty values
@@ -497,7 +514,7 @@ class CommandRouter {
         if ($value instanceof \ProcessWire\RepeaterPageArray || 
             (is_object($value) && $value instanceof \ProcessWire\PageArray && 
              strpos(get_class($value), 'Repeater') !== false)) {
-            return $this->formatRepeaterItems($field, $value, $includeFiles);
+            return $this->formatRepeaterItems($field, $value, $includeFiles, $truncate);
         }
         
         // Handle page array (multi-page reference)
@@ -568,6 +585,16 @@ class CommandRouter {
         }
         
         // Default: return as-is (strings, numbers, booleans)
+        // Apply truncation to strings if requested
+        if ($truncate > 0 && is_string($value) && strlen($value) > $truncate) {
+            // Strip HTML tags before truncating for cleaner output
+            $plainText = strip_tags($value);
+            if (strlen($plainText) > $truncate) {
+                return substr($plainText, 0, $truncate) . '...';
+            }
+            return $plainText;
+        }
+        
         return $value;
     }
     
@@ -580,9 +607,10 @@ class CommandRouter {
      * @param \ProcessWire\Field     $field        Parent field definition
      * @param \ProcessWire\PageArray $repeater     Repeater items
      * @param bool                   $includeFiles Include file/image details
+     * @param int                    $truncate     Truncate text to N characters (0 = no truncation)
      * @return array Formatted repeater with count and items
      */
-    private function formatRepeaterItems($field, $repeater, bool $includeFiles = false): array {
+    private function formatRepeaterItems($field, $repeater, bool $includeFiles = false, int $truncate = 0): array {
         $items = [];
         
         // Get matrix type labels if this is a RepeaterMatrix field
@@ -606,7 +634,7 @@ class CommandRouter {
                 if (strpos($f->name, 'repeater_') === 0) {
                     continue;
                 }
-                $itemData[$f->name] = $this->formatFieldValue($f, $item->get($f->name), $includeFiles);
+                $itemData[$f->name] = $this->formatFieldValue($f, $item->get($f->name), $includeFiles, $truncate);
             }
             
             $items[] = $itemData;
@@ -924,6 +952,8 @@ class CommandRouter {
                 '--include=usage' => 'Include field usage info (list-fields)',
                 '--include=files' => 'Include full file/image metadata (get-page)',
                 '--include=labels' => 'Include field labels and descriptions (get-page)',
+                '--truncate=N' => 'Truncate text fields to N characters (get-page)',
+                '--summary' => 'Return field structure only, no content (get-page)',
                 '--limit=N' => 'Limit search results (default: 20)',
             ],
         ];
