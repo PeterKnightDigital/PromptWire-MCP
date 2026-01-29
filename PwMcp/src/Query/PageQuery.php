@@ -251,22 +251,32 @@ class PageQuery {
     /**
      * Format files/images for output
      * 
-     * By default, returns just the count to keep payloads small.
-     * When $includeFiles is true, returns full metadata including
-     * filename, URL, size, and (for images) dimensions.
+     * By default, returns count and filenames. When $includeFiles is true,
+     * returns full metadata including URL, size, and (for images) dimensions.
      * 
      * @param \ProcessWire\Pagefiles $files        Files to format
      * @param bool                   $includeFiles Include full metadata
-     * @return array File count or array of file metadata
+     * @return array File info with count, filenames, and optionally details
      */
     private function formatFiles($files, bool $includeFiles = false): array {
-        // Default: just return count to avoid large payloads
-        if (!$includeFiles) {
-            return ['_count' => $files->count()];
+        $count = $files->count();
+        
+        // Always get filenames
+        $filenames = [];
+        foreach ($files as $file) {
+            $filenames[] = $file->name;
         }
         
-        // Return full file metadata
-        $result = [];
+        // Default: return count + filenames (lightweight)
+        if (!$includeFiles) {
+            return [
+                '_count' => $count,
+                '_files' => $filenames,
+            ];
+        }
+        
+        // Return full file metadata when requested
+        $details = [];
         foreach ($files as $file) {
             $fileData = [
                 'filename' => $file->name,
@@ -281,10 +291,14 @@ class PageQuery {
                 $fileData['height'] = $file->height;
             }
             
-            $result[] = $fileData;
+            $details[] = $fileData;
         }
         
-        return $result;
+        return [
+            '_count' => $count,
+            '_files' => $filenames,
+            '_details' => $details,
+        ];
     }
     
     /**
@@ -295,23 +309,40 @@ class PageQuery {
      * 
      * @param \ProcessWire\RepeaterPageArray $repeater     Repeater items
      * @param bool                           $includeFiles Include file details
-     * @return array Array of formatted repeater items
+     * @return array Array with count and formatted repeater items
      */
     private function formatRepeater($repeater, bool $includeFiles = false): array {
         $items = [];
         
         foreach ($repeater as $item) {
-            $itemFields = [];
+            $itemData = [
+                '_type' => $this->getRepeaterType($item),
+            ];
+            
             foreach ($item->template->fields as $field) {
-                // Skip internal repeater fields (like repeater_matrix_type)
+                // Skip internal repeater fields
                 if (strpos($field->name, 'repeater_') === 0) {
                     continue;
                 }
-                $itemFields[$field->name] = $this->formatFieldValue($field, $item->get($field->name), $includeFiles);
+                $itemData[$field->name] = $this->formatFieldValue($field, $item->get($field->name), $includeFiles);
             }
-            $items[] = $itemFields;
+            $items[] = $itemData;
         }
         
-        return $items;
+        return [
+            '_count' => count($items),
+            '_items' => $items,
+        ];
+    }
+    
+    /**
+     * Get the type name for a repeater matrix item
+     * 
+     * @param \ProcessWire\Page $item Repeater item
+     * @return string|null Type name or null for regular repeaters
+     */
+    private function getRepeaterType($item): ?string {
+        $typeField = $item->get('repeater_matrix_type');
+        return $typeField ? (string) $typeField : null;
     }
 }

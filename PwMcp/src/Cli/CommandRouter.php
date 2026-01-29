@@ -351,10 +351,10 @@ class CommandRouter {
      * Get a page by ID or path
      * 
      * Retrieves a page and all its field values. By default, file/image
-     * fields only return counts; use --include=files for full metadata.
+     * fields return counts and filenames; use --include=files for full metadata.
      * 
      * @param int|string $idOrPath Page ID (numeric) or path (e.g., "/about/")
-     * @param bool       $includeFiles Include file/image metadata
+     * @param bool       $includeFiles Include full file/image metadata
      * @return array Page data or error
      */
     private function getPage($idOrPath, bool $includeFiles = false): array {
@@ -383,10 +383,52 @@ class CommandRouter {
             'url' => $page->url,
             'template' => $page->template->name,
             'status' => $page->status,
-            'created' => $page->created,
-            'modified' => $page->modified,
+            'statusName' => $this->getStatusName($page->status),
+            'parent' => [
+                'id' => $page->parent->id,
+                'path' => $page->parent->path,
+                'title' => $page->parent->title,
+            ],
+            'numChildren' => $page->numChildren,
+            'created' => date('c', $page->created),
+            'modified' => date('c', $page->modified),
+            'createdUser' => $page->createdUser ? $page->createdUser->name : null,
+            'modifiedUser' => $page->modifiedUser ? $page->modifiedUser->name : null,
             'fields' => $fields,
         ];
+    }
+    
+    /**
+     * Convert page status number to readable name(s)
+     * 
+     * @param int $status Page status flags
+     * @return string|array Status name(s)
+     */
+    private function getStatusName(int $status) {
+        $statuses = [];
+        
+        // Check common status flags
+        if ($status === 1) {
+            return 'published';
+        }
+        
+        if ($status & \ProcessWire\Page::statusHidden) {
+            $statuses[] = 'hidden';
+        }
+        if ($status & \ProcessWire\Page::statusUnpublished) {
+            $statuses[] = 'unpublished';
+        }
+        if ($status & \ProcessWire\Page::statusLocked) {
+            $statuses[] = 'locked';
+        }
+        if ($status & \ProcessWire\Page::statusTrash) {
+            $statuses[] = 'trash';
+        }
+        if ($status & \ProcessWire\Page::statusDraft) {
+            $statuses[] = 'draft';
+        }
+        
+        return empty($statuses) ? 'published' : implode(', ', $statuses);
     }
     
     /**
@@ -433,46 +475,74 @@ class CommandRouter {
         
         // Handle images and files
         if ($value instanceof \ProcessWire\Pagefiles || $value instanceof \ProcessWire\Pageimages) {
-            // By default, just return count to avoid large payloads
-            if (!$includeFiles) {
-                return ['_count' => $value->count()];
+            $count = $value->count();
+            
+            // Always include count and filenames
+            $filenames = [];
+            foreach ($value as $file) {
+                $filenames[] = $file->name;
             }
             
-            // Return full file metadata when requested
+            // By default, return count + filenames (lightweight)
+            if (!$includeFiles) {
+                return [
+                    '_count' => $count,
+                    '_files' => $filenames,
+                ];
+            }
+            
+            // Return full file metadata when requested with --include=files
             $files = [];
             foreach ($value as $file) {
                 $fileData = [
                     'filename' => $file->name,
+                    'basename' => $file->basename,
                     'url' => $file->url,
+                    'httpUrl' => $file->httpUrl,
                     'size' => $file->filesize,
-                    'description' => $file->description,
+                    'sizeStr' => wireBytesStr($file->filesize),
+                    'description' => $file->description ?: null,
+                    'modified' => date('c', $file->modified),
                 ];
                 
                 // Add image-specific properties
                 if ($file instanceof \ProcessWire\Pageimage) {
                     $fileData['width'] = $file->width;
                     $fileData['height'] = $file->height;
+                    $fileData['ratio'] = round($file->width / max($file->height, 1), 2);
                 }
                 
                 $files[] = $fileData;
             }
-            return $files;
+            
+            return [
+                '_count' => $count,
+                '_files' => $filenames,
+                '_details' => $files,
+            ];
         }
         
         // Handle repeater/matrix fields
         if ($value instanceof \ProcessWire\RepeaterPageArray) {
             $items = [];
             foreach ($value as $item) {
-                $itemFields = [];
+                $itemData = [
+                    '_type' => $this->getRepeaterType($item),
+                ];
+                
                 foreach ($item->template->fields as $f) {
                     // Skip internal repeater fields
-                    if ($f->name !== 'repeater_matrix_type') {
-                        $itemFields[$f->name] = $this->formatFieldValue($f, $item->get($f->name), $includeFiles);
+                    if (strpos($f->name, 'repeater_') === 0) {
+                        continue;
                     }
+                    $itemData[$f->name] = $this->formatFieldValue($f, $item->get($f->name), $includeFiles);
                 }
-                $items[] = $itemFields;
+                $items[] = $itemData;
             }
-            return $items;
+            return [
+                '_count' => count($items),
+                '_items' => $items,
+            ];
         }
         
         // Handle generic WireArray
@@ -482,6 +552,27 @@ class CommandRouter {
         
         // Default: return as-is (strings, numbers, booleans)
         return $value;
+    }
+    
+    /**
+     * Get the type name for a repeater matrix item
+     * 
+     * @param \ProcessWire\Page $item Repeater item
+     * @return string|null Type name or null for regular repeaters
+     */
+    private function getRepeaterType($item): ?string {
+        // Check for RepeaterMatrix type field
+        $typeField = $item->get('repeater_matrix_type');
+        if ($typeField) {
+            // Get the matrix type name from the parent field
+            $parentField = $item->template->name;
+            // Extract field name from template name (e.g., "repeater_matrix" from "repeater_matrix1234")
+            if (preg_match('/^repeater_(.+)$/', $parentField, $matches)) {
+                return $typeField;
+            }
+            return (string) $typeField;
+        }
+        return null;
     }
     
     /**
