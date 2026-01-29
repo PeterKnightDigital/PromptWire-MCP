@@ -153,6 +153,27 @@ class CommandRouter {
                 $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
                 $force = isset($flags['force']);
                 return $this->pagePush($localPath, $dryRun, $force);
+            
+            case 'pages:pull':
+                $selector = $positional[0] ?? null;
+                if (!$selector) {
+                    return ['error' => 'Selector, parent path, or template required'];
+                }
+                $contentFormat = $flags['content-format'] ?? 'yaml';
+                $includeParent = !isset($flags['no-parent']);
+                $limit = isset($flags['limit']) ? (int) $flags['limit'] : 0;
+                return $this->pagesPull($selector, $contentFormat, $includeParent, $limit);
+            
+            case 'pages:push':
+                $directory = $positional[0] ?? 'site/syncs';
+                // Default: dry-run is ON for safety
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                $force = isset($flags['force']);
+                return $this->pagesPush($directory, $dryRun, $force);
+            
+            case 'sync:status':
+                $directory = $positional[0] ?? null;
+                return $this->syncStatus($directory);
                 
             case 'help':
             default:
@@ -582,7 +603,7 @@ class CommandRouter {
                     'url' => $file->url,
                     'httpUrl' => $file->httpUrl,
                     'size' => $file->filesize,
-                    'sizeStr' => wireBytesStr($file->filesize),
+                    'sizeStr' => \ProcessWire\wireBytesStr($file->filesize),
                     'description' => $file->description ?: null,
                     'modified' => date('c', $file->modified),
                 ];
@@ -974,6 +995,64 @@ class CommandRouter {
     }
     
     /**
+     * Pull multiple pages matching a selector
+     * 
+     * Supports:
+     * - ProcessWire selector: "template=blog-post"
+     * - Parent path: "/medical-negligence-claims/"
+     * - Template shorthand: "blog-post"
+     * 
+     * @param string $selector Selector, parent path, or template
+     * @param string $format Content format (yaml or json)
+     * @param bool $includeParent Include parent when pulling by path
+     * @param int $limit Maximum pages to pull
+     * @return array Results with pulled/skipped/failed counts
+     */
+    private function pagesPull(string $selector, string $format = 'yaml', bool $includeParent = true, int $limit = 0): array {
+        // Load sync manager
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->pullPages($selector, $format, $includeParent, $limit);
+    }
+    
+    /**
+     * Push all local changes in a directory tree
+     * 
+     * Scans for all page.meta.json files and pushes each page.
+     * Dry-run mode is on by default for safety.
+     * 
+     * @param string $directory Directory to scan (default: site/syncs)
+     * @param bool $dryRun Show changes without applying (default: true)
+     * @param bool $force Force push even if remote has changed
+     * @return array Results with push status for each page
+     */
+    private function pagesPush(string $directory, bool $dryRun = true, bool $force = false): array {
+        // Load sync manager
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->pushPages($directory, $dryRun, $force);
+    }
+    
+    /**
+     * Check sync status of all pulled pages
+     * 
+     * Reports which pages have local changes, remote changes,
+     * conflicts, or are orphaned.
+     * 
+     * @param string|null $directory Directory to scan (default: site/syncs)
+     * @return array Status report for all synced pages
+     */
+    private function syncStatus(?string $directory = null): array {
+        // Load sync manager
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->getSyncStatus($directory);
+    }
+    
+    /**
      * Export complete site schema
      * 
      * Exports all fields and templates as a structured schema.
@@ -1001,7 +1080,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PW-MCP CLI',
-            'version' => '0.1.0',
+            'version' => '0.2.0',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
@@ -1016,6 +1095,9 @@ class CommandRouter {
                 'export-schema' => 'Export full schema (--format=yaml for YAML output)',
                 'page:pull [id|path]' => 'Pull page into local sync directory',
                 'page:push [path]' => 'Push local changes to ProcessWire (--dry-run=0 to apply)',
+                'pages:pull [selector]' => 'Pull multiple pages by selector, parent, or template',
+                'pages:push [directory]' => 'Push all local changes in directory (--dry-run=0 to apply)',
+                'sync:status [directory]' => 'Check sync status of all pulled pages',
                 'help' => 'Show this help',
             ],
             'flags' => [
@@ -1026,7 +1108,11 @@ class CommandRouter {
                 '--include=labels' => 'Include field labels and descriptions (get-page)',
                 '--truncate=N' => 'Truncate text fields to N characters (get-page)',
                 '--summary' => 'Return field structure only, no content (get-page)',
-                '--limit=N' => 'Limit search results (default: 20)',
+                '--limit=N' => 'Limit search/pull results',
+                '--dry-run=0' => 'Apply changes instead of preview (page:push, pages:push)',
+                '--force' => 'Force push even if remote has changed',
+                '--no-parent' => 'Exclude parent page when pulling by path (pages:pull)',
+                '--content-format=yaml|json' => 'Sync file format (default: yaml)',
             ],
         ];
     }

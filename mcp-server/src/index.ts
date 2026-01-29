@@ -232,6 +232,67 @@ const tools = [
       required: ['localPath'],
     },
   },
+  {
+    name: 'pw_pages_pull',
+    description: 'Bulk pull multiple pages by selector, parent path, or template. Creates sync files for each matched page.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        selector: {
+          type: 'string',
+          description: 'ProcessWire selector (e.g., "template=blog-post"), parent path (e.g., "/services/"), or template name',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum pages to pull (default: 50)',
+          default: 50,
+        },
+        noParent: {
+          type: 'boolean',
+          description: 'Exclude parent page when pulling by parent path',
+          default: false,
+        },
+      },
+      required: ['selector'],
+    },
+  },
+  {
+    name: 'pw_pages_push',
+    description: 'Bulk push all local changes in a sync directory tree. Shows preview by default (dry-run). Set dryRun=false to apply.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Sync directory to push (e.g., "site/syncs/services" or "site/syncs" for all)',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), preview changes without applying. Set to false to apply.',
+          default: true,
+        },
+        force: {
+          type: 'boolean',
+          description: 'Force push even if remote pages have changed (dangerous)',
+          default: false,
+        },
+      },
+      required: ['directory'],
+    },
+  },
+  {
+    name: 'pw_sync_status',
+    description: 'Check sync status of pulled pages. Shows which have local changes, remote changes, or conflicts.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Sync directory to check (default: site/syncs)',
+        },
+      },
+    },
+  },
 ];
 
 // ============================================================================
@@ -248,7 +309,7 @@ const tools = [
 const server = new Server(
   {
     name: 'pw-mcp',
-    version: '0.1.0',
+    version: '0.2.0',
   },
   {
     capabilities: {
@@ -401,6 +462,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         cmdArgs.push('--force');
       }
       const result = await runPwCommand('page:push', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Bulk pull pages by selector, parent, or template
+    case 'pw_pages_pull': {
+      const { selector, limit, noParent } = args as {
+        selector: string;
+        limit?: number;
+        noParent?: boolean;
+      };
+      const cmdArgs = [selector];
+      if (limit) {
+        cmdArgs.push(`--limit=${limit}`);
+      }
+      if (noParent) {
+        cmdArgs.push('--no-parent');
+      }
+      const result = await runPwCommand('pages:pull', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Bulk push all changes in a directory tree
+    case 'pw_pages_push': {
+      const { directory, dryRun, force } = args as {
+        directory: string;
+        dryRun?: boolean;
+        force?: boolean;
+      };
+      const cmdArgs = [directory];
+      if (dryRun === false) {
+        cmdArgs.push('--dry-run=0');
+      }
+      if (force) {
+        cmdArgs.push('--force');
+      }
+      const result = await runPwCommand('pages:push', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Check sync status
+    case 'pw_sync_status': {
+      const { directory } = args as { directory?: string };
+      const cmdArgs = directory ? [directory] : [];
+      const result = await runPwCommand('sync:status', cmdArgs);
       return formatToolResponse(result);
     }
 

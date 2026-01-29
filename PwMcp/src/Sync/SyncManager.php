@@ -155,6 +155,131 @@ class SyncManager {
         ];
     }
     
+    /**
+     * Pull multiple pages matching a selector
+     * 
+     * Supports pulling by:
+     * - ProcessWire selector string
+     * - Parent path (pulls all children)
+     * - Template name
+     * 
+     * @param string $selector ProcessWire selector, parent path, or template
+     * @param string $format Content format (yaml or json)
+     * @param bool $includeParent Include the parent page when pulling by parent
+     * @param int $limit Maximum pages to pull (0 = no limit)
+     * @return array Results with success/fail counts and details
+     */
+    public function pullPages(string $selector, string $format = 'yaml', bool $includeParent = true, int $limit = 0): array {
+        $results = [
+            'success' => true,
+            'selector' => $selector,
+            'pulled' => 0,
+            'skipped' => 0,
+            'failed' => 0,
+            'pages' => [],
+            'errors' => [],
+        ];
+        
+        // Determine the type of selector and build the query
+        $pages = $this->resolvePagesFromSelector($selector, $includeParent, $limit);
+        
+        if ($pages === null || $pages->count() === 0) {
+            $results['success'] = false;
+            $results['error'] = "No pages found matching: $selector";
+            return $results;
+        }
+        
+        $results['totalFound'] = $pages->count();
+        
+        // Pull each page
+        foreach ($pages as $page) {
+            $pullResult = $this->pullPage($page->id, $format);
+            
+            if (isset($pullResult['success']) && $pullResult['success']) {
+                $results['pulled']++;
+                $results['pages'][] = [
+                    'id' => $page->id,
+                    'path' => $page->path,
+                    'title' => $page->title,
+                    'localPath' => $pullResult['localPath'],
+                ];
+            } elseif (isset($pullResult['error'])) {
+                if (strpos($pullResult['error'], 'system page') !== false) {
+                    $results['skipped']++;
+                } else {
+                    $results['failed']++;
+                    $results['errors'][] = [
+                        'id' => $page->id,
+                        'path' => $page->path,
+                        'error' => $pullResult['error'],
+                    ];
+                }
+            }
+        }
+        
+        return $results;
+    }
+    
+    /**
+     * Resolve pages from a flexible selector
+     * 
+     * Accepts:
+     * - Standard ProcessWire selector: "template=blog-post, limit=10"
+     * - Parent path: "/medical-negligence-claims/" (pulls children)
+     * - Template shorthand: "template=service-page"
+     * 
+     * @param string $selector The selector string
+     * @param bool $includeParent Include parent when using parent path
+     * @param int $limit Maximum pages (0 = no limit)
+     * @return \ProcessWire\PageArray|null
+     */
+    private function resolvePagesFromSelector(string $selector, bool $includeParent = true, int $limit = 0) {
+        $pages = $this->wire->pages;
+        
+        // Check if it's a path (starts with /)
+        if (strpos($selector, '/') === 0) {
+            $parent = $pages->get($selector);
+            if (!$parent || !$parent->id) {
+                return null;
+            }
+            
+            // Get children
+            $childSelector = "parent=$parent->id, include=all";
+            if ($limit > 0) {
+                $childSelector .= ", limit=$limit";
+            }
+            $children = $pages->find($childSelector);
+            
+            // Optionally include the parent
+            if ($includeParent) {
+                $result = new \ProcessWire\PageArray();
+                $result->add($parent);
+                $result->import($children);
+                return $result;
+            }
+            
+            return $children;
+        }
+        
+        // Check if it's a simple template shorthand
+        if (strpos($selector, '=') === false && strpos($selector, ',') === false) {
+            // Assume it's a template name
+            $selector = "template=$selector";
+        }
+        
+        // Add limit if specified
+        if ($limit > 0 && strpos($selector, 'limit=') === false) {
+            $selector .= ", limit=$limit";
+        }
+        
+        // Add include=all to get hidden/unpublished too
+        if (strpos($selector, 'include=') === false) {
+            $selector .= ", include=all";
+        }
+        
+        return $pages->find($selector);
+    }
+    
     // ========================================================================
     // PUSH OPERATIONS
     // ========================================================================
@@ -296,6 +421,272 @@ class SyncManager {
             'changeCount' => count($changes),
             'pushedAt' => $meta['lastPushedAt'],
         ];
+    }
+    
+    /**
+     * Push all local changes in a directory tree
+     * 
+     * Scans for all page.meta.json files and pushes each page.
+     * Uses dry-run by default for safety.
+     * 
+     * @param string $directory Directory to scan (default: site/syncs)
+     * @param bool $dryRun Preview changes without applying (default: true)
+     * @param bool $force Force push even if remote changed (dangerous)
+     * @return array Results with push status for each page
+     */
+    public function pushPages(string $directory, bool $dryRun = true, bool $force = false): array {
+        // Make path absolute if relative
+        if (strpos($directory, '/') !== 0) {
+            $directory = $this->wire->config->paths->root . $directory;
+        }
+        
+        $directory = rtrim($directory, '/');
+        
+        if (!is_dir($directory)) {
+            return ['error' => "Directory not found: $directory"];
+        }
+        
+        $results = [
+            'success' => true,
+            'dryRun' => $dryRun,
+            'directory' => $this->getRelativePath($directory),
+            'pushed' => 0,
+            'skipped' => 0,
+            'failed' => 0,
+            'conflicts' => 0,
+            'noChanges' => 0,
+            'pages' => [],
+            'errors' => [],
+        ];
+        
+        // Find all page.meta.json files recursively
+        $metaFiles = $this->findMetaFiles($directory);
+        
+        if (empty($metaFiles)) {
+            $results['error'] = "No synced pages found in directory";
+            $results['success'] = false;
+            return $results;
+        }
+        
+        $results['totalFound'] = count($metaFiles);
+        
+        // Push each page
+        foreach ($metaFiles as $metaPath) {
+            $localDir = dirname($metaPath);
+            $pushResult = $this->pushPage($localDir, $dryRun, $force);
+            
+            if (isset($pushResult['success']) && $pushResult['success']) {
+                if (isset($pushResult['message']) && $pushResult['message'] === 'No changes to push') {
+                    $results['noChanges']++;
+                } else {
+                    $results['pushed']++;
+                }
+                $results['pages'][] = [
+                    'pageId' => $pushResult['pageId'],
+                    'path' => $pushResult['pagePath'],
+                    'changes' => $pushResult['changes'] ?? [],
+                    'status' => isset($pushResult['message']) ? 'clean' : ($dryRun ? 'preview' : 'pushed'),
+                ];
+            } elseif (isset($pushResult['dryRun']) && $pushResult['dryRun']) {
+                // Dry-run with changes
+                $results['pushed']++;
+                $results['pages'][] = [
+                    'pageId' => $pushResult['pageId'],
+                    'path' => $pushResult['pagePath'],
+                    'changes' => $pushResult['changes'] ?? [],
+                    'status' => 'preview',
+                ];
+            } elseif (isset($pushResult['conflict']) && $pushResult['conflict']) {
+                $results['conflicts']++;
+                $results['errors'][] = [
+                    'localPath' => $this->getRelativePath($localDir),
+                    'error' => $pushResult['error'],
+                    'type' => 'conflict',
+                ];
+            } elseif (isset($pushResult['error'])) {
+                $results['failed']++;
+                $results['errors'][] = [
+                    'localPath' => $this->getRelativePath($localDir),
+                    'error' => $pushResult['error'],
+                    'type' => 'error',
+                ];
+            }
+        }
+        
+        return $results;
+    }
+    
+    /**
+     * Get sync status of all pulled pages
+     * 
+     * Checks each pulled page for:
+     * - Clean: no local or remote changes
+     * - LocalDirty: local file modified since pull
+     * - RemoteChanged: ProcessWire page modified since pull  
+     * - Conflict: both local and remote changed
+     * - Orphan: ProcessWire page deleted
+     * 
+     * @param string|null $directory Directory to scan (default: site/syncs)
+     * @return array Status report for all synced pages
+     */
+    public function getSyncStatus(?string $directory = null): array {
+        $directory = $directory ?: $this->syncRoot;
+        
+        // Make path absolute if relative
+        if (strpos($directory, '/') !== 0) {
+            $directory = $this->wire->config->paths->root . $directory;
+        }
+        
+        $directory = rtrim($directory, '/');
+        
+        if (!is_dir($directory)) {
+            return ['error' => "Directory not found: $directory"];
+        }
+        
+        $results = [
+            'success' => true,
+            'directory' => $this->getRelativePath($directory),
+            'summary' => [
+                'clean' => 0,
+                'localDirty' => 0,
+                'remoteChanged' => 0,
+                'conflict' => 0,
+                'orphan' => 0,
+            ],
+            'pages' => [],
+        ];
+        
+        // Find all page.meta.json files
+        $metaFiles = $this->findMetaFiles($directory);
+        
+        if (empty($metaFiles)) {
+            $results['message'] = "No synced pages found";
+            return $results;
+        }
+        
+        $results['totalPages'] = count($metaFiles);
+        
+        // Check each page
+        foreach ($metaFiles as $metaPath) {
+            $localDir = dirname($metaPath);
+            $status = $this->getPageSyncStatus($metaPath);
+            
+            $results['summary'][$status['status']]++;
+            
+            // Only include non-clean pages in the list for brevity
+            if ($status['status'] !== 'clean') {
+                $results['pages'][] = $status;
+            }
+        }
+        
+        return $results;
+    }
+    
+    /**
+     * Check sync status of a single page
+     * 
+     * @param string $metaPath Path to page.meta.json
+     * @return array Status info
+     */
+    private function getPageSyncStatus(string $metaPath): array {
+        $localDir = dirname($metaPath);
+        
+        // Read meta file
+        $meta = json_decode(file_get_contents($metaPath), true);
+        if (!$meta || !isset($meta['pageId'])) {
+            return [
+                'localPath' => $this->getRelativePath($localDir),
+                'status' => 'orphan',
+                'error' => 'Invalid meta file',
+            ];
+        }
+        
+        // Load the ProcessWire page
+        $page = $this->wire->pages->get($meta['pageId']);
+        if (!$page || !$page->id) {
+            return [
+                'localPath' => $this->getRelativePath($localDir),
+                'pageId' => $meta['pageId'],
+                'status' => 'orphan',
+                'error' => 'Page deleted from ProcessWire',
+            ];
+        }
+        
+        // Get current remote hash
+        $currentFields = $this->extractPageFields($page);
+        $currentHash = $this->generateRevisionHash($currentFields);
+        
+        $remoteChanged = ($currentHash !== $meta['revisionHash']);
+        
+        // Check if local file was modified
+        $contentPath = file_exists($localDir . '/page.yaml') 
+            ? $localDir . '/page.yaml' 
+            : $localDir . '/page.json';
+        
+        $localContent = $this->readContentFile($contentPath);
+        $localHash = $this->generateRevisionHash($localContent['fields'] ?? []);
+        
+        // Compare local content hash against original pull
+        // If local differs from what's in meta, it's dirty
+        $originalContent = ['fields' => $currentFields];
+        $originalLocalHash = $this->generateRevisionHash($currentFields);
+        
+        // Actually, we need to detect if user edited the file
+        // Compare parsed local against what we'd export from remote
+        $changes = $this->calculateChanges($currentFields, $localContent['fields'] ?? []);
+        $localDirty = !empty($changes);
+        
+        // Determine status
+        if ($remoteChanged && $localDirty) {
+            $status = 'conflict';
+        } elseif ($localDirty) {
+            $status = 'localDirty';
+        } elseif ($remoteChanged) {
+            $status = 'remoteChanged';
+        } else {
+            $status = 'clean';
+        }
+        
+        $result = [
+            'localPath' => $this->getRelativePath($localDir),
+            'pageId' => $meta['pageId'],
+            'pagePath' => $page->path,
+            'title' => $page->title,
+            'status' => $status,
+            'pulledAt' => $meta['pulledAt'],
+        ];
+        
+        if ($localDirty) {
+            $result['localChanges'] = count($changes);
+        }
+        if ($remoteChanged) {
+            $result['remoteChangedSincePull'] = true;
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Find all page.meta.json files in a directory tree
+     * 
+     * @param string $directory Root directory to search
+     * @return array List of meta file paths
+     */
+    private function findMetaFiles(string $directory): array {
+        $metaFiles = [];
+        
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+        
+        foreach ($iterator as $file) {
+            if ($file->isFile() && $file->getFilename() === 'page.meta.json') {
+                $metaFiles[] = $file->getPathname();
+            }
+        }
+        
+        return $metaFiles;
     }
     
     /**
