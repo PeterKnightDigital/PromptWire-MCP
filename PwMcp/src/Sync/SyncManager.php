@@ -483,6 +483,15 @@ class SyncManager {
         $fieldName = $field->name;
         $typeName = $field->type->className();
         
+        // Handle date fields - convert ISO 8601 back to Unix timestamp
+        if ($typeName === 'FieldtypeDatetime' && is_string($value)) {
+            $timestamp = strtotime($value);
+            if ($timestamp !== false) {
+                $page->set($fieldName, $timestamp);
+                return;
+            }
+        }
+        
         // Handle page references
         if (is_array($value) && isset($value['_ref']) && $value['_ref'] === 'page') {
             $page->set($fieldName, $value['id']);
@@ -594,6 +603,12 @@ class SyncManager {
         // Null/empty
         if ($value === null || $value === '') {
             return null;
+        }
+        
+        // Date/Datetime fields - convert Unix timestamp to ISO 8601
+        $fieldType = $field->type->className();
+        if ($fieldType === 'FieldtypeDatetime' && is_numeric($value) && $value > 0) {
+            return date('Y-m-d', (int) $value);
         }
         
         // Single page reference
