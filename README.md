@@ -31,6 +31,12 @@ Just ask naturally — the AI will use the MCP tools automatically:
 - "Find all PDF files on the site"
 - "Search for images with 'team' in the filename"
 
+**Content Sync (Pull/Edit/Push):**
+- "Pull the about page for editing"
+- "Pull all pages under /services/"
+- "Check sync status"
+- "Push my changes to ProcessWire"
+
 **With Options:**
 - "Get page /about/ with field labels"
 - "Export schema in YAML format"
@@ -43,6 +49,9 @@ Just ask naturally — the AI will use the MCP tools automatically:
 - **RepeaterMatrix support** — Full content extraction with type labels
 - **File/image metadata** — Filenames, dimensions, URLs
 - **Field labels** — Optional human-readable field descriptions
+- **Content sync** — Pull pages to local YAML, edit, and push back
+- **Bulk operations** — Pull/push entire sections at once
+- **Conflict detection** — Warns if remote page changed since pull
 
 ## Architecture
 
@@ -162,6 +171,11 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `search [query]` | Search page content across text fields |
 | `search-files [query]` | Search files by name, extension, or description |
 | `export-schema` | Export complete site schema |
+| `page:pull [id\|path]` | Pull a page into local sync directory |
+| `page:push [path]` | Push local changes back to ProcessWire |
+| `pages:pull [selector]` | Bulk pull pages by selector, parent, or template |
+| `pages:push [directory]` | Bulk push all changes in a directory |
+| `sync:status [directory]` | Check sync status of pulled pages |
 | `help` | Show available commands |
 
 ## CLI Flags
@@ -175,6 +189,10 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `--include=labels` | Include field labels and descriptions |
 | `--truncate=N` | Truncate text fields to N characters (get-page) |
 | `--summary` | Return field structure only, no content (get-page) |
+| `--dry-run=0` | Apply changes instead of preview (page:push, pages:push) |
+| `--force` | Force push even if remote has changed |
+| `--no-parent` | Exclude parent page when pulling by path |
+| `--limit=N` | Limit number of pages to pull |
 
 ## Example Output
 
@@ -225,12 +243,66 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 - Node.js 18+
 - Cursor IDE with MCP support
 
-## Phase 2 (Coming Soon)
+## Content Sync Workflow
 
-- Create and update pages
-- Manage files and images
-- Template and field modifications
-- Safe operation with confirmation prompts
+Pull pages to local YAML files, edit them, and push changes back to ProcessWire.
+
+### 1. Pull a Page
+
+```bash
+# Pull a single page
+php site/modules/PwMcp/bin/pw-mcp.php page:pull /about/ --pretty
+
+# Pull an entire section
+php site/modules/PwMcp/bin/pw-mcp.php pages:pull /services/ --pretty
+
+# Pull by template
+php site/modules/PwMcp/bin/pw-mcp.php pages:pull "template=blog-post" --limit=20 --pretty
+```
+
+Pages are saved to `site/syncs/[page-path]/`:
+- `page.meta.json` — ID, template, revision hash (don't edit)
+- `page.yaml` — Editable field content
+
+### 2. Edit Locally
+
+Edit the `page.yaml` files in your editor or ask the AI to make changes.
+
+### 3. Check Status
+
+```bash
+php site/modules/PwMcp/bin/pw-mcp.php sync:status --pretty
+```
+
+Shows which pages have:
+- **clean** — No changes
+- **localDirty** — Local edits pending
+- **remoteChanged** — ProcessWire page modified since pull
+- **conflict** — Both local and remote changed
+
+### 4. Push Changes
+
+```bash
+# Preview changes (dry-run, default)
+php site/modules/PwMcp/bin/pw-mcp.php pages:push site/syncs/services --pretty
+
+# Apply changes
+php site/modules/PwMcp/bin/pw-mcp.php pages:push site/syncs/services --dry-run=0 --pretty
+```
+
+### Sync Notes
+
+- **Page references** in YAML show `id` (editable) and `_comment` (read-only display info)
+- **Repeater items** use `_itemId` for stable matching — don't change these
+- **Files/images** are not modified during push (Phase 3 feature)
+- Use `--force` to push even if remote changed (overwrites remote)
+
+## Phase 3 (Coming Soon)
+
+- Create new pages from YAML templates
+- Bulk publish/unpublish operations
+- File and image uploads
+- Page deletion with safety checks
 
 ## License
 
