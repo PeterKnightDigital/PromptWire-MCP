@@ -987,12 +987,26 @@ HTML;
         $info = $modules->get('InputfieldMarkup');
         $info->label = $this->_('Reconcile Preview');
         
-        $info->value = '<h4>' . $this->_('Summary') . '</h4><ul>';
-        $info->value .= '<li>' . sprintf($this->_('Clean: %d'), $result['summary']['clean'] ?? 0) . '</li>';
-        $info->value .= '<li>' . sprintf($this->_('Path Drift: %d'), $result['summary']['pathDrift'] ?? 0) . '</li>';
-        $info->value .= '<li>' . sprintf($this->_('Orphans: %d'), $result['summary']['orphans'] ?? 0) . '</li>';
-        $info->value .= '<li>' . sprintf($this->_('New Pages: %d'), $result['summary']['newPages'] ?? 0) . '</li>';
-        $info->value .= '</ul>';
+        // Explanation
+        $info->value = '<p class="notes" style="margin-bottom:1em;">' . 
+            $this->_('Reconcile fixes structural sync issues (moved/deleted pages). To apply content changes, use Push instead.') . 
+            '</p>';
+        
+        $info->value .= '<h4>' . $this->_('Summary') . '</h4>';
+        $info->value .= '<table class="AdminDataTable" style="width:auto;">';
+        $info->value .= '<tr><td><strong>' . sprintf('%d', $result['summary']['clean'] ?? 0) . '</strong></td>';
+        $info->value .= '<td>' . $this->_('Clean') . '</td>';
+        $info->value .= '<td class="notes">' . $this->_('Local folders correctly match their ProcessWire pages') . '</td></tr>';
+        $info->value .= '<tr><td><strong>' . sprintf('%d', $result['summary']['pathDrift'] ?? 0) . '</strong></td>';
+        $info->value .= '<td>' . $this->_('Path Drift') . '</td>';
+        $info->value .= '<td class="notes">' . $this->_('Page was moved/renamed in PW - local folder will be relocated') . '</td></tr>';
+        $info->value .= '<tr><td><strong>' . sprintf('%d', $result['summary']['orphans'] ?? 0) . '</strong></td>';
+        $info->value .= '<td>' . $this->_('Orphans') . '</td>';
+        $info->value .= '<td class="notes">' . $this->_('Local folder exists but page was deleted in PW') . '</td></tr>';
+        $info->value .= '<tr><td><strong>' . sprintf('%d', $result['summary']['newPages'] ?? 0) . '</strong></td>';
+        $info->value .= '<td>' . $this->_('New Pages') . '</td>';
+        $info->value .= '<td class="notes">' . $this->_('Pages in PW that haven\'t been pulled yet') . '</td></tr>';
+        $info->value .= '</table>';
         
         if (!empty($result['pathDrift'])) {
             $info->value .= '<h4>' . $this->_('Path Drift (will be fixed)') . '</h4><ul>';
