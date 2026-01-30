@@ -321,7 +321,7 @@ class ProcessPwMcpAdmin extends Process {
         }
         $html .= '<a href="' . $page->editUrl . '">' . htmlspecialchars($page->title ?: $page->name) . '</a>';
         if ($page->numChildren > 0) {
-            $html .= ' <small style="color:#888;">(' . $page->numChildren . ')</small>';
+            $html .= ' <small style="color:#888;">' . $page->numChildren . '</small>';
         }
         $html .= '</td>';
         
