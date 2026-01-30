@@ -511,7 +511,7 @@ HTML;
         
         if (empty($pageIds)) {
             $this->error($this->_('No pages selected'));
-            $this->wire('session')->redirect('./');
+            $this->wire('session')->redirect($this->wire('page')->url);
             return '';
         }
         
@@ -538,7 +538,7 @@ HTML;
             $this->message(sprintf($this->_('Pushed %d pages'), $pushed));
         }
         
-        $this->wire('session')->redirect('./');
+        $this->wire('session')->redirect($this->wire('page')->url);
         return '';
     }
 
@@ -597,35 +597,43 @@ HTML;
      */
     public function ___executePull(): string {
         $input = $this->wire('input');
+        $session = $this->wire('session');
         $pageId = (int) $input->get('id');
+        
+        // Get the base URL for this Process page
+        $baseUrl = $this->wire('page')->url;
         
         if (!$pageId) {
             $this->error($this->_('No page ID specified'));
-            $this->wire('session')->redirect('./');
+            $session->redirect($baseUrl);
             return '';
         }
         
         $page = $this->wire('pages')->get($pageId);
         if (!$page || !$page->id) {
             $this->error($this->_('Page not found'));
-            $this->wire('session')->redirect('./');
+            $session->redirect($baseUrl);
             return '';
         }
         
-        $syncManager = $this->getSyncManager();
-        $result = $syncManager->pullPage($pageId);
-        
-        if (isset($result['success']) && $result['success']) {
-            $this->message(sprintf(
-                $this->_('Pulled page "%s" to %s'),
-                $page->title,
-                $result['localPath']
-            ));
-        } else {
-            $this->error($result['error'] ?? $this->_('Failed to pull page'));
+        try {
+            $syncManager = $this->getSyncManager();
+            $result = $syncManager->pullPage($pageId);
+            
+            if (isset($result['success']) && $result['success']) {
+                $this->message(sprintf(
+                    $this->_('Pulled page "%s" to %s'),
+                    $page->title,
+                    $result['localPath'] ?? ''
+                ));
+            } else {
+                $this->error($result['error'] ?? $this->_('Failed to pull page'));
+            }
+        } catch (\Exception $e) {
+            $this->error($this->_('Error: ') . $e->getMessage());
         }
         
-        $this->wire('session')->redirect('./');
+        $session->redirect($baseUrl);
         return '';
     }
 
@@ -640,14 +648,14 @@ HTML;
         
         if (!$pageId) {
             $this->error($this->_('No page ID specified'));
-            $this->wire('session')->redirect('./');
+            $this->wire('session')->redirect($this->wire('page')->url);
             return '';
         }
         
         $page = $this->wire('pages')->get($pageId);
         if (!$page || !$page->id) {
             $this->error($this->_('Page not found'));
-            $this->wire('session')->redirect('./');
+            $this->wire('session')->redirect($this->wire('page')->url);
             return '';
         }
         
@@ -668,7 +676,7 @@ HTML;
                 $this->error($result['error'] ?? $this->_('Failed to push page'));
             }
             
-            $this->wire('session')->redirect('./');
+            $this->wire('session')->redirect($this->wire('page')->url);
             return '';
         }
         
@@ -827,7 +835,7 @@ HTML;
                 $this->error($result['error'] ?? $this->_('Bulk pull failed'));
             }
             
-            $session->redirect('./');
+            $session->redirect($this->wire('page')->url);
             return '';
         }
         
@@ -893,7 +901,7 @@ HTML;
                 $this->error($result['error'] ?? $this->_('Bulk push failed'));
             }
             
-            $session->redirect('./');
+            $session->redirect($this->wire('page')->url);
             return '';
         }
         
@@ -969,7 +977,7 @@ HTML;
                 $this->error($result['error'] ?? $this->_('Reconciliation failed'));
             }
             
-            $this->wire('session')->redirect('./');
+            $this->wire('session')->redirect($this->wire('page')->url);
             return '';
         }
         
