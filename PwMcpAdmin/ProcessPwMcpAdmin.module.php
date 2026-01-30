@@ -645,7 +645,7 @@ HTML;
         $modules = $this->wire('modules');
         // Check both GET (initial load) and POST (form submission) for page ID
         $pageId = (int) $input->get('id') ?: (int) $input->post('id');
-        $confirmed = (int) $input->post('confirm');
+        $confirmed = $input->post('submit_confirm') ? true : false;
         
         if (!$pageId) {
             $this->error($this->_('No page ID specified'));
@@ -688,6 +688,7 @@ HTML;
         
         $form = $modules->get('InputfieldForm');
         $form->attr('method', 'post');
+        $form->attr('action', $this->wire('page')->url . 'push/?id=' . $pageId);
         
         // Show preview
         $preview = $modules->get('InputfieldMarkup');
@@ -719,8 +720,7 @@ HTML;
         
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
-        $f->attr('name', 'confirm');
-        $f->attr('value', 1);
+        $f->attr('name', 'submit_confirm');
         $f->value = $this->_('Confirm Push');
         $f->icon = 'check';
         $form->add($f);
@@ -728,7 +728,7 @@ HTML;
         // Cancel button
         $btn = $modules->get('InputfieldButton');
         $btn->value = $this->_('Cancel');
-        $btn->href = './';
+        $btn->href = $this->wire('page')->url;
         $btn->setSecondary(true);
         $form->add($btn);
         
