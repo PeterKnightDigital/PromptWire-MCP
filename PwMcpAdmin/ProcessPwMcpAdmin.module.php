@@ -356,22 +356,29 @@ class ProcessPwMcpAdmin extends Process {
             return '';
         }
         
-        // Get sync status data for lookups
-        $syncManager = $this->getSyncManager();
-        $statusData = $syncManager->getSyncStatus();
-        $syncedById = $this->buildSyncLookup($statusData);
-        
-        // Get children
+        // Get children first (fast)
         $children = $pages->find("parent=$parentId, include=hidden, sort=sort");
+        
+        // Quick sync status check - only check if local folder exists for each child
+        $workspaceRoot = $this->getWorkspaceRoot();
+        $syncLookup = [];
         
         $html = '';
         foreach ($children as $child) {
             if ($child->template->flags & Template::flagSystem) continue;
             
-            $syncInfo = $syncedById[$child->id] ?? null;
-            $status = $syncInfo ? ($syncInfo['status'] ?? 'notPulled') : 'notPulled';
+            // Fast status check: just see if the local folder/meta file exists
+            $localPath = $workspaceRoot . ltrim($child->path, '/');
+            $metaFile = $localPath . 'page.meta.json';
             
-            $html .= $this->buildTreeRow($child, $status, $depth, $syncedById);
+            if (file_exists($metaFile)) {
+                // Has been pulled - mark as clean for now (detailed status on demand)
+                $status = 'clean';
+            } else {
+                $status = 'notPulled';
+            }
+            
+            $html .= $this->buildTreeRow($child, $status, $depth, $syncLookup);
         }
         
         // Return raw HTML (for AJAX)
