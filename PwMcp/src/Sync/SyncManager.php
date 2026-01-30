@@ -747,19 +747,20 @@ class SyncManager {
                 array_pop($indentStack);
             }
             
-            // Handle array item
-            if (strpos($trimmed, '- ') === 0) {
-                $value = substr($trimmed, 2);
+            // Handle array item (both "- value" and standalone "-")
+            if ($trimmed === '-' || strpos($trimmed, '- ') === 0) {
+                // Get value after "- " if present, otherwise empty
+                $value = $trimmed === '-' ? '' : substr($trimmed, 2);
                 $current = &$stack[count($stack) - 1];
                 if (!is_array($current)) {
                     $current = [];
                 }
                 
                 if ($value === '' || strpos($value, ':') !== false) {
-                    // Nested object in array
+                    // Nested object in array (or empty item that will be filled by following lines)
                     $newItem = [];
-                    if ($value !== '') {
-                        // Parse inline key: value
+                    if ($value !== '' && strpos($value, ':') !== false) {
+                        // Parse inline key: value (e.g., "- _itemId: 123")
                         $parts = explode(': ', $value, 2);
                         if (count($parts) === 2) {
                             $newItem[$parts[0]] = $this->parseYamlValue($parts[1]);
@@ -769,6 +770,7 @@ class SyncManager {
                     $stack[] = &$current[count($current) - 1];
                     $indentStack[] = $indent;
                 } else {
+                    // Simple scalar value in array
                     $current[] = $this->parseYamlValue($value);
                 }
             }
@@ -879,13 +881,43 @@ class SyncManager {
      * - null, [], "", and 0 for certain field types should be treated consistently
      * - Empty arrays and null are equivalent for comparison purposes
      * - Nested arrays are recursively normalized
+     * - Keys are sorted to ensure consistent comparison regardless of order
      * 
      * @param mixed $value
      * @return string JSON representation for comparison
      */
     private function normalizeForComparison($value): string {
         $normalized = $this->normalizeEmptyValues($value);
-        return json_encode($normalized, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $sorted = $this->sortKeysRecursive($normalized);
+        return json_encode($sorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+    
+    /**
+     * Recursively sort array keys for consistent comparison
+     * 
+     * @param mixed $value
+     * @return mixed
+     */
+    private function sortKeysRecursive($value) {
+        if (!is_array($value)) {
+            return $value;
+        }
+        
+        // Check if it's an associative array (has string keys)
+        $isAssoc = !$this->isSequentialArray($value);
+        
+        // Recursively sort nested arrays
+        $result = [];
+        foreach ($value as $key => $val) {
+            $result[$key] = $this->sortKeysRecursive($val);
+        }
+        
+        // Sort by keys if associative
+        if ($isAssoc) {
+            ksort($result);
+        }
+        
+        return $result;
     }
     
     /**

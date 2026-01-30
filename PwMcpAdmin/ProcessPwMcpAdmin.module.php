@@ -76,7 +76,7 @@ class ProcessPwMcpAdmin extends Process {
     }
 
     /**
-     * Main execute - show status table with filters
+     * Main execute - show tree-based sync dashboard
      * 
      * @return string Rendered output
      */
@@ -89,41 +89,55 @@ class ProcessPwMcpAdmin extends Process {
         $this->headline($this->_('MCP Sync Dashboard'));
         $this->browserTitle($this->_('MCP Sync'));
         
+        // Handle bulk actions from checkboxes
+        if ($input->post('bulk_action') && $input->post('selected_pages')) {
+            return $this->handleBulkAction(
+                $input->post('bulk_action'),
+                $input->post('selected_pages')
+            );
+        }
+        
+        // Check for clear filters action
+        if ($input->post('clear_filters') || $input->get('clear')) {
+            $session->remove('pwmcp_template');
+            $session->remove('pwmcp_status');
+            $session->remove('pwmcp_search');
+            $session->redirect('./');
+            return '';
+        }
+        
         // Get filter values from input or session
-        $rootPath = $input->get('root_path') ?: $session->get('pwmcp_root_path') ?: '';
-        $templateFilter = $input->get('template') ?: $session->get('pwmcp_template') ?: '';
-        $statusFilter = $input->get('status') ?: $session->get('pwmcp_status') ?: '';
-        $searchQuery = $input->get('q') ?: $session->get('pwmcp_search') ?: '';
+        $templateFilter = $input->post('template') ?: $session->get('pwmcp_template') ?: '';
+        $statusFilter = $input->post('status') ?: $session->get('pwmcp_status') ?: '';
+        $searchQuery = $input->post('q') ?: $session->get('pwmcp_search') ?: '';
         
         // Save filters to session
-        $session->set('pwmcp_root_path', $rootPath);
-        $session->set('pwmcp_template', $templateFilter);
-        $session->set('pwmcp_status', $statusFilter);
-        $session->set('pwmcp_search', $searchQuery);
+        if ($input->requestMethod('POST')) {
+            $session->set('pwmcp_template', $templateFilter);
+            $session->set('pwmcp_status', $statusFilter);
+            $session->set('pwmcp_search', $searchQuery);
+        }
+        
+        // Get sync status data
+        $syncManager = $this->getSyncManager();
+        $statusData = $syncManager->getSyncStatus();
+        $syncedById = $this->buildSyncLookup($statusData);
         
         // Build the form
         $form = $modules->get('InputfieldForm');
         $form->attr('id', 'pwmcp-sync-form');
-        $form->attr('method', 'get');
+        $form->attr('method', 'post');
+        $form->attr('action', './');
         
         // =====================================================================
-        // FILTER CONTROLS
+        // FILTER ROW (collapsed by default)
         // =====================================================================
         
         $filterFieldset = $modules->get('InputfieldFieldset');
-        $filterFieldset->label = $this->_('Filter Pages');
-        $filterFieldset->collapsed = Inputfield::collapsedNo;
+        $filterFieldset->label = $this->_('Filters');
+        $filterFieldset->collapsed = ($templateFilter || $statusFilter || $searchQuery) 
+            ? Inputfield::collapsedNo : Inputfield::collapsedYes;
         $filterFieldset->icon = 'filter';
-        
-        // Root path filter
-        $f = $modules->get('InputfieldPageListSelect');
-        $f->attr('name', 'root_path');
-        $f->label = $this->_('Root Path');
-        $f->description = $this->_('Select a parent page to filter (e.g., /services/)');
-        $f->attr('value', $rootPath ? $this->wire('pages')->get($rootPath)->id : 0);
-        $f->columnWidth = 25;
-        $f->collapsed = Inputfield::collapsedNever;
-        $filterFieldset->add($f);
         
         // Template filter
         $f = $modules->get('InputfieldSelect');
@@ -135,89 +149,81 @@ class ProcessPwMcpAdmin extends Process {
             $f->addOption($template->name, $template->name);
         }
         $f->attr('value', $templateFilter);
-        $f->columnWidth = 25;
+        $f->columnWidth = 33;
         $filterFieldset->add($f);
         
         // Status filter
         $f = $modules->get('InputfieldSelect');
         $f->attr('name', 'status');
-        $f->label = $this->_('Status');
+        $f->label = $this->_('Sync Status');
         $f->addOption('', $this->_('All Statuses'));
         $f->addOption('clean', $this->_('Clean'));
         $f->addOption('localDirty', $this->_('Local Changes'));
         $f->addOption('remoteChanged', $this->_('Remote Changes'));
         $f->addOption('conflict', $this->_('Conflict'));
-        $f->addOption('orphan', $this->_('Orphan'));
         $f->addOption('notPulled', $this->_('Not Pulled'));
         $f->attr('value', $statusFilter);
-        $f->columnWidth = 25;
+        $f->columnWidth = 33;
         $filterFieldset->add($f);
         
         // Search
         $f = $modules->get('InputfieldText');
         $f->attr('name', 'q');
         $f->label = $this->_('Search');
-        $f->attr('placeholder', $this->_('Search titles or paths...'));
+        $f->attr('placeholder', $this->_('Search titles...'));
         $f->attr('value', $searchQuery);
-        $f->columnWidth = 25;
+        $f->columnWidth = 34;
         $filterFieldset->add($f);
         
         $form->add($filterFieldset);
         
-        // Filter button
+        // Filter button (inline)
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'submit_filter');
         $f->value = $this->_('Apply Filter');
         $f->icon = 'search';
-        $f->addClass('uk-margin-bottom');
+        $f->addClass('uk-margin-small-right');
+        $form->add($f);
+        
+        // Clear filters button
+        $f = $modules->get('InputfieldSubmit');
+        $f->attr('name', 'clear_filters');
+        $f->value = $this->_('Clear');
+        $f->icon = 'times';
+        $f->setSecondary(true);
         $form->add($f);
         
         // =====================================================================
-        // STATUS TABLE
+        // BULK ACTION BAR
         // =====================================================================
         
-        // Get sync status
-        $syncManager = $this->getSyncManager();
-        $statusData = $syncManager->getSyncStatus();
+        $bulkBar = '<div class="pwmcp-bulk-bar" style="margin: 1em 0; padding: 0.5em; background: #f5f5f5; border-radius: 4px;">';
+        $bulkBar .= '<strong>' . $this->_('With selected:') . '</strong> ';
+        $bulkBar .= '<select name="bulk_action" style="margin: 0 0.5em;">';
+        $bulkBar .= '<option value="">' . $this->_('Choose action...') . '</option>';
+        $bulkBar .= '<option value="pull">' . $this->_('Pull (Export to YAML)') . '</option>';
+        $bulkBar .= '<option value="push">' . $this->_('Push (Import from YAML)') . '</option>';
+        $bulkBar .= '</select>';
+        $bulkBar .= '<button type="submit" class="ui-button ui-state-default">' . $this->_('Go') . '</button>';
+        $bulkBar .= ' <span class="pwmcp-selected-count" style="margin-left: 1em; color: #666;">' . 
+            $this->_('0 pages selected') . '</span>';
+        $bulkBar .= '</div>';
         
-        // Build the status table
-        $table = $modules->get('MarkupAdminDataTable');
-        $table->setEncodeEntities(false);
-        $table->setSortable(true);
-        $table->setResizable(true);
-        $table->addClass('pwmcp-status-table');
+        $bulkWrapper = $modules->get('InputfieldMarkup');
+        $bulkWrapper->value = $bulkBar;
+        $form->add($bulkWrapper);
         
-        // Header row
-        $table->headerRow([
-            $this->_('Page'),
-            $this->_('Path'),
-            $this->_('Template'),
-            $this->_('Status'),
-            $this->_('Modified (PW)'),
-            $this->_('Last Pulled'),
-            $this->_('Actions'),
-        ]);
+        // =====================================================================
+        // PAGE TREE TABLE
+        // =====================================================================
         
-        // Get pages to display
-        $pages = $this->getPagesForDisplay($rootPath, $templateFilter, $statusFilter, $searchQuery, $statusData);
+        $treeHtml = $this->buildPageTree($templateFilter, $statusFilter, $searchQuery, $syncedById);
         
-        if (empty($pages)) {
-            // No pages message
-            $form->appendMarkup = '<p class="notes">' . 
-                $this->_('No pages found. Select a root path or template filter to view pages.') . 
-                '</p>';
-        } else {
-            foreach ($pages as $pageData) {
-                $table->row($this->buildTableRow($pageData));
-            }
-        }
-        
-        // Add table to form
-        $tableWrapper = $modules->get('InputfieldMarkup');
-        $tableWrapper->value = $table->render();
-        $tableWrapper->label = $this->_('Synced Pages') . ' (' . count($pages) . ')';
-        $tableWrapper->icon = 'files-o';
-        $form->add($tableWrapper);
+        $treeWrapper = $modules->get('InputfieldMarkup');
+        $treeWrapper->value = $treeHtml;
+        $treeWrapper->label = $this->_('Site Pages');
+        $treeWrapper->icon = 'sitemap';
+        $form->add($treeWrapper);
         
         // =====================================================================
         // HEADER BUTTONS
@@ -226,157 +232,333 @@ class ProcessPwMcpAdmin extends Process {
         // Refresh button
         $btn = $modules->get('InputfieldButton');
         $btn->attr('name', 'refresh');
-        $btn->value = $this->_('Refresh Status');
+        $btn->value = $this->_('Refresh');
         $btn->icon = 'refresh';
         $btn->href = './';
         $btn->showInHeader(true);
         $form->add($btn);
         
-        // Pull All button
-        $btn = $modules->get('InputfieldButton');
-        $btn->attr('name', 'pull_all');
-        $btn->value = $this->_('Pull (Export)');
-        $btn->icon = 'download';
-        $btn->href = './pull-all/';
-        $btn->setSecondary(true);
-        $btn->showInHeader(true);
-        $form->add($btn);
-        
-        // Push All button  
-        $btn = $modules->get('InputfieldButton');
-        $btn->attr('name', 'push_all');
-        $btn->value = $this->_('Push (Import)');
-        $btn->icon = 'upload';
-        $btn->href = './push-all/';
-        $btn->setSecondary(true);
-        $btn->showInHeader(true);
-        $form->add($btn);
-        
-        // Tools dropdown
+        // Reconcile/Tools
         $btn = $modules->get('InputfieldButton');
         $btn->attr('name', 'tools');
-        $btn->value = $this->_('Tools');
+        $btn->value = $this->_('Reconcile');
         $btn->icon = 'wrench';
         $btn->href = './reconcile/';
         $btn->setSecondary(true);
         $btn->showInHeader(true);
         $form->add($btn);
         
+        // Add JavaScript for tree interactions
+        $form->appendMarkup = $this->getTreeScript();
+        
         return $form->render();
     }
-
+    
     /**
-     * Get pages for display based on filters
+     * Build sync status lookup by page ID
      * 
-     * @param string $rootPath Root page path filter
-     * @param string $templateFilter Template filter
-     * @param string $statusFilter Status filter
-     * @param string $searchQuery Search query
-     * @param array $statusData Sync status data
-     * @return array Pages with status info
+     * @param array $statusData
+     * @return array
      */
-    protected function getPagesForDisplay(
-        string $rootPath, 
-        string $templateFilter, 
-        string $statusFilter, 
-        string $searchQuery,
-        array $statusData
-    ): array {
-        $results = [];
-        
-        // Build selector
-        $selector = 'include=all';
-        
-        if ($rootPath) {
-            $rootPage = $this->wire('pages')->get($rootPath);
-            if ($rootPage && $rootPage->id) {
-                $selector .= ", has_parent={$rootPage->id}|id={$rootPage->id}";
-            }
-        }
-        
-        if ($templateFilter) {
-            $selector .= ", template=$templateFilter";
-        }
-        
-        if ($searchQuery) {
-            $selector .= ", title|name%=$searchQuery";
-        }
-        
-        // Limit results for performance
-        $selector .= ', limit=100';
-        
-        // Don't query if no filters set (avoid loading entire site)
-        if (!$rootPath && !$templateFilter && !$searchQuery) {
-            return [];
-        }
-        
-        $pages = $this->wire('pages')->find($selector);
-        
-        // Build lookup of synced pages by ID
-        $syncedById = [];
+    protected function buildSyncLookup(array $statusData): array {
+        $lookup = [];
         if (isset($statusData['pages']) && is_array($statusData['pages'])) {
             foreach ($statusData['pages'] as $pageStatus) {
                 if (isset($pageStatus['pageId'])) {
-                    $syncedById[$pageStatus['pageId']] = $pageStatus;
+                    $lookup[$pageStatus['pageId']] = $pageStatus;
                 }
             }
         }
+        return $lookup;
+    }
+    
+    /**
+     * Build the page tree HTML
+     * 
+     * @param string $templateFilter
+     * @param string $statusFilter
+     * @param string $searchQuery
+     * @param array $syncedById
+     * @return string
+     */
+    protected function buildPageTree(
+        string $templateFilter, 
+        string $statusFilter, 
+        string $searchQuery,
+        array $syncedById
+    ): string {
+        $html = '<table class="AdminDataTable AdminDataList AdminDataTableSortable pwmcp-tree-table" style="width:100%;">';
+        $html .= '<thead><tr>';
+        $html .= '<th style="width:30px;"><input type="checkbox" class="pwmcp-select-all" title="' . $this->_('Select all') . '"></th>';
+        $html .= '<th>' . $this->_('Page') . '</th>';
+        $html .= '<th style="width:120px;">' . $this->_('Template') . '</th>';
+        $html .= '<th style="width:100px;">' . $this->_('Status') . '</th>';
+        $html .= '<th style="width:100px;">' . $this->_('Modified') . '</th>';
+        $html .= '<th style="width:100px;">' . $this->_('Pulled') . '</th>';
+        $html .= '<th style="width:120px;">' . $this->_('Actions') . '</th>';
+        $html .= '</tr></thead><tbody>';
         
-        foreach ($pages as $page) {
-            // Skip system pages
+        // Get top-level pages (children of home)
+        $homePage = $this->wire('pages')->get('/');
+        $topPages = $homePage->children('include=hidden, sort=sort');
+        
+        $pageCount = 0;
+        foreach ($topPages as $page) {
             if ($page->template->flags & Template::flagSystem) continue;
-            
-            // Get sync status for this page
-            $status = $syncedById[$page->id] ?? null;
-            $statusName = $status ? ($status['status'] ?? 'notPulled') : 'notPulled';
-            
-            // Apply status filter
-            if ($statusFilter && $statusName !== $statusFilter) {
-                continue;
-            }
-            
-            $results[] = [
-                'page' => $page,
-                'status' => $statusName,
-                'pulledAt' => $status['pulledAt'] ?? null,
-                'localChanges' => $status['localChanges'] ?? 0,
-            ];
+            $html .= $this->buildTreeRow($page, 0, $templateFilter, $statusFilter, $searchQuery, $syncedById, $pageCount);
         }
         
-        return $results;
+        $html .= '</tbody></table>';
+        
+        if ($pageCount === 0) {
+            $html = '<p class="notes">' . $this->_('No pages found matching your filters.') . '</p>';
+        }
+        
+        return $html;
     }
-
+    
     /**
-     * Build a table row for a page
+     * Build a single tree row and its children recursively
      * 
-     * @param array $pageData Page data with status
-     * @return array Table row data
+     * @param Page $page
+     * @param int $depth
+     * @param string $templateFilter
+     * @param string $statusFilter
+     * @param string $searchQuery
+     * @param array $syncedById
+     * @param int &$pageCount
+     * @return string
      */
-    protected function buildTableRow(array $pageData): array {
-        $page = $pageData['page'];
-        $status = $pageData['status'];
-        $pulledAt = $pageData['pulledAt'];
+    protected function buildTreeRow(
+        Page $page,
+        int $depth,
+        string $templateFilter,
+        string $statusFilter,
+        string $searchQuery,
+        array $syncedById,
+        int &$pageCount
+    ): string {
+        // Skip system templates
+        if ($page->template->flags & Template::flagSystem) {
+            return '';
+        }
+        
+        // Get sync status for this page
+        $syncInfo = $syncedById[$page->id] ?? null;
+        $status = $syncInfo ? ($syncInfo['status'] ?? 'notPulled') : 'notPulled';
+        $pulledAt = $syncInfo['pulledAt'] ?? null;
+        
+        // Apply filters
+        if ($templateFilter && $page->template->name !== $templateFilter) {
+            // Still check children
+            $childHtml = '';
+            foreach ($page->children('include=hidden, sort=sort') as $child) {
+                $childHtml .= $this->buildTreeRow($child, $depth + 1, $templateFilter, $statusFilter, $searchQuery, $syncedById, $pageCount);
+            }
+            return $childHtml;
+        }
+        
+        if ($statusFilter && $status !== $statusFilter) {
+            $childHtml = '';
+            foreach ($page->children('include=hidden, sort=sort') as $child) {
+                $childHtml .= $this->buildTreeRow($child, $depth + 1, $templateFilter, $statusFilter, $searchQuery, $syncedById, $pageCount);
+            }
+            return $childHtml;
+        }
+        
+        if ($searchQuery && stripos($page->title, $searchQuery) === false && stripos($page->name, $searchQuery) === false) {
+            $childHtml = '';
+            foreach ($page->children('include=hidden, sort=sort') as $child) {
+                $childHtml .= $this->buildTreeRow($child, $depth + 1, $templateFilter, $statusFilter, $searchQuery, $syncedById, $pageCount);
+            }
+            return $childHtml;
+        }
+        
+        $pageCount++;
+        $hasChildren = $page->numChildren > 0;
+        $indent = str_repeat('&nbsp;&nbsp;&nbsp;&nbsp;', $depth);
+        
+        // Build row
+        $html = '<tr class="pwmcp-tree-row" data-page-id="' . $page->id . '" data-depth="' . $depth . '">';
+        
+        // Checkbox
+        $html .= '<td><input type="checkbox" name="selected_pages[]" value="' . $page->id . '" class="pwmcp-page-checkbox"></td>';
+        
+        // Page title with expand/collapse
+        $expandIcon = $hasChildren ? '<i class="fa fa-caret-right pwmcp-toggle" style="cursor:pointer; margin-right:5px;"></i>' : '<span style="display:inline-block;width:14px;"></span>';
+        $pageIcon = $hasChildren ? 'fa-folder' : 'fa-file-o';
+        $html .= '<td>' . $indent . $expandIcon . '<i class="fa ' . $pageIcon . '" style="margin-right:5px;"></i>';
+        $html .= '<a href="' . $page->editUrl . '" title="' . htmlspecialchars($page->path) . '">' . htmlspecialchars($page->title) . '</a>';
+        $html .= '</td>';
+        
+        // Template
+        $html .= '<td><small>' . $page->template->name . '</small></td>';
         
         // Status badge
-        $statusBadge = $this->getStatusBadge($status);
+        $html .= '<td>' . $this->getStatusBadge($status) . '</td>';
+        
+        // Modified date
+        $modifiedDate = $page->modified ? wireRelativeTimeStr($page->modified) : '-';
+        $html .= '<td><small>' . $modifiedDate . '</small></td>';
+        
+        // Pulled date
+        $pulledDate = $pulledAt ? wireRelativeTimeStr(strtotime($pulledAt)) : '-';
+        $html .= '<td><small>' . $pulledDate . '</small></td>';
         
         // Actions
-        $actions = $this->getRowActions($page, $status);
+        $html .= '<td>' . $this->getRowActions($page, $status) . '</td>';
         
-        // Format dates
-        $modifiedDate = $page->modified ? wireRelativeTimeStr($page->modified) : '-';
-        $pulledDate = $pulledAt ? wireRelativeTimeStr(strtotime($pulledAt)) : '-';
+        $html .= '</tr>';
         
-        return [
-            // Page title links to PW edit page
-            "<a href='{$page->editUrl}'>{$page->title}</a>",
-            $page->path,
-            $page->template->name,
-            $statusBadge,
-            $modifiedDate,
-            $pulledDate,
-            $actions,
-        ];
+        // Build children rows (initially hidden for depth > 0)
+        if ($hasChildren) {
+            foreach ($page->children('include=hidden, sort=sort') as $child) {
+                $html .= $this->buildTreeRow($child, $depth + 1, $templateFilter, $statusFilter, $searchQuery, $syncedById, $pageCount);
+            }
+        }
+        
+        return $html;
+    }
+    
+    /**
+     * Get JavaScript for tree interactions
+     * 
+     * @return string
+     */
+    protected function getTreeScript(): string {
+        return <<<'HTML'
+<style>
+.pwmcp-tree-table tr[data-depth="1"],
+.pwmcp-tree-table tr[data-depth="2"],
+.pwmcp-tree-table tr[data-depth="3"],
+.pwmcp-tree-table tr[data-depth="4"],
+.pwmcp-tree-table tr[data-depth="5"] {
+    display: none;
+}
+.pwmcp-tree-table tr.expanded + tr[data-depth] {
+    /* Children of expanded rows shown via JS */
+}
+.pwmcp-toggle.expanded {
+    transform: rotate(90deg);
+}
+.pwmcp-tree-table .uk-label {
+    font-size: 11px;
+    padding: 2px 6px;
+}
+</style>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Toggle expand/collapse
+    document.querySelectorAll('.pwmcp-toggle').forEach(function(toggle) {
+        toggle.addEventListener('click', function(e) {
+            e.preventDefault();
+            var row = this.closest('tr');
+            var depth = parseInt(row.dataset.depth);
+            var isExpanded = this.classList.contains('expanded');
+            
+            this.classList.toggle('expanded');
+            
+            // Find all following rows until we hit same or lower depth
+            var sibling = row.nextElementSibling;
+            while (sibling && parseInt(sibling.dataset.depth) > depth) {
+                if (parseInt(sibling.dataset.depth) === depth + 1) {
+                    sibling.style.display = isExpanded ? 'none' : '';
+                    // Collapse children when parent collapses
+                    if (isExpanded) {
+                        var childToggle = sibling.querySelector('.pwmcp-toggle');
+                        if (childToggle) childToggle.classList.remove('expanded');
+                    }
+                } else if (isExpanded) {
+                    sibling.style.display = 'none';
+                }
+                sibling = sibling.nextElementSibling;
+            }
+        });
+    });
+    
+    // Select all checkbox
+    document.querySelector('.pwmcp-select-all')?.addEventListener('change', function() {
+        var checked = this.checked;
+        document.querySelectorAll('.pwmcp-page-checkbox').forEach(function(cb) {
+            if (cb.closest('tr').style.display !== 'none') {
+                cb.checked = checked;
+            }
+        });
+        updateSelectedCount();
+    });
+    
+    // Individual checkboxes
+    document.querySelectorAll('.pwmcp-page-checkbox').forEach(function(cb) {
+        cb.addEventListener('change', updateSelectedCount);
+    });
+    
+    function updateSelectedCount() {
+        var count = document.querySelectorAll('.pwmcp-page-checkbox:checked').length;
+        var label = count === 1 ? ' page selected' : ' pages selected';
+        document.querySelector('.pwmcp-selected-count').textContent = count + label;
+    }
+});
+</script>
+HTML;
+    }
+    
+    /**
+     * Handle bulk actions from checkbox selection
+     * 
+     * @param string $action
+     * @param array $pageIds
+     * @return string
+     */
+    protected function handleBulkAction(string $action, array $pageIds): string {
+        $modules = $this->wire('modules');
+        $syncManager = $this->getSyncManager();
+        
+        $pageIds = array_map('intval', $pageIds);
+        $pageIds = array_filter($pageIds);
+        
+        if (empty($pageIds)) {
+            $this->error($this->_('No pages selected'));
+            $this->wire('session')->redirect('./');
+            return '';
+        }
+        
+        if ($action === 'pull') {
+            $pulled = 0;
+            $errors = [];
+            foreach ($pageIds as $pageId) {
+                $result = $syncManager->pullPage($pageId);
+                if (isset($result['success']) && $result['success']) {
+                    $pulled++;
+                } else {
+                    $errors[] = $result['error'] ?? "Failed to pull page $pageId";
+                }
+            }
+            $this->message(sprintf($this->_('Pulled %d pages'), $pulled));
+            foreach ($errors as $err) {
+                $this->error($err);
+            }
+        } elseif ($action === 'push') {
+            $pushed = 0;
+            $errors = [];
+            foreach ($pageIds as $pageId) {
+                $page = $this->wire('pages')->get($pageId);
+                if (!$page->id) continue;
+                $localPath = $this->getWorkspaceRoot() . ltrim($page->path, '/');
+                $result = $syncManager->pushPage($localPath, false);
+                if (isset($result['success']) && $result['success']) {
+                    $pushed++;
+                } else {
+                    $errors[] = $result['error'] ?? "Failed to push page $pageId";
+                }
+            }
+            $this->message(sprintf($this->_('Pushed %d pages'), $pushed));
+            foreach ($errors as $err) {
+                $this->error($err);
+            }
+        }
+        
+        $this->wire('session')->redirect('./');
+        return '';
     }
 
     /**
@@ -619,12 +801,21 @@ class ProcessPwMcpAdmin extends Process {
                 '</p><p><a href="./">Back to Dashboard</a></p>';
         }
         
-        // Build selector
+        // Build selector from page ID
         $selector = '';
+        $displayPath = '';
         if ($rootPath) {
-            $selector = $rootPath;
+            $rootPageId = (int) $rootPath;
+            $rootPage = $this->wire('pages')->get($rootPageId);
+            if ($rootPage && $rootPage->id) {
+                // Pass the page path - resolvePagesFromSelector handles paths specially
+                // and will include the parent + all children
+                $selector = $rootPage->path;
+                $displayPath = $rootPage->path;
+            }
         } elseif ($templateFilter) {
             $selector = "template=$templateFilter";
+            $displayPath = "template=$templateFilter";
         }
         
         $form = $modules->get('InputfieldForm');
@@ -633,8 +824,8 @@ class ProcessPwMcpAdmin extends Process {
         $info = $modules->get('InputfieldMarkup');
         $info->label = $this->_('Bulk Pull Preview');
         $info->value = '<p>' . sprintf(
-            $this->_('This will pull all pages matching: %s'),
-            '<strong>' . htmlspecialchars($selector) . '</strong>'
+            $this->_('This will pull all pages under: %s'),
+            '<strong>' . htmlspecialchars($displayPath ?: $selector) . '</strong>'
         ) . '</p>';
         $info->value .= '<p class="notes">' . 
             $this->_('Existing YAML files will be overwritten with current ProcessWire content.') . 
@@ -686,14 +877,31 @@ class ProcessPwMcpAdmin extends Process {
         
         $this->headline($this->_('Bulk Push (Import)'));
         
+        // Get filter from session to scope the push
+        $rootPath = $session->get('pwmcp_root_path') ?: '';
+        
+        // Determine the directory to push from
+        $pushDir = $this->getWorkspaceRoot();
+        $displayPath = '/';
+        
+        if ($rootPath) {
+            $rootPageId = (int) $rootPath;
+            $rootPage = $this->wire('pages')->get($rootPageId);
+            if ($rootPage && $rootPage->id) {
+                // Scope to just this path in the workspace
+                $pushDir = $this->getWorkspaceRoot() . ltrim($rootPage->path, '/');
+                $displayPath = $rootPage->path;
+            }
+        }
+        
         $form = $modules->get('InputfieldForm');
         $form->attr('method', 'post');
         
         $syncManager = $this->getSyncManager();
         
         if ($input->post('confirm_push')) {
-            // Execute bulk push
-            $result = $syncManager->pushPages($this->getWorkspaceRoot(), false); // dryRun = false
+            // Execute bulk push - scoped to filter
+            $result = $syncManager->pushPages($pushDir, false); // dryRun = false
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
@@ -708,11 +916,17 @@ class ProcessPwMcpAdmin extends Process {
             return '';
         }
         
-        // Dry-run preview
-        $result = $syncManager->pushPages($this->getWorkspaceRoot(), true); // dryRun = true
+        // Dry-run preview - scoped to filter
+        $result = $syncManager->pushPages($pushDir, true); // dryRun = true
         
         $info = $modules->get('InputfieldMarkup');
         $info->label = $this->_('Bulk Push Preview');
+        
+        // Show scope
+        $info->value = '<p class="notes">' . sprintf(
+            $this->_('Scope: %s'),
+            '<strong>' . htmlspecialchars($displayPath) . '</strong>'
+        ) . '</p>';
         
         if (isset($result['pages']) && !empty($result['pages'])) {
             $info->value = '<p>' . sprintf(

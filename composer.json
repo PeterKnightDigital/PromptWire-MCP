@@ -1,0 +1,15 @@
+{
+    "name": "peterknight/pw-mcp",
+    "description": "ProcessWire Model Context Protocol integration for Cursor IDE",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.0",
+        "symfony/yaml": "^6.0 || ^7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "PwMcp\\": "PwMcp/src/"
+        }
+    }
+}
