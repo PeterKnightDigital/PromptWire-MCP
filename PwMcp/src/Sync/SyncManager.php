@@ -16,6 +16,10 @@ namespace PwMcp\Sync;
 use ProcessWire\ProcessWire;
 use ProcessWire\Page;
 
+// Import PHP 8 string functions into namespace
+use function str_ends_with;
+use function str_starts_with;
+
 /**
  * Manages page sync operations: pull, plan, push
  * 
