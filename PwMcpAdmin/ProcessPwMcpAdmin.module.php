@@ -388,15 +388,32 @@ class ProcessPwMcpAdmin extends Process {
         
         return <<<HTML
 <style>
-.pwmcp-toggle { cursor: pointer; display: inline-block; width: 14px; text-align: center; }
-.pwmcp-toggle:hover { color: #2563eb; }
-.pwmcp-chevron { transition: transform 0.2s ease; }
+.pwmcp-tree-table { border-collapse: collapse; }
+.pwmcp-tree-table tbody tr { border-bottom: 1px solid #e0e0e0; }
+.pwmcp-tree-table tbody tr:hover { background-color: #f5f5f5; }
+.pwmcp-toggle { 
+    cursor: pointer; 
+    display: inline-flex; 
+    align-items: center; 
+    justify-content: center; 
+    width: 18px; 
+    height: 18px; 
+    margin-right: 4px;
+    color: #888;
+}
+.pwmcp-toggle:hover { color: #333; }
+.pwmcp-chevron { 
+    font-size: 11px; 
+    transition: transform 0.15s ease; 
+}
 .pwmcp-toggle[data-expanded="true"] .pwmcp-chevron { transform: rotate(90deg); }
-.pwmcp-toggle-spacer { display: inline-block; width: 14px; }
+.pwmcp-toggle-spacer { display: inline-block; width: 22px; }
 .pwmcp-loading { opacity: 0.5; }
-tr[data-depth="1"] { background-color: #fafafa; }
-tr[data-depth="2"] { background-color: #f5f5f5; }
-tr[data-depth="3"] { background-color: #f0f0f0; }
+.pwmcp-title-cell { white-space: nowrap; }
+tr[data-depth="1"] { background-color: #fcfcfc; }
+tr[data-depth="2"] { background-color: #f9f9f9; }
+tr[data-depth="3"] { background-color: #f6f6f6; }
+tr[data-depth="4"] { background-color: #f3f3f3; }
 </style>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
