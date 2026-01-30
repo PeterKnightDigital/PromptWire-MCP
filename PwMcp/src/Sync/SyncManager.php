@@ -42,11 +42,12 @@ class SyncManager {
      * Create a new SyncManager
      * 
      * @param ProcessWire $wire ProcessWire instance
-     * @param string|null $syncRoot Custom sync root (default: site/syncs)
+     * @param string|null $syncRoot Custom sync root (default: site/assets/pw-mcp)
      */
     public function __construct(ProcessWire $wire, ?string $syncRoot = null) {
         $this->wire = $wire;
-        $this->syncRoot = $syncRoot ?: $wire->config->paths->site . 'syncs';
+        // Use site/assets/pw-mcp/ as workspace (PW convention: assets = data, site = code)
+        $this->syncRoot = $syncRoot ?: $wire->config->paths->assets . 'pw-mcp';
         
         // Ensure sync directory exists with protection
         $this->ensureSyncDirectory();

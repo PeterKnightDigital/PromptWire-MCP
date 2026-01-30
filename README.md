@@ -266,7 +266,7 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:pull /services/ --pretty
 php site/modules/PwMcp/bin/pw-mcp.php pages:pull "template=blog-post" --limit=20 --pretty
 ```
 
-Pages are saved to `site/syncs/[page-path]/`:
+Pages are saved to `site/assets/pw-mcp/[page-path]/`:
 - `page.meta.json` — ID, template, revision hash (don't edit)
 - `page.yaml` — Editable field content
 
@@ -290,10 +290,10 @@ Shows which pages have:
 
 ```bash
 # Preview changes (dry-run, default)
-php site/modules/PwMcp/bin/pw-mcp.php pages:push site/syncs/services --pretty
+php site/modules/PwMcp/bin/pw-mcp.php pages:push site/assets/pw-mcp/services --pretty
 
 # Apply changes
-php site/modules/PwMcp/bin/pw-mcp.php pages:push site/syncs/services --dry-run=0 --pretty
+php site/modules/PwMcp/bin/pw-mcp.php pages:push site/assets/pw-mcp/services --dry-run=0 --pretty
 ```
 
 ### Sync Notes
@@ -331,8 +331,8 @@ php site/modules/PwMcp/bin/pw-mcp.php page:new blog-post /news/posts/ my-new-art
 ```
 
 This creates:
-- `site/syncs/news/posts/my-new-article/page.meta.json` (with `new: true`)
-- `site/syncs/news/posts/my-new-article/page.yaml` (with template fields)
+- `site/assets/pw-mcp/news/posts/my-new-article/page.meta.json` (with `new: true`)
+- `site/assets/pw-mcp/news/posts/my-new-article/page.yaml` (with template fields)
 
 ### 2. Edit the Content
 
@@ -342,23 +342,23 @@ Edit the `page.yaml` file to fill in your content.
 
 ```bash
 # Preview what will be created (dry-run, default)
-php site/modules/PwMcp/bin/pw-mcp.php page:publish site/syncs/news/posts/my-new-article --pretty
+php site/modules/PwMcp/bin/pw-mcp.php page:publish site/assets/pw-mcp/news/posts/my-new-article --pretty
 
 # Actually create the page
-php site/modules/PwMcp/bin/pw-mcp.php page:publish site/syncs/news/posts/my-new-article --dry-run=0 --pretty
+php site/modules/PwMcp/bin/pw-mcp.php page:publish site/assets/pw-mcp/news/posts/my-new-article --dry-run=0 --pretty
 
 # Create as published (default is unpublished)
-php site/modules/PwMcp/bin/pw-mcp.php page:publish site/syncs/news/posts/my-new-article --dry-run=0 --published --pretty
+php site/modules/PwMcp/bin/pw-mcp.php page:publish site/assets/pw-mcp/news/posts/my-new-article --dry-run=0 --published --pretty
 ```
 
 ### 4. Bulk Publish
 
 ```bash
 # Preview all new pages in a directory
-php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/syncs/news --pretty
+php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/assets/pw-mcp/news --pretty
 
 # Create all new pages
-php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/syncs/news --dry-run=0 --pretty
+php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/assets/pw-mcp/news --dry-run=0 --pretty
 ```
 
 ## Phase 4 (Coming Soon)
