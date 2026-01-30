@@ -312,8 +312,8 @@ class ProcessPwMcpAdmin extends Process {
         // Title with chevron for expandable parents
         $html .= '<td class="pwmcp-title-cell" style="padding-left:' . ($indent + 8) . 'px;">';
         if ($page->numChildren > 0) {
-            $html .= '<span class="pwmcp-toggle" data-page-id="' . $page->id . '" data-expanded="false" title="' . $this->_('Expand') . '" style="cursor:pointer;">';
-            $html .= '<i class="fa fa-chevron-right pwmcp-chevron" style="transition:transform 0.2s;"></i>';
+            $html .= '<span class="pwmcp-toggle" data-page-id="' . $page->id . '" data-expanded="false" title="' . $this->_('Expand') . '">';
+            $html .= '<i class="fa fa-angle-right"></i>';
             $html .= '</span> ';
         } else {
             // Spacer for alignment
@@ -389,27 +389,27 @@ class ProcessPwMcpAdmin extends Process {
         return <<<HTML
 <style>
 .pwmcp-tree-table { border-collapse: collapse; }
-.pwmcp-tree-table tbody tr { border-bottom: 1px solid #e0e0e0; }
-.pwmcp-tree-table tbody tr:hover { background-color: #f5f5f5; }
+.pwmcp-tree-table tbody tr { border-bottom: 1px solid #f1f1f1; }
+.pwmcp-tree-table tbody tr:hover { border-color: #eee; }
+.pwmcp-tree-table tbody td { padding: 4px 8px; vertical-align: middle; }
 .pwmcp-toggle { 
     cursor: pointer; 
-    display: inline-flex; 
-    align-items: center; 
-    justify-content: center; 
-    width: 18px; 
-    height: 18px; 
+    display: inline-block;
+    width: 10px;
+    text-align: center;
     margin-right: 4px;
-    color: #888;
+    color: #bbb;
+    font-size: 14px;
+    line-height: 12px;
+    position: relative;
+    left: 1px;
 }
-.pwmcp-toggle:hover { color: #333; }
-.pwmcp-chevron { 
-    font-size: 11px; 
-    transition: transform 0.15s ease; 
-}
-.pwmcp-toggle[data-expanded="true"] .pwmcp-chevron { transform: rotate(90deg); }
-.pwmcp-toggle-spacer { display: inline-block; width: 22px; }
+.pwmcp-toggle:hover { color: #999; }
+.pwmcp-toggle[data-expanded="true"] { color: #999; }
+.pwmcp-toggle-spacer { display: inline-block; width: 14px; }
 .pwmcp-loading { opacity: 0.5; }
-.pwmcp-title-cell { white-space: nowrap; }
+.pwmcp-title-cell { white-space: nowrap; line-height: 1.6em; }
+.pwmcp-title-cell small { font-size: 13px; color: #999; }
 tr[data-depth="1"] { background-color: #fcfcfc; }
 tr[data-depth="2"] { background-color: #f9f9f9; }
 tr[data-depth="3"] { background-color: #f6f6f6; }
@@ -442,9 +442,12 @@ document.addEventListener('DOMContentLoaded', function() {
         var currentRow = toggle.closest('tr');
         var currentDepth = parseInt(currentRow.getAttribute('data-depth'), 10);
         
+        var icon = toggle.querySelector('i');
+        
         if (isExpanded) {
             // Collapse: remove all child rows
             toggle.setAttribute('data-expanded', 'false');
+            icon.className = 'fa fa-angle-right';
             var nextRow = currentRow.nextElementSibling;
             while (nextRow) {
                 var nextDepth = parseInt(nextRow.getAttribute('data-depth'), 10);
@@ -456,6 +459,7 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
             // Expand: load children via AJAX
             toggle.setAttribute('data-expanded', 'true');
+            icon.className = 'fa fa-angle-down';
             toggle.classList.add('pwmcp-loading');
             
             fetch(childrenUrl + '?id=' + pageId + '&depth=' + currentDepth)
