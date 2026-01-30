@@ -643,7 +643,8 @@ HTML;
     public function ___executePush(): string {
         $input = $this->wire('input');
         $modules = $this->wire('modules');
-        $pageId = (int) $input->get('id');
+        // Check both GET (initial load) and POST (form submission) for page ID
+        $pageId = (int) $input->get('id') ?: (int) $input->post('id');
         $confirmed = (int) $input->post('confirm');
         
         if (!$pageId) {
