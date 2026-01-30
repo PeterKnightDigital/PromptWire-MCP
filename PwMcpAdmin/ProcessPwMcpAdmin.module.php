@@ -407,9 +407,20 @@ class ProcessPwMcpAdmin extends Process {
 .pwmcp-toggle:hover { color: #999; }
 .pwmcp-toggle[data-expanded="true"] { color: #999; }
 .pwmcp-toggle-spacer { display: inline-block; width: 14px; }
-.pwmcp-loading { opacity: 0.5; }
 .pwmcp-title-cell { white-space: nowrap; line-height: 1.6em; }
 .pwmcp-title-cell small { font-size: 13px; color: #999; }
+.pwmcp-spinner { 
+    display: inline-block; 
+    width: 12px; 
+    height: 12px; 
+    margin-left: 6px;
+    border: 2px solid #ddd; 
+    border-top-color: #1e87f0; 
+    border-radius: 50%; 
+    animation: pwmcp-spin 0.6s linear infinite;
+    vertical-align: middle;
+}
+@keyframes pwmcp-spin { to { transform: rotate(360deg); } }
 tr[data-depth="1"] { background-color: #fcfcfc; }
 tr[data-depth="2"] { background-color: #f9f9f9; }
 tr[data-depth="3"] { background-color: #f6f6f6; }
@@ -460,18 +471,23 @@ document.addEventListener('DOMContentLoaded', function() {
             // Expand: load children via AJAX
             toggle.setAttribute('data-expanded', 'true');
             icon.className = 'fa fa-angle-down';
-            toggle.classList.add('pwmcp-loading');
+            
+            // Add loading spinner after page title
+            var titleCell = currentRow.querySelector('.pwmcp-title-cell');
+            var spinner = document.createElement('span');
+            spinner.className = 'pwmcp-spinner';
+            titleCell.appendChild(spinner);
             
             fetch(childrenUrl + '?id=' + pageId + '&depth=' + currentDepth)
                 .then(function(response) { return response.text(); })
                 .then(function(html) {
-                    toggle.classList.remove('pwmcp-loading');
+                    spinner.remove();
                     if (html.trim()) {
                         currentRow.insertAdjacentHTML('afterend', html);
                     }
                 })
                 .catch(function(err) {
-                    toggle.classList.remove('pwmcp-loading');
+                    spinner.remove();
                     console.error('Failed to load children:', err);
                 });
         }
