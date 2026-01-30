@@ -161,6 +161,12 @@ class ProcessPwMcpAdmin extends Process {
         }
         $out .= '</select></label>';
         
+        // Expand All toggle
+        $out .= '<label style="display: flex; align-items: center; gap: 5px; margin-left: 10px;">';
+        $out .= '<input type="checkbox" id="pwmcp-expand-all" style="margin: 0;">';
+        $out .= '<span>' . $this->_('Expand All') . '</span>';
+        $out .= '</label>';
+        
         // Bulk actions
         $out .= '<span style="margin-left: auto; display: flex; align-items: center; gap: 5px;">';
         $out .= '<span>' . $this->_('With selected:') . '</span>';
@@ -499,6 +505,71 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
         }
     });
+    
+    // Expand All toggle
+    var expandAllCheckbox = document.getElementById('pwmcp-expand-all');
+    if (expandAllCheckbox) {
+        expandAllCheckbox.addEventListener('change', function() {
+            if (this.checked) {
+                expandAllNodes();
+            } else {
+                collapseAllNodes();
+            }
+        });
+    }
+    
+    // Recursively expand all nodes
+    function expandAllNodes() {
+        var toggles = document.querySelectorAll('.pwmcp-toggle[data-expanded="false"]');
+        if (toggles.length === 0) return;
+        
+        var pendingLoads = 0;
+        
+        toggles.forEach(function(toggle) {
+            var pageId = toggle.getAttribute('data-page-id');
+            var currentRow = toggle.closest('tr');
+            var currentDepth = parseInt(currentRow.getAttribute('data-depth'), 10);
+            var icon = toggle.querySelector('i');
+            
+            toggle.setAttribute('data-expanded', 'true');
+            icon.className = 'fa fa-angle-down';
+            pendingLoads++;
+            
+            fetch(childrenUrl + '?id=' + pageId + '&depth=' + currentDepth)
+                .then(function(response) { return response.text(); })
+                .then(function(html) {
+                    if (html.trim()) {
+                        currentRow.insertAdjacentHTML('afterend', html);
+                    }
+                    pendingLoads--;
+                    // After this batch loads, check if there are more to expand
+                    if (pendingLoads === 0) {
+                        setTimeout(expandAllNodes, 50);
+                    }
+                })
+                .catch(function(err) {
+                    pendingLoads--;
+                    console.error('Failed to load children:', err);
+                });
+        });
+    }
+    
+    // Collapse all expanded nodes
+    function collapseAllNodes() {
+        // Remove all rows with depth > 0
+        document.querySelectorAll('tr[data-depth]').forEach(function(row) {
+            var depth = parseInt(row.getAttribute('data-depth'), 10);
+            if (depth > 0) {
+                row.remove();
+            }
+        });
+        // Reset all toggles to collapsed state
+        document.querySelectorAll('.pwmcp-toggle[data-expanded="true"]').forEach(function(toggle) {
+            toggle.setAttribute('data-expanded', 'false');
+            var icon = toggle.querySelector('i');
+            if (icon) icon.className = 'fa fa-angle-right';
+        });
+    }
 });
 </script>
 HTML;
