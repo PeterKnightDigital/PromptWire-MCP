@@ -57,6 +57,34 @@ class ProcessPwMcpAdmin extends Process {
     }
 
     /**
+     * Get Lucide icon SVG markup
+     * 
+     * @param string $name Icon name
+     * @param int $size Icon size in pixels (default 16)
+     * @return string SVG markup
+     */
+    protected function lucideIcon(string $name, int $size = 16): string {
+        $icons = [
+            'download' => '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+            'upload' => '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
+            'file-text' => '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+            'refresh-cw' => '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>',
+            'wrench' => '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z"/>',
+            'check' => '<path d="M20 6 9 17l-5-5"/>',
+            'chevron-right' => '<path d="m9 18 6-6-6-6"/>',
+            'chevron-down' => '<path d="m6 9 6 6 6-6"/>',
+            'search' => '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+            'layout-template' => '<rect width="18" height="7" x="3" y="3" rx="1"/><rect width="9" height="7" x="3" y="14" rx="1"/><rect width="5" height="7" x="16" y="14" rx="1"/>',
+            'activity' => '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
+        ];
+        
+        $path = $icons[$name] ?? '';
+        if (!$path) return '';
+        
+        return '<svg class="pwmcp-lucide" xmlns="http://www.w3.org/2000/svg" width="' . $size . '" height="' . $size . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' . $path . '</svg>';
+    }
+
+    /**
      * Get SyncManager instance
      * 
      * @return \PwMcp\Sync\SyncManager
@@ -99,9 +127,9 @@ class ProcessPwMcpAdmin extends Process {
         }
         
         // Get filter values
+        $searchQuery = $input->get('q') ?: '';
         $templateFilter = $input->get('template') ?: '';
         $statusFilter = $input->get('status') ?: '';
-        $parentId = (int) $input->get('parent') ?: 1;
         
         // Get sync status data
         $syncManager = $this->getSyncManager();
@@ -112,112 +140,151 @@ class ProcessPwMcpAdmin extends Process {
         $out = '';
         
         // =====================================================================
-        // FILTER BAR - Clean inline style like Lister Pro
+        // FILTER BAR
         // =====================================================================
         
-        $out .= '<div class="pwmcp-filters" style="margin-bottom: 1em; padding: 10px; background: #f8f8f8; border-radius: 3px;">';
-        $out .= '<form method="get" action="./" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">';
+        $out .= '<form method="get" action="./" class="pwmcp-filters">';
+        $out .= '<div class="pwmcp-filter-row">';
         
-        // Parent selector
-        $out .= '<label style="display: flex; align-items: center; gap: 5px;">';
-        $out .= '<span>' . $this->_('Parent:') . '</span>';
-        $out .= '<select name="parent" onchange="this.form.submit()" style="min-width: 150px;">';
-        $out .= '<option value="1">' . $this->_('Home (all)') . '</option>';
-        $topPages = $pages->find('parent=1, include=hidden, sort=sort');
-        foreach ($topPages as $p) {
-            if ($p->template->flags & Template::flagSystem) continue;
-            $sel = ($parentId == $p->id) ? ' selected' : '';
-            $out .= '<option value="' . $p->id . '"' . $sel . '>' . htmlspecialchars($p->title) . '</option>';
-        }
-        $out .= '</select></label>';
+        // Main filters group (connected)
+        $out .= '<div class="pwmcp-filter-group">';
+        
+        // Search field
+        $out .= '<div class="pwmcp-filter-field pwmcp-filter-search">';
+        $out .= '<label for="pwmcp-search">' . $this->lucideIcon('search', 14) . ' ' . $this->_('Search') . '</label>';
+        $autofocus = $searchQuery ? ' autofocus' : '';
+        $out .= '<input type="text" id="pwmcp-search" name="q" value="' . htmlspecialchars($searchQuery) . '" placeholder="' . $this->_('Search pages...') . '"' . $autofocus . '>';
+        $out .= '</div>';
         
         // Template filter
-        $out .= '<label style="display: flex; align-items: center; gap: 5px;">';
-        $out .= '<span>' . $this->_('Template:') . '</span>';
-        $out .= '<select name="template" onchange="this.form.submit()" style="min-width: 120px;">';
+        $out .= '<div class="pwmcp-filter-field">';
+        $out .= '<label for="pwmcp-template">' . $this->lucideIcon('layout-template', 14) . ' ' . $this->_('Template') . '</label>';
+        $out .= '<select id="pwmcp-template" name="template" onchange="this.form.submit()">';
         $out .= '<option value="">' . $this->_('All') . '</option>';
         foreach ($this->wire('templates') as $template) {
             if ($template->flags & Template::flagSystem) continue;
             $sel = ($templateFilter === $template->name) ? ' selected' : '';
             $out .= '<option value="' . $template->name . '"' . $sel . '>' . $template->name . '</option>';
         }
-        $out .= '</select></label>';
+        $out .= '</select>';
+        $out .= '</div>';
         
         // Status filter
-        $out .= '<label style="display: flex; align-items: center; gap: 5px;">';
-        $out .= '<span>' . $this->_('Status:') . '</span>';
-        $out .= '<select name="status" onchange="this.form.submit()" style="min-width: 120px;">';
+        $out .= '<div class="pwmcp-filter-field">';
+        $out .= '<label for="pwmcp-status">' . $this->lucideIcon('activity', 14) . ' ' . $this->_('Change Status') . '</label>';
+        $out .= '<select id="pwmcp-status" name="status" onchange="this.form.submit()">';
         $statuses = [
             '' => $this->_('All'),
-            'clean' => $this->_('Clean'),
+            'clean' => $this->_('In Sync'),
             'localDirty' => $this->_('Local Changes'),
             'remoteChanged' => $this->_('Remote Changed'),
             'conflict' => $this->_('Conflict'),
-            'notPulled' => $this->_('Not Pulled'),
+            'notPulled' => $this->_('Never Exported'),
         ];
         foreach ($statuses as $val => $label) {
             $sel = ($statusFilter === $val) ? ' selected' : '';
             $out .= '<option value="' . $val . '"' . $sel . '>' . $label . '</option>';
         }
-        $out .= '</select></label>';
-        
-        // Expand All toggle
-        $out .= '<label style="display: flex; align-items: center; gap: 5px; margin-left: 10px;">';
-        $out .= '<input type="checkbox" id="pwmcp-expand-all" style="margin: 0;">';
-        $out .= '<span>' . $this->_('Expand All') . '</span>';
-        $out .= '</label>';
-        
-        // Bulk actions
-        $out .= '<span style="margin-left: auto; display: flex; align-items: center; gap: 5px;">';
-        $out .= '<span>' . $this->_('With selected:') . '</span>';
-        $out .= '<select name="bulk_action" style="min-width: 100px;">';
-        $out .= '<option value="">' . $this->_('Action...') . '</option>';
-        $out .= '<option value="pull">' . $this->_('Pull') . '</option>';
-        $out .= '<option value="push">' . $this->_('Push') . '</option>';
         $out .= '</select>';
-        $out .= '<button type="submit" class="ui-button ui-priority-secondary" style="padding: 5px 10px;">' . $this->_('Go') . '</button>';
-        $out .= '</span>';
+        $out .= '</div>';
         
-        $out .= '</form></div>';
+        $out .= '</div>'; // End filter group
+        
+        // Bulk actions (separate on right)
+        $out .= '<div class="pwmcp-filter-field pwmcp-filter-actions">';
+        $out .= '<label>' . $this->_('With selected') . '</label>';
+        $out .= '<div class="pwmcp-action-row">';
+        $out .= '<select name="bulk_action">';
+        $out .= '<option value="">' . $this->_('Action...') . '</option>';
+        $out .= '<option value="pull">' . $this->_('Export') . '</option>';
+        $out .= '<option value="push">' . $this->_('Import') . '</option>';
+        $out .= '</select>';
+        $out .= '<button type="submit" class="ui-button ui-priority-secondary">' . $this->_('Go') . '</button>';
+        $out .= '</div>';
+        $out .= '</div>';
+        
+        $out .= '</div></form>';
         
         // =====================================================================
         // PAGE TABLE - Using native MarkupAdminDataTable
         // =====================================================================
         
-        // Build selector for pages
-        $selector = "parent=$parentId, include=hidden, sort=sort";
-        if ($templateFilter) {
-            $selector .= ", template=$templateFilter";
-        }
-        
-        $pageList = $pages->find($selector);
-        
-        // Filter by status if needed
         $filteredPages = [];
-        foreach ($pageList as $page) {
-            if ($page->template->flags & Template::flagSystem) continue;
+        $isSearchOrFiltered = $searchQuery || $templateFilter || $statusFilter;
+        
+        if ($isSearchOrFiltered) {
+            // Search/filter mode: show flat list of matching pages
+            $selector = "include=hidden, sort=path";
+            if ($searchQuery) {
+                $selector .= ", title|name%=" . $this->wire('sanitizer')->selectorValue($searchQuery);
+            }
+            if ($templateFilter) {
+                $selector .= ", template=$templateFilter";
+            }
             
-            $syncInfo = $syncedById[$page->id] ?? null;
-            $status = $syncInfo ? ($syncInfo['status'] ?? 'notPulled') : 'notPulled';
+            $pageList = $pages->find($selector . ", limit=200");
             
-            if ($statusFilter && $status !== $statusFilter) continue;
+            foreach ($pageList as $page) {
+                if ($page->template->flags & Template::flagSystem) continue;
+                
+                $status = $this->getPageStatus($page, $syncedById);
+                $syncInfo = $syncedById[$page->id] ?? null;
+                
+                if ($statusFilter && $status !== $statusFilter) continue;
+                
+                $filteredPages[] = [
+                    'page' => $page,
+                    'status' => $status,
+                    'syncInfo' => $syncInfo,
+                ];
+            }
+        } else {
+            // Default tree view: Home + its children
+            $homePage = $pages->get(1);
+            if ($homePage->id && !($homePage->template->flags & Template::flagSystem)) {
+                $status = $this->getPageStatus($homePage, $syncedById);
+                $syncInfo = $syncedById[$homePage->id] ?? null;
+                
+                $filteredPages[] = [
+                    'page' => $homePage,
+                    'status' => $status,
+                    'syncInfo' => $syncInfo,
+                    'isHome' => true,
+                ];
+            }
             
-            $filteredPages[] = [
-                'page' => $page,
-                'status' => $status,
-                'syncInfo' => $syncInfo,
-            ];
+            // Add Home's children at depth 1
+            $homeChildren = $pages->find("parent=1, include=hidden, sort=sort");
+            foreach ($homeChildren as $page) {
+                if ($page->template->flags & Template::flagSystem) continue;
+                
+                $status = $this->getPageStatus($page, $syncedById);
+                $syncInfo = $syncedById[$page->id] ?? null;
+                
+                $filteredPages[] = [
+                    'page' => $page,
+                    'status' => $status,
+                    'syncInfo' => $syncInfo,
+                    'depth' => 1,
+                ];
+            }
         }
         
-        // Count display
+        // Count display with Expand All toggle
         $count = count($filteredPages);
-        $out .= '<p class="description" style="margin-bottom: 0.5em;">';
+        $out .= '<div class="pwmcp-count-row">';
+        $out .= '<span class="pwmcp-count">';
         $out .= sprintf($this->_('%d pages'), $count);
-        if ($parentId > 1) {
-            $parentPage = $pages->get($parentId);
-            $out .= ' ' . sprintf($this->_('in %s'), '<strong>' . htmlspecialchars($parentPage->title) . '</strong>');
+        if ($searchQuery) {
+            $out .= ' ' . sprintf($this->_('matching "%s"'), '<strong>' . htmlspecialchars($searchQuery) . '</strong>');
         }
-        $out .= '</p>';
+        $out .= '</span>';
+        $out .= '<label class="pwmcp-switch">';
+        $out .= '<input type="checkbox" id="pwmcp-expand-all">';
+        $out .= '<span class="pwmcp-slider"></span>';
+        $out .= '</label>';
+        $out .= '<span class="pwmcp-switch-label">' . $this->_('Expand All') . '</span>';
+        $out .= '</div>';
         
         // Start form for bulk actions (wraps the table)
         $out .= '<form method="post" action="./" id="pwmcp-tree-form">';
@@ -229,58 +296,39 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<th style="width:30px;"><input type="checkbox" class="pwmcp-select-all"></th>';
         $out .= '<th>' . $this->_('Title') . '</th>';
         $out .= '<th>' . $this->_('Template') . '</th>';
-        $out .= '<th>' . $this->_('Status') . '</th>';
+        $out .= '<th>' . $this->_('Change Status') . '</th>';
         $out .= '<th>' . $this->_('Modified') . '</th>';
         $out .= '<th>' . $this->_('Actions') . '</th>';
         $out .= '</tr></thead>';
         $out .= '<tbody id="pwmcp-tree-body">';
         
         foreach ($filteredPages as $item) {
-            $out .= $this->buildTreeRow($item['page'], $item['status'], 0, $syncedById);
+            $depth = $item['depth'] ?? 0;
+            $isHome = $item['isHome'] ?? false;
+            $out .= $this->buildTreeRow($item['page'], $item['status'], $depth, $syncedById, $isHome);
         }
         
         $out .= '</tbody></table>';
         $out .= '</form>';
         
-        // Breadcrumb for navigation
-        if ($parentId > 1) {
-            $parentPage = $pages->get($parentId);
-            $breadcrumb = '<p style="margin-top: 1em;"><a href="./">&larr; ' . $this->_('Back to Home') . '</a>';
-            if ($parentPage->parent->id > 1) {
-                $breadcrumb .= ' | <a href="./?parent=' . $parentPage->parent->id . '">&larr; ' . 
-                    htmlspecialchars($parentPage->parent->title) . '</a>';
-            }
-            $breadcrumb .= '</p>';
-            $out .= $breadcrumb;
+        // Clear filters link when search/filters are active
+        if ($isSearchOrFiltered) {
+            $out .= '<p style="margin-top: 1em;"><a href="./">&larr; ' . $this->_('Clear filters') . '</a></p>';
         }
         
         // JavaScript
         $out .= $this->getCleanScript();
         
         // =====================================================================
-        // HEADER BUTTONS
+        // HEADER BUTTONS (inline HTML to avoid ProcessWire duplication issue)
         // =====================================================================
         
-        $form = $modules->get('InputfieldForm');
+        $headerButtons = '<div class="pwmcp-header-buttons">';
+        $headerButtons .= '<a href="./" class="uk-button uk-button-primary"><i class="fa fa-refresh"></i> ' . $this->_('Refresh') . '</a>';
+        $headerButtons .= '<a href="./reconcile/" class="uk-button uk-button-default"><i class="fa fa-wrench"></i> ' . $this->_('Reconcile') . '</a>';
+        $headerButtons .= '</div>';
         
-        // Refresh
-        $btn = $modules->get('InputfieldButton');
-        $btn->value = $this->_('Refresh');
-        $btn->icon = 'refresh';
-        $btn->href = './';
-        $btn->showInHeader(true);
-        $form->add($btn);
-        
-        // Reconcile
-        $btn = $modules->get('InputfieldButton');
-        $btn->value = $this->_('Reconcile');
-        $btn->icon = 'wrench';
-        $btn->href = './reconcile/';
-        $btn->setSecondary(true);
-        $btn->showInHeader(true);
-        $form->add($btn);
-        
-        return $form->render() . $out;
+        return $headerButtons . $out;
     }
     
     /**
@@ -299,15 +347,43 @@ class ProcessPwMcpAdmin extends Process {
     }
     
     /**
+     * Get actual page status considering both lookup and file existence
+     * 
+     * @param Page $page The page to check
+     * @param array $syncLookup Lookup array from getSyncStatus()
+     * @return string Status: clean, localDirty, remoteChanged, conflict, notPulled
+     */
+    protected function getPageStatus($page, array $syncLookup): string {
+        // First check the lookup (which contains all non-clean pages)
+        if (isset($syncLookup[$page->id])) {
+            return $syncLookup[$page->id]['status'];
+        }
+        
+        // Not in lookup - check if it's been pulled (would be clean) or not pulled at all
+        $workspaceRoot = $this->getWorkspaceRoot();
+        $localPath = $workspaceRoot . ltrim($page->path, '/');
+        $metaFile = $localPath . 'page.meta.json';
+        
+        if (file_exists($metaFile)) {
+            // Has been pulled but not in lookup = must be clean
+            return 'clean';
+        }
+        
+        // No local files = not pulled
+        return 'notPulled';
+    }
+    
+    /**
      * Build a single tree row for a page
      * 
      * @param Page $page The page to render
      * @param string $status Sync status
      * @param int $depth Nesting depth for indentation
      * @param array $syncLookup Sync status lookup array
+     * @param bool $isExpanded Whether the node should show as expanded
      * @return string HTML for the table row
      */
-    protected function buildTreeRow(Page $page, string $status, int $depth, array $syncLookup): string {
+    protected function buildTreeRow(Page $page, string $status, int $depth, array $syncLookup, bool $isExpanded = false): string {
         $indent = $depth * 20; // 20px per level
         
         $html = '<tr data-page-id="' . $page->id . '" data-depth="' . $depth . '" data-parent-id="' . $page->parent->id . '">';
@@ -318,16 +394,19 @@ class ProcessPwMcpAdmin extends Process {
         // Title with chevron for expandable parents
         $html .= '<td class="pwmcp-title-cell" style="padding-left:' . ($indent + 8) . 'px;">';
         if ($page->numChildren > 0) {
-            $html .= '<span class="pwmcp-toggle" data-page-id="' . $page->id . '" data-expanded="false" title="' . $this->_('Expand') . '">';
-            $html .= '<i class="fa fa-angle-right"></i>';
+            $expandedAttr = $isExpanded ? 'true' : 'false';
+            $html .= '<span class="pwmcp-toggle" data-page-id="' . $page->id . '" data-expanded="' . $expandedAttr . '" title="' . $this->_('Expand') . '">';
+            $html .= '<svg class="pwmcp-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
             $html .= '</span> ';
         } else {
             // Spacer for alignment
             $html .= '<span class="pwmcp-toggle-spacer" style="display:inline-block;width:14px;"></span> ';
         }
-        $html .= '<a href="' . $page->editUrl . '">' . htmlspecialchars($page->title ?: $page->name) . '</a>';
+        $fullTitle = $page->title ?: $page->name;
+        $displayTitle = (mb_strlen($fullTitle) > 50) ? mb_substr($fullTitle, 0, 47) . '...' : $fullTitle;
+        $html .= '<a href="' . $page->editUrl . '" title="' . htmlspecialchars($fullTitle) . '">' . htmlspecialchars($displayTitle) . '</a>';
         if ($page->numChildren > 0) {
-            $html .= ' <small style="color:#888;">' . $page->numChildren . '</small>';
+            $html .= ' <small>' . $page->numChildren . '</small>';
         }
         $html .= '</td>';
         
@@ -365,24 +444,17 @@ class ProcessPwMcpAdmin extends Process {
         // Get children first (fast)
         $children = $pages->find("parent=$parentId, include=hidden, sort=sort");
         
-        // Quick sync status check - only check if local folder exists for each child
-        $workspaceRoot = $this->getWorkspaceRoot();
-        $syncLookup = [];
+        // Get sync status for accurate badge display
+        $syncManager = $this->getSyncManager();
+        $statusData = $syncManager->getSyncStatus();
+        $syncLookup = $this->buildSyncLookup($statusData);
         
         $html = '';
         foreach ($children as $child) {
             if ($child->template->flags & Template::flagSystem) continue;
             
-            // Fast status check: just see if the local folder/meta file exists
-            $localPath = $workspaceRoot . ltrim($child->path, '/');
-            $metaFile = $localPath . 'page.meta.json';
-            
-            if (file_exists($metaFile)) {
-                // Has been pulled - mark as clean for now (detailed status on demand)
-                $status = 'clean';
-            } else {
-                $status = 'notPulled';
-            }
+            // Get accurate status using the same logic as main page
+            $status = $this->getPageStatus($child, $syncLookup);
             
             $html .= $this->buildTreeRow($child, $status, $depth, $syncLookup);
         }
@@ -401,26 +473,247 @@ class ProcessPwMcpAdmin extends Process {
         
         return <<<HTML
 <style>
+/* Header buttons */
+.pwmcp-header-buttons { display: flex; gap: 8px; margin-bottom: 1.5em; }
+.pwmcp-header-buttons .uk-button i { margin-right: 4px; }
+
+/* Filter bar styling - matches ProcessWire native admin */
+.pwmcp-filters { margin-bottom: 1.5em; }
+.pwmcp-filter-row { 
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+}
+.pwmcp-filter-group {
+    display: flex;
+    border: 1px solid #d7d7d7;
+    border-radius: 4px 0 0 4px;
+    background: #fff;
+}
+.pwmcp-filter-group .pwmcp-filter-field { 
+    display: flex; 
+    flex-direction: column;
+    padding: 12px 16px;
+    background: #fff;
+    border-left: 1px solid #d7d7d7;
+}
+.pwmcp-filter-group .pwmcp-filter-field:first-child { 
+    border-left: none;
+    border-radius: 4px 0 0 4px;
+}
+.pwmcp-filter-group .pwmcp-filter-field:last-child { 
+    border-radius: 0;
+}
+.pwmcp-filter-field > label:first-child { 
+    display: flex; 
+    align-items: center; 
+    gap: 6px; 
+    font-size: 13px; 
+    font-weight: normal; 
+    color: #6c7a89; 
+    margin-bottom: 8px;
+}
+.pwmcp-filter-field > label:first-child .pwmcp-lucide { color: #6c7a89; }
+.pwmcp-filter-field input[type="text"],
+.pwmcp-filter-field select { 
+    padding: 8px 12px; 
+    border: none;
+    border-radius: 2px;
+    font-size: 14px;
+    min-width: 140px;
+    background: #f1f1f1;
+    color: #354052;
+    transition: background-color 0.15s;
+    height: 36px;
+    box-sizing: border-box;
+}
+.pwmcp-filter-field select { 
+    padding-right: 48px !important; 
+    background-position: right 12px center !important;
+}
+.pwmcp-filter-field input[type="text"]:hover,
+.pwmcp-filter-field select:hover { 
+    background: #e8e8e8;
+}
+.pwmcp-filter-field input[type="text"]:focus,
+.pwmcp-filter-field select:focus { 
+    background: #fff;
+    outline: 2px solid #1e87f0;
+    outline-offset: -2px;
+}
+.pwmcp-filter-search { min-width: 200px; max-width: 260px; }
+.pwmcp-filter-search input.pwmcp-searching { 
+    background-color: #e8f4fc;
+}
+.pwmcp-count-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 12px 0;
+    font-size: 13px;
+    color: #666;
+}
+.pwmcp-count { font-weight: normal; }
+.pwmcp-switch-label { font-size: 13px; color: #666; }
+/* Toggle switch */
+.pwmcp-switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    margin: 0;
+}
+.pwmcp-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.pwmcp-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .3s;
+    border-radius: 20px;
+}
+.pwmcp-slider:before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+}
+.pwmcp-switch input:checked + .pwmcp-slider {
+    background-color: #1e87f0;
+}
+.pwmcp-switch input:focus + .pwmcp-slider {
+    box-shadow: 0 0 2px #1e87f0;
+}
+.pwmcp-switch input:checked + .pwmcp-slider:before {
+    transform: translateX(16px);
+}
+.pwmcp-filter-actions { 
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #d7d7d7;
+    border-left: none;
+    border-radius: 0 4px 4px 0;
+    padding: 12px 16px;
+    background: #fff;
+}
+.pwmcp-action-row { display: flex; gap: 8px; align-items: center; }
+.pwmcp-action-row select { flex: 1; min-width: 120px; }
+.pwmcp-action-row .ui-button { 
+    height: 36px;
+    padding: 0 16px; 
+    font-size: 14px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Tree table styling */
 .pwmcp-tree-table { border-collapse: collapse; }
+.pwmcp-tree-table thead th { border-bottom: 1px solid #f1f1f1; padding: 8px; }
+.pwmcp-tree-table thead th:nth-child(3),
+.pwmcp-tree-table thead th:nth-child(4),
+.pwmcp-tree-table thead th:nth-child(5) { font-size: 13px; }
 .pwmcp-tree-table tbody tr { border-bottom: 1px solid #f1f1f1; }
 .pwmcp-tree-table tbody tr:hover { border-color: #eee; }
 .pwmcp-tree-table tbody td { padding: 4px 8px; vertical-align: middle; }
+.pwmcp-tree-table tbody td:nth-child(3),
+.pwmcp-tree-table tbody td:nth-child(4),
+.pwmcp-tree-table tbody td:nth-child(5) { font-size: 13px; }
 .pwmcp-toggle { 
     cursor: pointer; 
-    display: inline-block;
-    width: 10px;
-    text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
     margin-right: 4px;
     color: #bbb;
-    font-size: 14px;
-    line-height: 12px;
-    position: relative;
-    left: 1px;
+    transition: transform 0.15s ease;
 }
 .pwmcp-toggle:hover { color: #999; }
-.pwmcp-toggle[data-expanded="true"] { color: #999; }
+.pwmcp-toggle[data-expanded="true"] { color: #999; transform: rotate(90deg); }
+.pwmcp-icon { display: block; }
+.pwmcp-lucide { display: inline-block; vertical-align: middle; }
+.pwmcp-action { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 4px !important; color: #d9534f !important; cursor: pointer !important; text-decoration: none !important; }
+.pwmcp-action:hover { color: #c9302c !important; cursor: pointer !important; }
+.pwmcp-action[title] { cursor: pointer !important; }
+.pwmcp-action * { cursor: pointer !important; }
+/* Custom tooltip system for action icons - no native tooltips */
+.pwmcp-action { position: relative !important; }
+.pwmcp-action-tooltip {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-4px);
+    background: rgba(0, 0, 0, 0.9);
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 3px;
+    font-size: 12px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease, visibility 0.15s ease;
+    transition-delay: 0.1s;
+    z-index: 10000;
+    margin-bottom: 4px;
+}
+.pwmcp-action:hover .pwmcp-action-tooltip {
+    opacity: 1;
+    visibility: visible;
+}
+.pwmcp-action-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 4px solid transparent;
+    border-top-color: rgba(0, 0, 0, 0.9);
+}
+/* Force cursor on all child elements to prevent question mark */
+.pwmcp-action svg { cursor: pointer !important; pointer-events: none !important; }
+.pwmcp-action .pwmcp-lucide { cursor: pointer !important; pointer-events: none !important; }
+.pwmcp-action path { cursor: pointer !important; pointer-events: none !important; }
+/* Disabled action state */
+.pwmcp-action-disabled {
+    opacity: 0.3;
+    cursor: not-allowed !important;
+    pointer-events: none !important;
+}
+.pwmcp-action-disabled svg,
+.pwmcp-action-disabled .pwmcp-lucide,
+.pwmcp-action-disabled path {
+    cursor: not-allowed !important;
+}
+.pwmcp-action-disabled .pwmcp-lucide {
+    color: #999 !important;
+    stroke: #999 !important;
+}
+/* Status badge overrides - each status has consistent intensity with lighter fill than border */
+.pwmcp-tree-table .uk-label { font-size: 12px !important; font-weight: normal !important; padding: 3px 7px !important; border-radius: 5px !important; border: 1px solid !important; display: inline-block !important; line-height: 1.4 !important; text-transform: none !important; }
+.pwmcp-tree-table .uk-label-success { color: rgba(35, 120, 60, 1) !important; border-color: rgba(60, 150, 85, 1) !important; background-color: rgba(40, 167, 69, 0.15) !important; }
+.pwmcp-tree-table .uk-label-warning { color: rgba(150, 110, 0, 1) !important; border-color: rgba(200, 155, 30, 1) !important; background-color: rgba(255, 193, 7, 0.15) !important; }
+.pwmcp-tree-table .uk-label-primary { color: rgba(25, 95, 160, 1) !important; border-color: rgba(65, 145, 210, 1) !important; background-color: rgba(30, 135, 240, 0.15) !important; }
+.pwmcp-tree-table .uk-label-danger { color: rgba(165, 40, 50, 1) !important; border-color: rgba(200, 75, 85, 1) !important; background-color: rgba(220, 53, 69, 0.15) !important; }
+.pwmcp-tree-table .uk-label-muted { color: rgba(120, 120, 120, 1) !important; border-color: rgba(180, 180, 180, 1) !important; background-color: rgba(200, 200, 200, 0.1) !important; }
 .pwmcp-toggle-spacer { display: inline-block; width: 14px; }
-.pwmcp-title-cell { white-space: nowrap; line-height: 1.6em; }
+.pwmcp-title-cell { white-space: nowrap; line-height: 1.6em; max-width: 350px; overflow: hidden; text-overflow: ellipsis; }
+.pwmcp-title-cell a { display: inline; }
 .pwmcp-title-cell small { font-size: 13px; color: #999; }
 .pwmcp-spinner { 
     display: inline-block; 
@@ -443,6 +736,43 @@ tr[data-depth="4"] { background-color: #f3f3f3; }
 document.addEventListener('DOMContentLoaded', function() {
     var childrenUrl = '{$childrenUrl}';
     
+    // Real-time search with debounce
+    var searchInput = document.getElementById('pwmcp-search');
+    var searchTimeout = null;
+    if (searchInput) {
+        // Move cursor to end if autofocused with existing value
+        if (searchInput.value) {
+            var len = searchInput.value.length;
+            searchInput.setSelectionRange(len, len);
+        }
+        
+        searchInput.addEventListener('input', function() {
+            clearTimeout(searchTimeout);
+            var value = this.value;
+            var input = this;
+            
+            // Add searching class for visual feedback
+            input.classList.add('pwmcp-searching');
+            
+            searchTimeout = setTimeout(function() {
+                // Only submit if value changed and has 2+ chars (or is empty to clear)
+                if (value.length >= 2 || value.length === 0) {
+                    searchInput.form.submit();
+                } else {
+                    input.classList.remove('pwmcp-searching');
+                }
+            }, 400);
+        });
+        
+        // Submit on Enter key
+        searchInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                clearTimeout(searchTimeout);
+                this.form.submit();
+            }
+        });
+    }
+    
     // Select all checkbox
     var selectAll = document.querySelector('.pwmcp-select-all');
     if (selectAll) {
@@ -450,6 +780,38 @@ document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.pwmcp-page-checkbox').forEach(function(cb) {
                 cb.checked = selectAll.checked;
             });
+        });
+    }
+    
+    // Handle bulk actions - intercept Go button and submit tree form instead
+    var filterForm = document.querySelector('.pwmcp-filters');
+    var bulkActionSelect = filterForm ? filterForm.querySelector('select[name="bulk_action"]') : null;
+    var goButton = filterForm ? filterForm.querySelector('button[type="submit"]') : null;
+    var treeForm = document.getElementById('pwmcp-tree-form');
+    var hiddenBulkAction = treeForm ? treeForm.querySelector('.pwmcp-bulk-action-field') : null;
+    
+    if (goButton && bulkActionSelect && treeForm && hiddenBulkAction) {
+        goButton.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            var action = bulkActionSelect.value;
+            if (!action) {
+                alert('Please select an action');
+                return;
+            }
+            
+            // Check if any pages are selected
+            var checkedBoxes = document.querySelectorAll('.pwmcp-page-checkbox:checked');
+            if (checkedBoxes.length === 0) {
+                alert('Please select at least one page');
+                return;
+            }
+            
+            // Copy action to hidden field and submit tree form
+            hiddenBulkAction.value = action;
+            hiddenBulkAction.setAttribute('name', 'bulk_action');
+            treeForm.submit();
         });
     }
     
@@ -466,12 +828,9 @@ document.addEventListener('DOMContentLoaded', function() {
         var currentRow = toggle.closest('tr');
         var currentDepth = parseInt(currentRow.getAttribute('data-depth'), 10);
         
-        var icon = toggle.querySelector('i');
-        
         if (isExpanded) {
             // Collapse: remove all child rows
             toggle.setAttribute('data-expanded', 'false');
-            icon.className = 'fa fa-angle-right';
             var nextRow = currentRow.nextElementSibling;
             while (nextRow) {
                 var nextDepth = parseInt(nextRow.getAttribute('data-depth'), 10);
@@ -483,7 +842,6 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
             // Expand: load children via AJAX
             toggle.setAttribute('data-expanded', 'true');
-            icon.className = 'fa fa-angle-down';
             
             // Add loading spinner after page title
             var titleCell = currentRow.querySelector('.pwmcp-title-cell');
@@ -497,6 +855,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     spinner.remove();
                     if (html.trim()) {
                         currentRow.insertAdjacentHTML('afterend', html);
+                        // Initialize tooltips and cursors for newly loaded content
+                        document.querySelectorAll('.pwmcp-action').forEach(function(action) {
+                            action.style.cursor = 'pointer';
+                            if (typeof ProcessWire !== 'undefined' && ProcessWire.setupTooltips) {
+                                ProcessWire.setupTooltips(action);
+                            }
+                        });
                     }
                 })
                 .catch(function(err) {
@@ -529,10 +894,8 @@ document.addEventListener('DOMContentLoaded', function() {
             var pageId = toggle.getAttribute('data-page-id');
             var currentRow = toggle.closest('tr');
             var currentDepth = parseInt(currentRow.getAttribute('data-depth'), 10);
-            var icon = toggle.querySelector('i');
             
             toggle.setAttribute('data-expanded', 'true');
-            icon.className = 'fa fa-angle-down';
             pendingLoads++;
             
             fetch(childrenUrl + '?id=' + pageId + '&depth=' + currentDepth)
@@ -540,6 +903,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 .then(function(html) {
                     if (html.trim()) {
                         currentRow.insertAdjacentHTML('afterend', html);
+                        // Initialize tooltips and cursors for newly loaded content
+                        document.querySelectorAll('.pwmcp-action').forEach(function(action) {
+                            action.style.cursor = 'pointer';
+                            if (typeof ProcessWire !== 'undefined' && ProcessWire.setupTooltips) {
+                                ProcessWire.setupTooltips(action);
+                            }
+                        });
                     }
                     pendingLoads--;
                     // After this batch loads, check if there are more to expand
@@ -566,9 +936,83 @@ document.addEventListener('DOMContentLoaded', function() {
         // Reset all toggles to collapsed state
         document.querySelectorAll('.pwmcp-toggle[data-expanded="true"]').forEach(function(toggle) {
             toggle.setAttribute('data-expanded', 'false');
-            var icon = toggle.querySelector('i');
-            if (icon) icon.className = 'fa fa-angle-right';
         });
+    }
+    
+    // Function to initialize action buttons with custom tooltips (no native tooltips)
+    function initializeActionButtons() {
+        document.querySelectorAll('.pwmcp-action').forEach(function(action) {
+            var isDisabled = action.classList.contains('pwmcp-action-disabled');
+            
+            // Force appropriate cursor based on state
+            if (!isDisabled) {
+                action.style.cursor = 'pointer';
+                var children = action.querySelectorAll('*');
+                children.forEach(function(child) {
+                    child.style.cursor = 'pointer';
+                });
+            }
+            
+            // Prevent clicks on disabled actions
+            if (isDisabled && !action.hasAttribute('data-disabled-handler')) {
+                action.setAttribute('data-disabled-handler', 'true');
+                action.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return false;
+                });
+            }
+            
+            // Setup custom tooltip from data attribute
+            var tooltipText = action.getAttribute('data-pwmcp-tooltip');
+            if (tooltipText && !action.hasAttribute('data-tooltip-initialized')) {
+                // Mark as initialized to prevent duplicates
+                action.setAttribute('data-tooltip-initialized', 'true');
+                
+                // Remove any title attribute to prevent native tooltips
+                action.removeAttribute('title');
+                
+                // Check if tooltip element already exists
+                var existingTooltip = action.querySelector('.pwmcp-action-tooltip');
+                if (!existingTooltip) {
+                    // Create custom tooltip element
+                    var tooltip = document.createElement('span');
+                    tooltip.className = 'pwmcp-action-tooltip';
+                    tooltip.textContent = tooltipText;
+                    action.appendChild(tooltip);
+                }
+            }
+        });
+    }
+    
+    // Initialize on page load
+    initializeActionButtons();
+    
+    // Watch for dynamically added action buttons
+    var observer = new MutationObserver(function(mutations) {
+        var needsInit = false;
+        mutations.forEach(function(mutation) {
+            if (mutation.addedNodes.length) {
+                mutation.addedNodes.forEach(function(node) {
+                    if (node.nodeType === 1) { // Element node
+                        if (node.classList && node.classList.contains('pwmcp-action')) {
+                            needsInit = true;
+                        } else if (node.querySelector && node.querySelector('.pwmcp-action')) {
+                            needsInit = true;
+                        }
+                    }
+                });
+            }
+        });
+        if (needsInit) {
+            initializeActionButtons();
+        }
+    });
+    
+    // Observe the table body for changes
+    var tableBody = document.getElementById('pwmcp-tree-body');
+    if (tableBody) {
+        observer.observe(tableBody, { childList: true, subtree: true });
     }
 });
 </script>
@@ -601,7 +1045,7 @@ HTML;
                     $pulled++;
                 }
             }
-            $this->message(sprintf($this->_('Pulled %d pages'), $pulled));
+            $this->message(sprintf($this->_('Exported %d pages'), $pulled));
         } elseif ($action === 'push') {
             $pushed = 0;
             foreach ($pageIds as $pageId) {
@@ -613,7 +1057,7 @@ HTML;
                     $pushed++;
                 }
             }
-            $this->message(sprintf($this->_('Pushed %d pages'), $pushed));
+            $this->message(sprintf($this->_('Imported %d pages'), $pushed));
         }
         
         $this->wire('session')->redirect($this->wire('page')->url);
@@ -628,12 +1072,12 @@ HTML;
      */
     protected function getStatusBadge(string $status): string {
         $labels = [
-            'clean' => ['Clean', 'uk-label-success'],
+            'clean' => ['In Sync', 'uk-label-success'],
             'localDirty' => ['Local Changes', 'uk-label-warning'],
             'remoteChanged' => ['Remote Changes', 'uk-label-primary'],
             'conflict' => ['Conflict', 'uk-label-danger'],
             'orphan' => ['Orphan', ''],
-            'notPulled' => ['Not Pulled', ''],
+            'notPulled' => ['Never Exported', 'uk-label-muted'],
         ];
         
         $label = $labels[$status] ?? ['Unknown', ''];
@@ -652,26 +1096,31 @@ HTML;
     protected function getRowActions(Page $page, string $status): string {
         $actions = [];
         $baseUrl = $this->wire('page')->url;
+        $isNotExported = ($status === 'notPulled');
         
-        // Pull (Export) button
-        $actions[] = "<a href='{$baseUrl}pull/?id={$page->id}' class='pw-tooltip' title='Pull (Export) to YAML'>" .
-            wireIconMarkup('download') . "</a>";
+        // Export button - always active
+        $actions[] = "<a href='{$baseUrl}pull/?id={$page->id}' class='pwmcp-action' data-pwmcp-tooltip='Export to File (YAML)'>" .
+            $this->lucideIcon('download') . "</a>";
         
-        // Push (Import) button - only if local exists
-        if ($status !== 'notPulled') {
-            $actions[] = "<a href='{$baseUrl}push/?id={$page->id}' class='pw-tooltip' title='Push (Import) from YAML'>" .
-                wireIconMarkup('upload') . "</a>";
-            
-            // View YAML button
-            $actions[] = "<a href='{$baseUrl}view-yaml/?id={$page->id}' class='pw-tooltip pw-modal' title='View YAML'>" .
-                wireIconMarkup('file-text-o') . "</a>";
-        }
+        // Import button - disabled if not exported yet
+        $importClass = $isNotExported ? 'pwmcp-action pwmcp-action-disabled' : 'pwmcp-action';
+        $importHref = $isNotExported ? '#' : "{$baseUrl}push/?id={$page->id}";
+        $importTooltip = $isNotExported ? 'Export page first to enable import' : 'Import from File (YAML)';
+        $actions[] = "<a href='{$importHref}' class='{$importClass}' data-pwmcp-tooltip='{$importTooltip}'>" .
+            $this->lucideIcon('upload') . "</a>";
+        
+        // View YAML button - disabled if not exported yet
+        $viewClass = $isNotExported ? 'pwmcp-action pwmcp-action-disabled' : 'pw-modal pwmcp-action';
+        $viewHref = $isNotExported ? '#' : "{$baseUrl}view-yaml/?id={$page->id}";
+        $viewTooltip = $isNotExported ? 'Export page first to view YAML' : 'View YAML';
+        $actions[] = "<a href='{$viewHref}' class='{$viewClass}' data-pwmcp-tooltip='{$viewTooltip}'>" .
+            $this->lucideIcon('file-text') . "</a>";
         
         return implode(' ', $actions);
     }
 
     /**
-     * Pull (Export) a single page
+     * Export a single page to YAML file
      */
     public function ___executePull(): string {
         $input = $this->wire('input');
@@ -700,7 +1149,7 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Pulled page "%s" to %s'),
+                    $this->_('Exported page "%s" to %s'),
                     $page->title,
                     $result['localPath'] ?? ''
                 ));
@@ -716,7 +1165,7 @@ HTML;
     }
 
     /**
-     * Push (Import) a single page with dry-run preview
+     * Import a single page from YAML file with dry-run preview
      */
     public function ___executePush(): string {
         $input = $this->wire('input');
@@ -748,7 +1197,7 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Pushed changes to page "%s"'),
+                    $this->_('Imported changes to page "%s"'),
                     $page->title
                 ));
             } else {
@@ -762,7 +1211,7 @@ HTML;
         // Dry-run preview
         $result = $syncManager->pushPage($workspacePath, true); // dryRun = true
         
-        $this->headline(sprintf($this->_('Push Preview: %s'), $page->title));
+        $this->headline(sprintf($this->_('Import Preview: %s'), $page->title));
         
         $form = $modules->get('InputfieldForm');
         $form->attr('method', 'post');
@@ -799,7 +1248,7 @@ HTML;
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'submit_confirm');
-        $f->value = $this->_('Confirm Push');
+        $f->value = $this->_('Confirm Import');
         $f->icon = 'check';
         $form->add($f);
         
@@ -834,7 +1283,7 @@ HTML;
         $yamlPath = $workspacePath . 'page.yaml';
         
         if (!file_exists($yamlPath)) {
-            return '<p>' . $this->_('YAML file not found. Pull the page first.') . '</p>';
+            return '<p>' . $this->_('YAML file not found. Export the page first.') . '</p>';
         }
         
         $yamlContent = file_get_contents($yamlPath);
@@ -850,14 +1299,14 @@ HTML;
     }
 
     /**
-     * Bulk Pull All (with confirmation)
+     * Bulk Export All (with confirmation)
      */
     public function ___executePullAll(): string {
         $input = $this->wire('input');
         $modules = $this->wire('modules');
         $session = $this->wire('session');
         
-        $this->headline($this->_('Bulk Pull (Export)'));
+        $this->headline($this->_('Bulk Export'));
         
         // Get filter from session
         $rootPath = $session->get('pwmcp_root_path') ?: '';
@@ -890,9 +1339,9 @@ HTML;
         $form->attr('method', 'post');
         
         $info = $modules->get('InputfieldMarkup');
-        $info->label = $this->_('Bulk Pull Preview');
+        $info->label = $this->_('Bulk Export Preview');
         $info->value = '<p>' . sprintf(
-            $this->_('This will pull all pages under: %s'),
+            $this->_('This will export all pages under: %s'),
             '<strong>' . htmlspecialchars($displayPath ?: $selector) . '</strong>'
         ) . '</p>';
         $info->value .= '<p class="notes">' . 
@@ -907,7 +1356,7 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Pulled %d pages successfully'),
+                    $this->_('Exported %d pages successfully'),
                     $result['pulled'] ?? 0
                 ));
             } else {
@@ -921,7 +1370,7 @@ HTML;
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'confirm_pull');
-        $f->value = $this->_('Confirm Pull All');
+        $f->value = $this->_('Confirm Export All');
         $f->icon = 'download';
         $form->add($f);
         
@@ -936,14 +1385,14 @@ HTML;
     }
 
     /**
-     * Bulk Push All (with dry-run preview)
+     * Bulk Import All (with dry-run preview)
      */
     public function ___executePushAll(): string {
         $input = $this->wire('input');
         $modules = $this->wire('modules');
         $session = $this->wire('session');
         
-        $this->headline($this->_('Bulk Push (Import)'));
+        $this->headline($this->_('Bulk Import'));
         
         // Get filter from session to scope the push
         $rootPath = $session->get('pwmcp_root_path') ?: '';
@@ -973,7 +1422,7 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Pushed %d pages successfully'),
+                    $this->_('Imported %d pages successfully'),
                     $result['pushed'] ?? 0
                 ));
             } else {
@@ -988,7 +1437,7 @@ HTML;
         $result = $syncManager->pushPages($pushDir, true); // dryRun = true
         
         $info = $modules->get('InputfieldMarkup');
-        $info->label = $this->_('Bulk Push Preview');
+        $info->label = $this->_('Bulk Import Preview');
         
         // Show scope
         $info->value = '<p class="notes">' . sprintf(
@@ -1013,7 +1462,7 @@ HTML;
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'confirm_push');
-        $f->value = $this->_('Confirm Push All');
+        $f->value = $this->_('Confirm Import All');
         $f->icon = 'upload';
         $form->add($f);
         
@@ -1068,13 +1517,13 @@ HTML;
         
         // Explanation
         $info->value = '<p class="notes" style="margin-bottom:1em;">' . 
-            $this->_('Reconcile fixes structural sync issues (moved/deleted pages). To apply content changes, use Push instead.') . 
+            $this->_('Reconcile fixes structural sync issues (moved/deleted pages). To apply content changes, use Import instead.') . 
             '</p>';
         
         $info->value .= '<h4>' . $this->_('Summary') . '</h4>';
         $info->value .= '<table class="AdminDataTable" style="width:auto;">';
         $info->value .= '<tr><td><strong>' . sprintf('%d', $result['summary']['clean'] ?? 0) . '</strong></td>';
-        $info->value .= '<td>' . $this->_('Clean') . '</td>';
+        $info->value .= '<td>' . $this->_('In Sync') . '</td>';
         $info->value .= '<td class="notes">' . $this->_('Local folders correctly match their ProcessWire pages') . '</td></tr>';
         $info->value .= '<tr><td><strong>' . sprintf('%d', $result['summary']['pathDrift'] ?? 0) . '</strong></td>';
         $info->value .= '<td>' . $this->_('Path Drift') . '</td>';

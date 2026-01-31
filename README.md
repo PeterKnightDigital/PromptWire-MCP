@@ -31,11 +31,11 @@ Just ask naturally — the AI will use the MCP tools automatically:
 - "Find all PDF files on the site"
 - "Search for images with 'team' in the filename"
 
-**Content Sync (Pull/Edit/Push):**
-- "Pull the about page for editing"
-- "Pull all pages under /services/"
+**Content Sync (Export/Edit/Import):**
+- "Export the about page for editing" (or "Pull the about page")
+- "Export all pages under /services/" (or "Pull all pages under /services/")
 - "Check sync status"
-- "Push my changes to ProcessWire"
+- "Import my changes to ProcessWire" (or "Push my changes")
 
 **With Options:**
 - "Get page /about/ with field labels"
@@ -61,7 +61,8 @@ Cursor (Chat) → MCP Server (Node.js) → CLI (PHP) → ProcessWire API
 
 ## Components
 
-- **PwMcp/** — ProcessWire module with CLI interface
+- **PwMcp/** — ProcessWire module with CLI interface and core sync engine
+- **PwMcpAdmin/** — ProcessWire admin module with hierarchical page tree interface
 - **mcp-server/** — Node.js/TypeScript MCP server for Cursor integration
 
 ## Installation
@@ -267,8 +268,10 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:pull "template=blog-post" --limit=20
 ```
 
 Pages are saved to `site/assets/pw-mcp/[page-path]/`:
-- `page.meta.json` — ID, template, revision hash (don't edit)
+- `page.meta.json` — ID, template, revision hash, content hash (don't edit)
 - `page.yaml` — Editable field content
+
+**Note:** The `page.meta.json` file now includes a `contentHash` field that stores an MD5 hash of the actual YAML file content. This enables accurate detection of local changes without false positives from serialization differences.
 
 ### 2. Edit Locally
 
@@ -281,10 +284,11 @@ php site/modules/PwMcp/bin/pw-mcp.php sync:status --pretty
 ```
 
 Shows which pages have:
-- **clean** — No changes
-- **localDirty** — Local edits pending
-- **remoteChanged** — ProcessWire page modified since pull
-- **conflict** — Both local and remote changed
+- **clean** (In Sync) — No changes
+- **localDirty** (Local Changes) — Local edits pending
+- **remoteChanged** (Remote Changes) — ProcessWire page modified since export
+- **conflict** (Conflict) — Both local and remote changed
+- **notPulled** (Never Exported) — Page not yet synced
 
 ### 4. Push Changes
 
@@ -361,12 +365,40 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/assets/pw-mcp/news --pr
 php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/assets/pw-mcp/news --dry-run=0 --pretty
 ```
 
-## Phase 4 (Coming Soon)
+## ProcessWire Admin Interface
+
+The module includes **PwMcpAdmin** — a full-featured admin interface in ProcessWire:
+
+- **Hierarchical page tree** with expand/collapse navigation
+- **Status badges** color-coded by sync state:
+  - **In Sync** — No changes (green)
+  - **Local Changes** — Edits pending locally (yellow)
+  - **Remote Changes** — Page modified in ProcessWire since export (blue)
+  - **Conflict** — Both local and remote changed (red)
+  - **Never Exported** — Not yet synced (grey)
+- **Bulk actions** — Export or import multiple pages at once
+- **Filter by status** — Find pages with local changes, conflicts, etc.
+- **Action icons** — Quick access to Export, Import, and View YAML
+- **Custom tooltips** — Helpful descriptions on hover
+
+### UI Terminology
+
+**For clarity, the admin interface uses different terms than the CLI:**
+
+| CLI Command | UI Label | Description |
+|-------------|----------|-------------|
+| `page:pull` | **Export to File** | Download page content to local YAML |
+| `page:push` | **Import from File** | Upload local YAML changes to ProcessWire |
+| `pages:pull` | **Export** (bulk) | Download multiple pages |
+| `pages:push` | **Import** (bulk) | Upload multiple pages |
+
+This makes the direction of data flow clearer in the visual interface.
+
+## Coming Soon
 
 - File and image uploads
 - Page deletion with safety checks
-- Sync-aware UI in ProcessWire admin
-- Status dashboard and bulk actions
+- Real-time sync notifications
 
 ## License
 

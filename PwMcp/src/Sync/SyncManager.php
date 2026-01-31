@@ -118,7 +118,22 @@ class SyncManager {
         // Generate revision hash for conflict detection
         $revisionHash = $this->generateRevisionHash($fields);
         
-        // Create metadata file
+        // Create content file first so we can hash it
+        $content = ['fields' => $fields];
+        
+        if ($format === 'yaml') {
+            $contentPath = $localPath . '/page.yaml';
+            $yamlContent = $this->arrayToYaml($content);
+            file_put_contents($contentPath, $yamlContent);
+            $contentHash = md5($yamlContent);
+        } else {
+            $contentPath = $localPath . '/page.json';
+            $jsonContent = json_encode($content, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            file_put_contents($contentPath, $jsonContent);
+            $contentHash = md5($jsonContent);
+        }
+        
+        // Create metadata file with both hashes
         $meta = [
             'pageId' => $page->id,
             'canonicalPath' => $page->path,
@@ -127,23 +142,12 @@ class SyncManager {
             'pulledAt' => date('c'),
             'lastPushedAt' => null,
             'revisionHash' => $revisionHash,
+            'contentHash' => $contentHash, // Hash of the actual file content
             'status' => 'clean',
         ];
         
         $metaPath = $localPath . '/page.meta.json';
         file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        
-        // Create content file
-        $content = ['fields' => $fields];
-        
-        if ($format === 'yaml') {
-            $contentPath = $localPath . '/page.yaml';
-            $yamlContent = $this->arrayToYaml($content);
-            file_put_contents($contentPath, $yamlContent);
-        } else {
-            $contentPath = $localPath . '/page.json';
-            file_put_contents($contentPath, json_encode($content, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        }
         
         return [
             'success' => true,
@@ -407,12 +411,25 @@ class SyncManager {
         // Save the page
         $page->save();
         
-        // Update meta file
+        // Update local file to match what's now in ProcessWire
         $newFields = $this->extractPageFields($page);
         $newHash = $this->generateRevisionHash($newFields);
+        $newContent = ['fields' => $newFields];
         
+        // Determine format and update content file
+        $isYaml = file_exists($contentPath) && str_ends_with($contentPath, '.yaml');
+        if ($isYaml) {
+            $newFileContent = $this->arrayToYaml($newContent);
+        } else {
+            $newFileContent = json_encode($newContent, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        }
+        file_put_contents($contentPath, $newFileContent);
+        $newContentHash = md5($newFileContent);
+        
+        // Update meta file
         $meta['lastPushedAt'] = date('c');
         $meta['revisionHash'] = $newHash;
+        $meta['contentHash'] = $newContentHash;
         $meta['status'] = 'clean';
         
         file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -623,23 +640,31 @@ class SyncManager {
         
         $remoteChanged = ($currentHash !== $meta['revisionHash']);
         
-        // Check if local file was modified
+        // Check if local file was modified by user
         $contentPath = file_exists($localDir . '/page.yaml') 
             ? $localDir . '/page.yaml' 
             : $localDir . '/page.json';
         
-        $localContent = $this->readContentFile($contentPath);
-        $localHash = $this->generateRevisionHash($localContent['fields'] ?? []);
+        // Compare current file hash against original hash from when it was pulled
+        $currentFileContent = file_get_contents($contentPath);
+        $currentFileHash = md5($currentFileContent);
         
-        // Compare local content hash against original pull
-        // If local differs from what's in meta, it's dirty
-        $originalContent = ['fields' => $currentFields];
-        $originalLocalHash = $this->generateRevisionHash($currentFields);
+        // If meta has contentHash, use it for accurate local change detection
+        if (isset($meta['contentHash'])) {
+            $localDirty = ($currentFileHash !== $meta['contentHash']);
+        } else {
+            // Fallback for older pulls without contentHash - use field comparison
+            $localContent = $this->readContentFile($contentPath);
+            $changes = $this->calculateChanges($currentFields, $localContent['fields'] ?? []);
+            $localDirty = !empty($changes);
+        }
         
-        // Actually, we need to detect if user edited the file
-        // Compare parsed local against what we'd export from remote
-        $changes = $this->calculateChanges($currentFields, $localContent['fields'] ?? []);
-        $localDirty = !empty($changes);
+        // If dirty, calculate actual changes for reporting
+        $changes = [];
+        if ($localDirty) {
+            $localContent = $this->readContentFile($contentPath);
+            $changes = $this->calculateChanges($currentFields, $localContent['fields'] ?? []);
+        }
         
         // Determine status
         if ($remoteChanged && $localDirty) {
@@ -661,7 +686,7 @@ class SyncManager {
             'pulledAt' => $meta['pulledAt'],
         ];
         
-        if ($localDirty) {
+        if ($localDirty && !empty($changes)) {
             $result['localChanges'] = count($changes);
         }
         if ($remoteChanged) {
