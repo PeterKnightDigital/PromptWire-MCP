@@ -346,10 +346,10 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<span class="pwmcp-selection-count">No pages selected</span>';
         $out .= '</div>';
         $out .= '<div class="pwmcp-selection-actions">';
-        $out .= '<button type="button" class="uk-button uk-button-default uk-button-small pwmcp-bulk-export pwmcp-action" data-pwmcp-tooltip="Export selected pages to local YAML files" disabled>';
+        $out .= '<button type="button" class="uk-button uk-button-default uk-button-small pwmcp-bulk-export pwmcp-action" data-pwmcp-tooltip="Export to File (YAML)" disabled>';
         $out .= $this->lucideIcon('download', 16) . ' <span>Export</span>';
         $out .= '</button>';
-        $out .= '<button type="button" class="uk-button uk-button-primary uk-button-small pwmcp-bulk-import pwmcp-action" data-pwmcp-tooltip="Import local changes to ProcessWire" disabled>';
+        $out .= '<button type="button" class="uk-button uk-button-primary uk-button-small pwmcp-bulk-import pwmcp-action" data-pwmcp-tooltip="Import from File (YAML)" disabled>';
         $out .= $this->lucideIcon('upload', 16) . ' <span>Import</span>';
         $out .= '</button>';
         $out .= '</div>';
