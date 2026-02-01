@@ -253,19 +253,6 @@ class ProcessPwMcpAdmin extends Process {
         
         $out .= '</div>'; // End filter group
         
-        // Bulk actions (separate on right)
-        $out .= '<div class="pwmcp-filter-field pwmcp-filter-actions">';
-        $out .= '<label>' . $this->_('With selected') . '</label>';
-        $out .= '<div class="pwmcp-action-row">';
-        $out .= '<select name="bulk_action" class="pwmcp-bulk-select">';
-        $out .= '<option value="">' . $this->_('Action...') . '</option>';
-        $out .= '<option value="pull">' . $this->_('Export') . '</option>';
-        $out .= '<option value="push">' . $this->_('Import') . '</option>';
-        $out .= '</select>';
-        $out .= '<button type="submit" class="uk-button uk-button-primary uk-button-small">' . $this->_('Go') . '</button>';
-        $out .= '</div>';
-        $out .= '</div>';
-        
         $out .= '</div></form>';
         
         // =====================================================================
@@ -580,6 +567,7 @@ class ProcessPwMcpAdmin extends Process {
 <style>
 /* Header buttons */
 .pwmcp-header-buttons { display: flex; gap: 8px; margin-bottom: 1.5em; }
+.pwmcp-header-buttons .uk-button { border-radius: 3px; }
 .pwmcp-header-buttons .uk-button i { margin-right: 4px; }
 
 /* Filter bar styling - matches ProcessWire native admin */
@@ -720,16 +708,6 @@ class ProcessPwMcpAdmin extends Process {
 .pwmcp-dropdown-nav li.uk-active .pwmcp-count {
     color: #1e87f0;
 }
-/* Bulk actions styling */
-.pwmcp-bulk-select {
-    padding-right: 36px !important;
-    background-position: right 8px center !important;
-}
-.pwmcp-action-row .uk-button-small {
-    height: 36px;
-    line-height: 36px;
-    padding: 0 20px;
-}
 
 /* Selection toolbar */
 .pwmcp-selection-toolbar {
@@ -757,6 +735,7 @@ class ProcessPwMcpAdmin extends Process {
     display: flex;
     align-items: center;
     gap: 6px;
+    border-radius: 3px;
 }
 .pwmcp-selection-actions .uk-button:disabled {
     opacity: 0.4;
@@ -862,6 +841,9 @@ tr.pwmcp-selected {
     padding: 16px 24px;
     border-top: 1px solid #e5e5e5;
 }
+.pwmcp-modal-footer .uk-button {
+    border-radius: 3px;
+}
 .pwmcp-filter-search { min-width: 200px; max-width: 260px; }
 .pwmcp-filter-search input.pwmcp-searching { 
     background-color: #e8f4fc;
@@ -919,26 +901,6 @@ tr.pwmcp-selected {
 }
 .pwmcp-switch input:checked + .pwmcp-slider:before {
     transform: translateX(16px);
-}
-.pwmcp-filter-actions { 
-    display: flex;
-    flex-direction: column;
-    border: 1px solid #d7d7d7;
-    border-left: none;
-    border-radius: 0 4px 4px 0;
-    padding: 12px 16px;
-    background: #fff;
-}
-.pwmcp-action-row { display: flex; gap: 8px; align-items: center; }
-.pwmcp-action-row select { flex: 1; min-width: 120px; }
-.pwmcp-action-row .ui-button { 
-    height: 36px;
-    padding: 0 16px; 
-    font-size: 14px;
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
 }
 
 /* Tree table styling */
