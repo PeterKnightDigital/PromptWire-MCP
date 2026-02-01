@@ -346,10 +346,10 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<span class="pwmcp-selection-count">No pages selected</span>';
         $out .= '</div>';
         $out .= '<div class="pwmcp-selection-actions">';
-        $out .= '<button type="button" class="uk-button uk-button-default uk-button-small pwmcp-bulk-export" disabled>';
+        $out .= '<button type="button" class="uk-button uk-button-default uk-button-small pwmcp-bulk-export pwmcp-action" data-pwmcp-tooltip="Export selected pages to local YAML files" disabled>';
         $out .= $this->lucideIcon('download', 16) . ' <span>Export</span>';
         $out .= '</button>';
-        $out .= '<button type="button" class="uk-button uk-button-primary uk-button-small pwmcp-bulk-import" disabled>';
+        $out .= '<button type="button" class="uk-button uk-button-primary uk-button-small pwmcp-bulk-import pwmcp-action" data-pwmcp-tooltip="Import local changes to ProcessWire" disabled>';
         $out .= $this->lucideIcon('upload', 16) . ' <span>Import</span>';
         $out .= '</button>';
         $out .= '</div>';
@@ -930,12 +930,16 @@ tr.pwmcp-selected {
 .pwmcp-toggle[data-expanded="true"] { color: #999; transform: rotate(90deg); }
 .pwmcp-icon { display: block; }
 .pwmcp-lucide { display: inline-block; vertical-align: middle; }
-.pwmcp-action { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 4px !important; color: #d9534f !important; cursor: pointer !important; text-decoration: none !important; }
-.pwmcp-action:hover { color: #c9302c !important; cursor: pointer !important; }
-.pwmcp-action[title] { cursor: pointer !important; }
-.pwmcp-action * { cursor: pointer !important; }
-/* Custom tooltip system for action icons - no native tooltips */
+/* Action icon styling (table row icons only) */
+a.pwmcp-action { display: inline-flex !important; align-items: center !important; justify-content: center !important; padding: 4px !important; color: #d9534f !important; cursor: pointer !important; text-decoration: none !important; }
+a.pwmcp-action:hover { color: #c9302c !important; cursor: pointer !important; }
+a.pwmcp-action[title] { cursor: pointer !important; }
+a.pwmcp-action * { cursor: pointer !important; }
+/* Custom tooltip system for action elements - no native tooltips */
 .pwmcp-action { position: relative !important; }
+/* Selection toolbar buttons - override action icon colors */
+.pwmcp-selection-actions .pwmcp-action { color: inherit !important; padding: inherit !important; }
+.pwmcp-selection-actions .pwmcp-action:hover { color: inherit !important; }
 .pwmcp-action-tooltip {
     position: absolute;
     bottom: 100%;
