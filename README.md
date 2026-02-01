@@ -376,10 +376,39 @@ The module includes **PwMcpAdmin** — a full-featured admin interface in Proces
   - **Remote Changes** — Page modified in ProcessWire since export (blue)
   - **Conflict** — Both local and remote changed (red)
   - **Never Exported** — Not yet synced (grey)
-- **Bulk actions** — Export or import multiple pages at once
-- **Filter by status** — Find pages with local changes, conflicts, etc.
+- **Smart tree selection** — Checkbox-based selection with branch awareness
+- **Selection toolbar** — Shows count, hidden selections, and modified pages
+- **Filter dropdowns** — UIkit-styled filters with live counts per option
 - **Action icons** — Quick access to Export, Import, and View YAML
 - **Custom tooltips** — Helpful descriptions on hover
+
+### Tree Selection Behavior
+
+The checkbox system is context-aware based on expand/collapse state:
+
+| Scenario | What Happens |
+|----------|--------------|
+| **Check a collapsed parent** | Selects the parent and ALL descendants at every depth |
+| **Check an expanded parent** | Selects only that page (granular mode) |
+| **Uncheck one child** | Parent shows indeterminate (dash) state |
+| **Collapse with selections** | Chevron shows blue dot indicating hidden selections |
+
+**Header checkbox** mirrors tree state: unchecked (none), indeterminate (some), or checked (all).
+
+### Selection Toolbar
+
+Always visible above the table:
+
+- **Selection summary** — "12 pages selected (3 hidden), 5 modified"
+- **Export button** — Active when pages selected, fires immediately
+- **Import button** — Active only when modified pages selected, shows confirmation modal
+
+### Import Confirmation Modal
+
+Bulk imports show a confirmation dialog because they overwrite live CMS pages:
+- States exact count of pages to import
+- Notes any clean pages that will be skipped
+- Confirm button shows the action: "Import 5 pages"
 
 ### UI Terminology
 

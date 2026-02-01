@@ -156,36 +156,99 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<input type="text" id="pwmcp-search" name="q" value="' . htmlspecialchars($searchQuery) . '" placeholder="' . $this->_('Search pages...') . '"' . $autofocus . '>';
         $out .= '</div>';
         
+        // Calculate counts for filters AND build page hierarchy for JS
+        $templateCounts = [];
+        $statusCounts = [
+            'clean' => 0,
+            'localDirty' => 0,
+            'remoteChanged' => 0,
+            'conflict' => 0,
+            'notPulled' => 0,
+        ];
+        $totalPages = 0;
+        $pageHierarchy = []; // pageId => parentId
+        $pageStatuses = [];  // pageId => status
+        
+        foreach ($pages->find("include=hidden") as $page) {
+            if ($page->template->flags & Template::flagSystem) continue;
+            $totalPages++;
+            
+            // Build hierarchy map
+            $pageHierarchy[$page->id] = $page->parent->id;
+            
+            // Count by template
+            $templateName = $page->template->name;
+            $templateCounts[$templateName] = ($templateCounts[$templateName] ?? 0) + 1;
+            
+            // Count by status and store for JS
+            $status = $this->getPageStatus($page, $syncedById);
+            $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+            $pageStatuses[$page->id] = $status;
+        }
+        
         // Template filter
         $out .= '<div class="pwmcp-filter-field">';
-        $out .= '<label for="pwmcp-template">' . $this->lucideIcon('layout-template', 14) . ' ' . $this->_('Template') . '</label>';
-        $out .= '<select id="pwmcp-template" name="template" onchange="this.form.submit()">';
-        $out .= '<option value="">' . $this->_('All') . '</option>';
+        $out .= '<label>' . $this->lucideIcon('layout-template', 14) . ' ' . $this->_('Template') . '</label>';
+        $currentTemplateLabel = $templateFilter ? $templateFilter : $this->_('All');
+        $out .= '<div class="uk-inline" style="width: 100%;">';
+        $out .= '<button class="pwmcp-dropdown-btn" type="button">';
+        $out .= '<span class="pwmcp-dropdown-label">' . $currentTemplateLabel . '</span>';
+        $out .= $this->lucideIcon('chevron-down', 14);
+        $out .= '</button>';
+        $out .= '<div uk-dropdown="mode: click; boundary: ! .pwmcp-filters; boundary-align: true; pos: bottom-justify">';
+        $out .= '<ul class="uk-nav uk-dropdown-nav pwmcp-dropdown-nav">';
+        
+        $allCount = $totalPages;
+        $allClass = !$templateFilter ? ' class="uk-active"' : '';
+        $out .= '<li' . $allClass . '><a href="#" data-filter-name="template" data-filter-value="">';
+        $out .= '<span>' . $this->_('All') . '</span>';
+        $out .= '<span class="pwmcp-count">' . $allCount . '</span>';
+        $out .= '</a></li>';
+        
         foreach ($this->wire('templates') as $template) {
             if ($template->flags & Template::flagSystem) continue;
-            $sel = ($templateFilter === $template->name) ? ' selected' : '';
-            $out .= '<option value="' . $template->name . '"' . $sel . '>' . $template->name . '</option>';
+            $count = $templateCounts[$template->name] ?? 0;
+            $activeClass = ($templateFilter === $template->name) ? ' class="uk-active"' : '';
+            $out .= '<li' . $activeClass . '><a href="#" data-filter-name="template" data-filter-value="' . $template->name . '">';
+            $out .= '<span>' . $template->name . '</span>';
+            $out .= '<span class="pwmcp-count">' . $count . '</span>';
+            $out .= '</a></li>';
         }
-        $out .= '</select>';
+        $out .= '</ul></div></div>';
+        $out .= '<input type="hidden" name="template" id="pwmcp-template-input" value="' . htmlspecialchars($templateFilter) . '">';
         $out .= '</div>';
         
         // Status filter
         $out .= '<div class="pwmcp-filter-field">';
-        $out .= '<label for="pwmcp-status">' . $this->lucideIcon('activity', 14) . ' ' . $this->_('Change Status') . '</label>';
-        $out .= '<select id="pwmcp-status" name="status" onchange="this.form.submit()">';
+        $out .= '<label>' . $this->lucideIcon('activity', 14) . ' ' . $this->_('Change Status') . '</label>';
         $statuses = [
-            '' => $this->_('All'),
-            'clean' => $this->_('In Sync'),
-            'localDirty' => $this->_('Local Changes'),
-            'remoteChanged' => $this->_('Remote Changed'),
-            'conflict' => $this->_('Conflict'),
-            'notPulled' => $this->_('Never Exported'),
+            '' => [$this->_('All'), $totalPages],
+            'clean' => [$this->_('In Sync'), $statusCounts['clean']],
+            'localDirty' => [$this->_('Local Changes'), $statusCounts['localDirty']],
+            'remoteChanged' => [$this->_('Remote Changed'), $statusCounts['remoteChanged']],
+            'conflict' => [$this->_('Conflict'), $statusCounts['conflict']],
+            'notPulled' => [$this->_('Never Exported'), $statusCounts['notPulled']],
         ];
-        foreach ($statuses as $val => $label) {
-            $sel = ($statusFilter === $val) ? ' selected' : '';
-            $out .= '<option value="' . $val . '"' . $sel . '>' . $label . '</option>';
+        
+        $currentStatusLabel = $statusFilter ? $statuses[$statusFilter][0] : $this->_('All');
+        $out .= '<div class="uk-inline" style="width: 100%;">';
+        $out .= '<button class="pwmcp-dropdown-btn" type="button">';
+        $out .= '<span class="pwmcp-dropdown-label">' . $currentStatusLabel . '</span>';
+        $out .= $this->lucideIcon('chevron-down', 14);
+        $out .= '</button>';
+        $out .= '<div uk-dropdown="mode: click; boundary: ! .pwmcp-filters; boundary-align: true; pos: bottom-justify">';
+        $out .= '<ul class="uk-nav uk-dropdown-nav pwmcp-dropdown-nav">';
+        
+        foreach ($statuses as $val => $data) {
+            list($label, $count) = $data;
+            $activeClass = ($statusFilter === $val) ? ' class="uk-active"' : '';
+            $out .= '<li' . $activeClass . '><a href="#" data-filter-name="status" data-filter-value="' . $val . '">';
+            $out .= '<span>' . $label . '</span>';
+            $out .= '<span class="pwmcp-count">' . $count . '</span>';
+            $out .= '</a></li>';
         }
-        $out .= '</select>';
+        $out .= '</ul></div></div>';
+        $out .= '<input type="hidden" name="status" id="pwmcp-status-input" value="' . htmlspecialchars($statusFilter) . '">';
         $out .= '</div>';
         
         $out .= '</div>'; // End filter group
@@ -194,12 +257,12 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<div class="pwmcp-filter-field pwmcp-filter-actions">';
         $out .= '<label>' . $this->_('With selected') . '</label>';
         $out .= '<div class="pwmcp-action-row">';
-        $out .= '<select name="bulk_action">';
+        $out .= '<select name="bulk_action" class="pwmcp-bulk-select">';
         $out .= '<option value="">' . $this->_('Action...') . '</option>';
         $out .= '<option value="pull">' . $this->_('Export') . '</option>';
         $out .= '<option value="push">' . $this->_('Import') . '</option>';
         $out .= '</select>';
-        $out .= '<button type="submit" class="ui-button ui-priority-secondary">' . $this->_('Go') . '</button>';
+        $out .= '<button type="submit" class="uk-button uk-button-primary uk-button-small">' . $this->_('Go') . '</button>';
         $out .= '</div>';
         $out .= '</div>';
         
@@ -290,6 +353,21 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<form method="post" action="./" id="pwmcp-tree-form">';
         $out .= '<input type="hidden" name="bulk_action" value="" class="pwmcp-bulk-action-field">';
         
+        // Selection toolbar
+        $out .= '<div class="pwmcp-selection-toolbar">';
+        $out .= '<div class="pwmcp-selection-summary">';
+        $out .= '<span class="pwmcp-selection-count">No pages selected</span>';
+        $out .= '</div>';
+        $out .= '<div class="pwmcp-selection-actions">';
+        $out .= '<button type="button" class="uk-button uk-button-default uk-button-small pwmcp-bulk-export" disabled>';
+        $out .= $this->lucideIcon('download', 16) . ' <span>Export</span>';
+        $out .= '</button>';
+        $out .= '<button type="button" class="uk-button uk-button-primary uk-button-small pwmcp-bulk-import" disabled>';
+        $out .= $this->lucideIcon('upload', 16) . ' <span>Import</span>';
+        $out .= '</button>';
+        $out .= '</div>';
+        $out .= '</div>';
+        
         // Build table manually for expand/collapse support
         $out .= '<table class="AdminDataTable AdminDataList uk-table pwmcp-tree-table">';
         $out .= '<thead><tr>';
@@ -311,10 +389,35 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '</tbody></table>';
         $out .= '</form>';
         
+        // Import confirmation modal
+        $out .= '<div id="pwmcp-import-modal" class="pwmcp-modal" style="display:none;">';
+        $out .= '<div class="pwmcp-modal-backdrop"></div>';
+        $out .= '<div class="pwmcp-modal-dialog">';
+        $out .= '<div class="pwmcp-modal-header">';
+        $out .= '<h3>Confirm Import</h3>';
+        $out .= '<button type="button" class="pwmcp-modal-close">&times;</button>';
+        $out .= '</div>';
+        $out .= '<div class="pwmcp-modal-body">';
+        $out .= '<p class="pwmcp-modal-message"></p>';
+        $out .= '<p class="uk-text-warning"><strong>This action cannot be undone.</strong></p>';
+        $out .= '</div>';
+        $out .= '<div class="pwmcp-modal-footer">';
+        $out .= '<button type="button" class="uk-button uk-button-default pwmcp-modal-cancel">Cancel</button>';
+        $out .= '<button type="button" class="uk-button uk-button-danger pwmcp-modal-confirm"></button>';
+        $out .= '</div>';
+        $out .= '</div>';
+        $out .= '</div>';
+        
         // Clear filters link when search/filters are active
         if ($isSearchOrFiltered) {
             $out .= '<p style="margin-top: 1em;"><a href="./">&larr; ' . $this->_('Clear filters') . '</a></p>';
         }
+        
+        // Inject page hierarchy and status data for JavaScript
+        $out .= '<script>';
+        $out .= 'var pwmcpPageParents = ' . json_encode($pageHierarchy) . ';';
+        $out .= 'var pwmcpPageStatuses = ' . json_encode($pageStatuses) . ';';
+        $out .= '</script>';
         
         // JavaScript
         $out .= $this->getCleanScript();
@@ -385,18 +488,20 @@ class ProcessPwMcpAdmin extends Process {
      */
     protected function buildTreeRow(Page $page, string $status, int $depth, array $syncLookup, bool $isExpanded = false): string {
         $indent = $depth * 20; // 20px per level
+        $isModified = in_array($status, ['localDirty', 'conflict']);
         
-        $html = '<tr data-page-id="' . $page->id . '" data-depth="' . $depth . '" data-parent-id="' . $page->parent->id . '">';
+        $html = '<tr data-page-id="' . $page->id . '" data-depth="' . $depth . '" data-parent-id="' . $page->parent->id . '" data-status="' . $status . '" data-modified="' . ($isModified ? '1' : '0') . '">';
         
         // Checkbox
-        $html .= '<td><input type="checkbox" name="selected_pages[]" value="' . $page->id . '" class="pwmcp-page-checkbox"></td>';
+        $html .= '<td><input type="checkbox" name="selected_pages[]" value="' . $page->id . '" class="pwmcp-page-checkbox" data-page-id="' . $page->id . '"></td>';
         
         // Title with chevron for expandable parents
         $html .= '<td class="pwmcp-title-cell" style="padding-left:' . ($indent + 8) . 'px;">';
         if ($page->numChildren > 0) {
             $expandedAttr = $isExpanded ? 'true' : 'false';
-            $html .= '<span class="pwmcp-toggle" data-page-id="' . $page->id . '" data-expanded="' . $expandedAttr . '" title="' . $this->_('Expand') . '">';
+            $html .= '<span class="pwmcp-toggle" data-page-id="' . $page->id . '" data-expanded="' . $expandedAttr . '" data-has-children="true" title="' . $this->_('Expand') . '">';
             $html .= '<svg class="pwmcp-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+            $html .= '<span class="pwmcp-toggle-dot" style="display:none;"></span>';
             $html .= '</span> ';
         } else {
             // Spacer for alignment
@@ -540,6 +645,222 @@ class ProcessPwMcpAdmin extends Process {
     background: #fff;
     outline: 2px solid #1e87f0;
     outline-offset: -2px;
+}
+/* UIkit dropdown button styling */
+.pwmcp-dropdown-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 2px;
+    font-size: 14px;
+    min-width: 140px;
+    background: #f1f1f1;
+    color: #354052;
+    transition: background-color 0.15s;
+    height: 36px;
+    box-sizing: border-box;
+    cursor: pointer;
+    gap: 8px;
+}
+.pwmcp-dropdown-btn:hover {
+    background: #e8e8e8;
+}
+.pwmcp-dropdown-btn:focus {
+    background: #fff;
+    outline: 2px solid #1e87f0;
+    outline-offset: -2px;
+}
+.pwmcp-dropdown-btn .pwmcp-dropdown-label {
+    flex: 1;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.pwmcp-dropdown-btn .pwmcp-lucide {
+    flex-shrink: 0;
+    color: #6c7a89;
+}
+/* Dropdown menu styling */
+.pwmcp-filter-field .uk-dropdown {
+    border-radius: 4px;
+    padding: 4px 0;
+}
+.pwmcp-dropdown-nav {
+    min-width: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+.pwmcp-dropdown-nav li a {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    gap: 16px;
+    color: #666;
+}
+.pwmcp-dropdown-nav li a:hover {
+    color: #1e87f0;
+}
+.pwmcp-dropdown-nav li.uk-active a {
+    color: #1e87f0;
+}
+.pwmcp-dropdown-nav li a span:first-child {
+    flex: 1;
+}
+.pwmcp-dropdown-nav .pwmcp-count {
+    color: #999;
+    font-size: 12px;
+    font-weight: normal;
+    flex-shrink: 0;
+}
+.pwmcp-dropdown-nav li.uk-active .pwmcp-count {
+    color: #1e87f0;
+}
+/* Bulk actions styling */
+.pwmcp-bulk-select {
+    padding-right: 36px !important;
+    background-position: right 8px center !important;
+}
+.pwmcp-action-row .uk-button-small {
+    height: 36px;
+    line-height: 36px;
+    padding: 0 20px;
+}
+
+/* Selection toolbar */
+.pwmcp-selection-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: #f8f8f8;
+    border: 1px solid #d7d7d7;
+    border-radius: 4px;
+    margin-bottom: 12px;
+}
+.pwmcp-selection-summary {
+    font-size: 14px;
+    color: #666;
+}
+.pwmcp-selection-count {
+    font-weight: 500;
+}
+.pwmcp-selection-actions {
+    display: flex;
+    gap: 8px;
+}
+.pwmcp-selection-actions .uk-button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.pwmcp-selection-actions .uk-button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.pwmcp-selection-actions .uk-button .pwmcp-lucide {
+    flex-shrink: 0;
+}
+
+/* Checkbox styling */
+.pwmcp-page-checkbox:indeterminate {
+    opacity: 0.6;
+}
+tr.pwmcp-selected {
+    background-color: #f0f7ff !important;
+}
+
+/* Chevron dot for hidden selections */
+.pwmcp-toggle {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+.pwmcp-toggle-dot {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 5px;
+    height: 5px;
+    background: #1e87f0;
+    border-radius: 50%;
+    pointer-events: none;
+}
+
+/* Import confirmation modal */
+.pwmcp-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10000;
+}
+.pwmcp-modal-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+}
+.pwmcp-modal-dialog {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    min-width: 480px;
+    max-width: 600px;
+}
+.pwmcp-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 24px;
+    border-bottom: 1px solid #e5e5e5;
+}
+.pwmcp-modal-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+.pwmcp-modal-close {
+    background: none;
+    border: none;
+    font-size: 28px;
+    line-height: 1;
+    color: #999;
+    cursor: pointer;
+    padding: 0;
+    width: 28px;
+    height: 28px;
+}
+.pwmcp-modal-close:hover {
+    color: #666;
+}
+.pwmcp-modal-body {
+    padding: 24px;
+}
+.pwmcp-modal-body p {
+    margin: 0 0 12px 0;
+}
+.pwmcp-modal-body p:last-child {
+    margin-bottom: 0;
+}
+.pwmcp-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 16px 24px;
+    border-top: 1px solid #e5e5e5;
 }
 .pwmcp-filter-search { min-width: 200px; max-width: 260px; }
 .pwmcp-filter-search input.pwmcp-searching { 
@@ -773,46 +1094,391 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // Select all checkbox
-    var selectAll = document.querySelector('.pwmcp-select-all');
-    if (selectAll) {
-        selectAll.addEventListener('change', function() {
-            document.querySelectorAll('.pwmcp-page-checkbox').forEach(function(cb) {
-                cb.checked = selectAll.checked;
+    // =====================================================================
+    // TREE SELECTION SYSTEM
+    // =====================================================================
+    
+    var selectionState = new Set(); // Stores selected page IDs
+    
+    // Update selection summary and button states
+    function updateSelectionToolbar() {
+        var count = selectionState.size;
+        var summaryEl = document.querySelector('.pwmcp-selection-count');
+        var exportBtn = document.querySelector('.pwmcp-bulk-export');
+        var importBtn = document.querySelector('.pwmcp-bulk-import');
+        
+        var hiddenCount = 0;
+        var modifiedCount = 0;
+        
+        // Update summary text
+        if (count === 0) {
+            summaryEl.textContent = 'No pages selected';
+        } else {
+            selectionState.forEach(function(pageId) {
+                var row = document.querySelector('tr[data-page-id="' + pageId + '"]');
+                if (!row) {
+                    hiddenCount++;
+                }
+                // Use pre-loaded status data for accurate modified count
+                if (isPageModified(pageId)) {
+                    modifiedCount++;
+                }
             });
+            
+            var text = count + ' page' + (count === 1 ? '' : 's') + ' selected';
+            if (hiddenCount > 0) {
+                text += ' (' + hiddenCount + ' hidden)';
+            }
+            if (modifiedCount > 0) {
+                text += ', ' + modifiedCount + ' modified';
+            }
+            summaryEl.textContent = text;
+        }
+        
+        // Update button states
+        exportBtn.disabled = (count === 0);
+        importBtn.disabled = (count === 0 || modifiedCount === 0);
+        
+        if (importBtn.disabled && count > 0) {
+            importBtn.title = 'No modified pages in selection';
+        } else {
+            importBtn.title = '';
+        }
+    }
+    
+    // Build children map from pre-loaded parent map (pwmcpPageParents)
+    var pageChildrenMap = {};
+    if (typeof pwmcpPageParents !== 'undefined') {
+        for (var id in pwmcpPageParents) {
+            var parentId = pwmcpPageParents[id];
+            if (!pageChildrenMap[parentId]) pageChildrenMap[parentId] = [];
+            pageChildrenMap[parentId].push(parseInt(id));
+        }
+    }
+    
+    // Get all descendant page IDs for a given page (uses pre-loaded hierarchy)
+    function getAllDescendants(pageId) {
+        var descendants = [];
+        var queue = [pageId];
+        
+        while (queue.length > 0) {
+            var currentId = queue.shift();
+            var children = pageChildrenMap[currentId] || [];
+            
+            children.forEach(function(childId) {
+                descendants.push(childId);
+                queue.push(childId);
+            });
+        }
+        
+        return descendants;
+    }
+    
+    // Check if a page is modified (has local changes) using pre-loaded status data
+    function isPageModified(pageId) {
+        if (typeof pwmcpPageStatuses !== 'undefined') {
+            var status = pwmcpPageStatuses[pageId];
+            return status === 'localDirty' || status === 'conflict';
+        }
+        // Fallback to DOM check
+        var row = document.querySelector('tr[data-page-id="' + pageId + '"]');
+        return row && row.getAttribute('data-modified') === '1';
+    }
+    
+    // Check if a parent row is collapsed
+    function isParentCollapsed(pageId) {
+        var row = document.querySelector('tr[data-page-id="' + pageId + '"]');
+        if (!row) return false;
+        
+        var toggle = row.querySelector('.pwmcp-toggle');
+        if (!toggle) return false;
+        
+        return toggle.getAttribute('data-expanded') !== 'true';
+    }
+    
+    // Update chevron dots for collapsed parents with selected children
+    function updateChevronDots() {
+        document.querySelectorAll('.pwmcp-toggle').forEach(function(toggle) {
+            var pageId = parseInt(toggle.getAttribute('data-page-id'));
+            var dot = toggle.querySelector('.pwmcp-toggle-dot');
+            var isCollapsed = toggle.getAttribute('data-expanded') !== 'true';
+            
+            if (!dot) return;
+            
+            if (!isCollapsed) {
+                dot.style.display = 'none';
+                return;
+            }
+            
+            // Check if any descendants are selected (uses pre-loaded hierarchy)
+            var descendants = getAllDescendants(pageId);
+            var hasSelectedDescendants = descendants.some(function(descId) {
+                return selectionState.has(descId);
+            });
+            
+            dot.style.display = hasSelectedDescendants ? 'block' : 'none';
         });
     }
     
-    // Handle bulk actions - intercept Go button and submit tree form instead
-    var filterForm = document.querySelector('.pwmcp-filters');
-    var bulkActionSelect = filterForm ? filterForm.querySelector('select[name="bulk_action"]') : null;
-    var goButton = filterForm ? filterForm.querySelector('button[type="submit"]') : null;
+    // Update parent checkbox states (checked/indeterminate/unchecked)
+    function updateParentCheckboxes() {
+        document.querySelectorAll('tr[data-page-id]').forEach(function(row) {
+            var pageId = parseInt(row.getAttribute('data-page-id'));
+            var checkbox = row.querySelector('.pwmcp-page-checkbox');
+            
+            // Use pre-loaded hierarchy to get all descendants
+            var allDescendants = getAllDescendants(pageId);
+            if (allDescendants.length === 0) {
+                // No children - just set checked state based on selection
+                checkbox.checked = selectionState.has(pageId);
+                checkbox.indeterminate = false;
+                return;
+            }
+            
+            // Count selected descendants
+            var selectedDescendants = 0;
+            allDescendants.forEach(function(descId) {
+                if (selectionState.has(descId)) {
+                    selectedDescendants++;
+                }
+            });
+            
+            // Set checkbox state
+            if (selectedDescendants === 0) {
+                // No descendants selected - show this page's own selection state
+                checkbox.checked = selectionState.has(pageId);
+                checkbox.indeterminate = false;
+            } else if (selectedDescendants === allDescendants.length && selectionState.has(pageId)) {
+                // All descendants + this page selected
+                checkbox.checked = true;
+                checkbox.indeterminate = false;
+            } else {
+                // Partial selection
+                checkbox.checked = false;
+                checkbox.indeterminate = true;
+            }
+        });
+    }
+    
+    // Update header select-all checkbox state
+    function updateSelectAllCheckbox() {
+        var selectAll = document.querySelector('.pwmcp-select-all');
+        if (!selectAll) return;
+        
+        // Use pre-loaded hierarchy for total count (includes hidden pages)
+        var totalPages = 0;
+        if (typeof pwmcpPageParents !== 'undefined') {
+            for (var id in pwmcpPageParents) {
+                totalPages++;
+            }
+        }
+        
+        var selectedCount = selectionState.size;
+        
+        if (selectedCount === 0) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        } else if (selectedCount >= totalPages) {
+            selectAll.checked = true;
+            selectAll.indeterminate = false;
+        } else {
+            selectAll.checked = false;
+            selectAll.indeterminate = true;
+        }
+    }
+    
+    // Update row background and checkbox states for selected rows
+    function updateRowStyles() {
+        document.querySelectorAll('tr[data-page-id]').forEach(function(row) {
+            var pageId = parseInt(row.getAttribute('data-page-id'));
+            var checkbox = row.querySelector('.pwmcp-page-checkbox');
+            var isSelected = selectionState.has(pageId);
+            
+            // Update row background
+            if (isSelected) {
+                row.classList.add('pwmcp-selected');
+            } else {
+                row.classList.remove('pwmcp-selected');
+            }
+            
+            // Sync checkbox state (important for newly loaded rows)
+            if (checkbox && !checkbox.indeterminate) {
+                checkbox.checked = isSelected;
+            }
+        });
+    }
+    
+    // Main selection update function
+    function updateSelection() {
+        updateSelectAllCheckbox();
+        updateParentCheckboxes();
+        updateRowStyles();
+        updateChevronDots();
+        updateSelectionToolbar();
+    }
+    
+    // Handle individual checkbox clicks
+    document.addEventListener('change', function(e) {
+        if (!e.target.classList.contains('pwmcp-page-checkbox')) return;
+        
+        var checkbox = e.target;
+        var pageId = parseInt(checkbox.getAttribute('data-page-id'));
+        var row = checkbox.closest('tr');
+        var toggle = row.querySelector('.pwmcp-toggle');
+        var isExpanded = toggle && toggle.getAttribute('data-expanded') === 'true';
+        
+        // Check if this page has children using pre-loaded hierarchy
+        var hasChildren = pageChildrenMap[pageId] && pageChildrenMap[pageId].length > 0;
+        
+        if (checkbox.checked) {
+            // Add to selection
+            selectionState.add(pageId);
+            
+            // If collapsed parent (has children but not expanded), select all descendants
+            if (hasChildren && !isExpanded) {
+                var descendants = getAllDescendants(pageId);
+                descendants.forEach(function(descId) {
+                    selectionState.add(descId);
+                });
+            }
+        } else {
+            // Remove from selection
+            selectionState.delete(pageId);
+            
+            // If collapsed parent, deselect all descendants
+            if (hasChildren && !isExpanded) {
+                var descendants = getAllDescendants(pageId);
+                descendants.forEach(function(descId) {
+                    selectionState.delete(descId);
+                });
+            }
+        }
+        
+        updateSelection();
+    });
+    
+    // Handle select-all checkbox
+    var selectAll = document.querySelector('.pwmcp-select-all');
+    if (selectAll) {
+        selectAll.addEventListener('change', function() {
+            if (this.checked) {
+                // Select ALL pages using pre-loaded hierarchy (includes hidden/collapsed)
+                if (typeof pwmcpPageParents !== 'undefined') {
+                    for (var id in pwmcpPageParents) {
+                        selectionState.add(parseInt(id));
+                    }
+                }
+            } else {
+                // Clear all selections
+                selectionState.clear();
+            }
+            
+            updateSelection();
+        });
+    }
+    
+    // Initialize toolbar on page load
+    updateSelection();
+    
+    // =====================================================================
+    // EXPORT & IMPORT HANDLERS
+    // =====================================================================
+    
+    var exportBtn = document.querySelector('.pwmcp-bulk-export');
+    var importBtn = document.querySelector('.pwmcp-bulk-import');
     var treeForm = document.getElementById('pwmcp-tree-form');
     var hiddenBulkAction = treeForm ? treeForm.querySelector('.pwmcp-bulk-action-field') : null;
     
-    if (goButton && bulkActionSelect && treeForm && hiddenBulkAction) {
-        goButton.addEventListener('click', function(e) {
+    // Export button handler
+    if (exportBtn && treeForm && hiddenBulkAction) {
+        exportBtn.addEventListener('click', function(e) {
             e.preventDefault();
-            e.stopPropagation();
             
-            var action = bulkActionSelect.value;
-            if (!action) {
-                alert('Please select an action');
-                return;
-            }
+            if (selectionState.size === 0) return;
             
-            // Check if any pages are selected
-            var checkedBoxes = document.querySelectorAll('.pwmcp-page-checkbox:checked');
-            if (checkedBoxes.length === 0) {
-                alert('Please select at least one page');
-                return;
-            }
+            // Check all selected checkboxes in the form
+            document.querySelectorAll('.pwmcp-page-checkbox').forEach(function(cb) {
+                var pageId = parseInt(cb.getAttribute('data-page-id'));
+                cb.checked = selectionState.has(pageId);
+            });
             
-            // Copy action to hidden field and submit tree form
-            hiddenBulkAction.value = action;
+            // Set action and submit
+            hiddenBulkAction.value = 'pull';
             hiddenBulkAction.setAttribute('name', 'bulk_action');
             treeForm.submit();
         });
+    }
+    
+    // Import button handler - shows confirmation modal
+    if (importBtn) {
+        importBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            
+            if (selectionState.size === 0) return;
+            
+            // Count modified pages in selection using pre-loaded status data
+            var modifiedCount = 0;
+            var cleanCount = 0;
+            
+            selectionState.forEach(function(pageId) {
+                if (isPageModified(pageId)) {
+                    modifiedCount++;
+                } else {
+                    cleanCount++;
+                }
+            });
+            
+            if (modifiedCount === 0) return;
+            
+            // Show modal
+            var modal = document.getElementById('pwmcp-import-modal');
+            var message = modal.querySelector('.pwmcp-modal-message');
+            var confirmBtn = modal.querySelector('.pwmcp-modal-confirm');
+            
+            var messageText = 'You are about to import ' + modifiedCount + ' page' + (modifiedCount === 1 ? '' : 's') + ' from local YAML files, overwriting their current content in ProcessWire.';
+            if (cleanCount > 0) {
+                messageText += ' ' + cleanCount + ' page' + (cleanCount === 1 ? '' : 's') + ' with no local changes will be skipped.';
+            }
+            
+            message.textContent = messageText;
+            confirmBtn.textContent = 'Import ' + modifiedCount + ' page' + (modifiedCount === 1 ? '' : 's');
+            
+            modal.style.display = 'block';
+        });
+    }
+    
+    // Modal handlers
+    var modal = document.getElementById('pwmcp-import-modal');
+    if (modal) {
+        var closeBtn = modal.querySelector('.pwmcp-modal-close');
+        var cancelBtn = modal.querySelector('.pwmcp-modal-cancel');
+        var confirmBtn = modal.querySelector('.pwmcp-modal-confirm');
+        var backdrop = modal.querySelector('.pwmcp-modal-backdrop');
+        
+        // Close modal
+        function closeModal() {
+            modal.style.display = 'none';
+        }
+        
+        if (closeBtn) closeBtn.addEventListener('click', closeModal);
+        if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
+        if (backdrop) backdrop.addEventListener('click', closeModal);
+        
+        // Confirm import
+        if (confirmBtn && treeForm && hiddenBulkAction) {
+            confirmBtn.addEventListener('click', function() {
+                // Check all selected checkboxes in the form
+                document.querySelectorAll('.pwmcp-page-checkbox').forEach(function(cb) {
+                    var pageId = parseInt(cb.getAttribute('data-page-id'));
+                    cb.checked = selectionState.has(pageId);
+                });
+                
+                // Set action and submit
+                hiddenBulkAction.value = 'push';
+                hiddenBulkAction.setAttribute('name', 'bulk_action');
+                treeForm.submit();
+            });
+        }
     }
     
     // Toggle expand/collapse for tree nodes
@@ -839,6 +1505,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 nextRow = nextRow.nextElementSibling;
                 toRemove.remove();
             }
+            
+            // Update selection state after collapse
+            updateSelection();
         } else {
             // Expand: load children via AJAX
             toggle.setAttribute('data-expanded', 'true');
@@ -856,12 +1525,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (html.trim()) {
                         currentRow.insertAdjacentHTML('afterend', html);
                         // Initialize tooltips and cursors for newly loaded content
-                        document.querySelectorAll('.pwmcp-action').forEach(function(action) {
-                            action.style.cursor = 'pointer';
-                            if (typeof ProcessWire !== 'undefined' && ProcessWire.setupTooltips) {
-                                ProcessWire.setupTooltips(action);
-                            }
-                        });
+                        initializeActionButtons();
+                        
+                        // Update selection state after expand
+                        updateSelection();
                     }
                 })
                 .catch(function(err) {
@@ -904,17 +1571,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (html.trim()) {
                         currentRow.insertAdjacentHTML('afterend', html);
                         // Initialize tooltips and cursors for newly loaded content
-                        document.querySelectorAll('.pwmcp-action').forEach(function(action) {
-                            action.style.cursor = 'pointer';
-                            if (typeof ProcessWire !== 'undefined' && ProcessWire.setupTooltips) {
-                                ProcessWire.setupTooltips(action);
-                            }
-                        });
+                        initializeActionButtons();
                     }
                     pendingLoads--;
                     // After this batch loads, check if there are more to expand
                     if (pendingLoads === 0) {
-                        setTimeout(expandAllNodes, 50);
+                        setTimeout(function() {
+                            expandAllNodes();
+                            updateSelection();
+                        }, 50);
                     }
                 })
                 .catch(function(err) {
@@ -937,7 +1602,29 @@ document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('.pwmcp-toggle[data-expanded="true"]').forEach(function(toggle) {
             toggle.setAttribute('data-expanded', 'false');
         });
+        
+        // Update selection state after collapse
+        updateSelection();
     }
+    
+    // UIkit dropdown filter handlers
+    document.querySelectorAll('.pwmcp-dropdown-nav a').forEach(function(link) {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            var filterName = this.getAttribute('data-filter-name');
+            var filterValue = this.getAttribute('data-filter-value');
+            var input = document.getElementById('pwmcp-' + filterName + '-input');
+            
+            if (input) {
+                input.value = filterValue;
+                // Submit the form
+                var form = input.closest('form');
+                if (form) {
+                    form.submit();
+                }
+            }
+        });
+    });
     
     // Function to initialize action buttons with custom tooltips (no native tooltips)
     function initializeActionButtons() {
