@@ -370,6 +370,9 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/assets/pw-mcp/news --dr
 The module includes **PwMcpAdmin** — a full-featured admin interface in ProcessWire:
 
 - **Hierarchical page tree** with expand/collapse navigation
+- **Unpublished/hidden page support** — Pages styled like ProcessWire's native tree:
+  - Unpublished pages shown with strikethrough text
+  - Hidden pages shown with reduced opacity
 - **Status badges** color-coded by sync state:
   - **In Sync** — No changes (green)
   - **Local Changes** — Edits pending locally (yellow)
@@ -402,6 +405,26 @@ Always visible above the table:
 - **Selection summary** — "12 pages selected (3 hidden), 5 modified"
 - **Export button** — Active when pages selected, fires immediately
 - **Import button** — Active only when modified pages selected, shows confirmation modal
+
+### Import Preview
+
+When importing changes, a preview shows exactly which fields changed with content snippets:
+
+```
+Body
+Lower back injuries can vary widely in how they present and how long...
+
+matrix→Body[1]
+Lower back injuries can be painful, disruptive, and slow to resolve...
+
+matrix→Body[2]
+Common causes include poor posture, heavy lifting, and sports injuries...
+```
+
+**Features:**
+- Simple fields show a truncated preview of the new content
+- Matrix/repeater fields use breadcrumb notation: `matrix→fieldname[item#]`
+- Each changed item within a matrix is listed individually with its content
 
 ### Import Confirmation Modal
 

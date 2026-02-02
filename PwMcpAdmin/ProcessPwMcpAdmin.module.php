@@ -169,7 +169,7 @@ class ProcessPwMcpAdmin extends Process {
         $pageHierarchy = []; // pageId => parentId
         $pageStatuses = [];  // pageId => status
         
-        foreach ($pages->find("include=hidden") as $page) {
+        foreach ($pages->find("include=all") as $page) {
             if ($page->template->flags & Template::flagSystem) continue;
             $totalPages++;
             
@@ -264,7 +264,7 @@ class ProcessPwMcpAdmin extends Process {
         
         if ($isSearchOrFiltered) {
             // Search/filter mode: show flat list of matching pages
-            $selector = "include=hidden, sort=path";
+            $selector = "include=all, sort=path";
             if ($searchQuery) {
                 $selector .= ", title|name%=" . $this->wire('sanitizer')->selectorValue($searchQuery);
             }
@@ -304,7 +304,7 @@ class ProcessPwMcpAdmin extends Process {
             }
             
             // Add Home's children at depth 1
-            $homeChildren = $pages->find("parent=1, include=hidden, sort=sort");
+            $homeChildren = $pages->find("parent=1, include=all, sort=sort");
             foreach ($homeChildren as $page) {
                 if ($page->template->flags & Template::flagSystem) continue;
                 
@@ -477,7 +477,17 @@ class ProcessPwMcpAdmin extends Process {
         $indent = $depth * 20; // 20px per level
         $isModified = in_array($status, ['localDirty', 'conflict']);
         
-        $html = '<tr data-page-id="' . $page->id . '" data-depth="' . $depth . '" data-parent-id="' . $page->parent->id . '" data-status="' . $status . '" data-modified="' . ($isModified ? '1' : '0') . '">';
+        // Determine page publish status for visual styling (matching ProcessWire's official tree)
+        $pageStateClasses = [];
+        if ($page->isUnpublished()) {
+            $pageStateClasses[] = 'pwmcp-unpublished';
+        }
+        if ($page->isHidden()) {
+            $pageStateClasses[] = 'pwmcp-hidden';
+        }
+        $stateClassStr = implode(' ', $pageStateClasses);
+        
+        $html = '<tr data-page-id="' . $page->id . '" data-depth="' . $depth . '" data-parent-id="' . $page->parent->id . '" data-status="' . $status . '" data-modified="' . ($isModified ? '1' : '0') . '"' . ($stateClassStr ? ' class="' . $stateClassStr . '"' : '') . '>';
         
         // Checkbox
         $html .= '<td><input type="checkbox" name="selected_pages[]" value="' . $page->id . '" class="pwmcp-page-checkbox" data-page-id="' . $page->id . '"></td>';
@@ -534,7 +544,7 @@ class ProcessPwMcpAdmin extends Process {
         }
         
         // Get children first (fast)
-        $children = $pages->find("parent=$parentId, include=hidden, sort=sort");
+        $children = $pages->find("parent=$parentId, include=all, sort=sort");
         
         // Get sync status for accurate badge display
         $syncManager = $this->getSyncManager();
@@ -1002,6 +1012,10 @@ a.pwmcp-action * { cursor: pointer !important; }
 .pwmcp-title-cell { white-space: nowrap; line-height: 1.6em; max-width: 350px; overflow: hidden; text-overflow: ellipsis; }
 .pwmcp-title-cell a { display: inline; }
 .pwmcp-title-cell small { font-size: 13px; color: #999; }
+/* Page publish status styling - matches ProcessWire's official tree */
+tr.pwmcp-unpublished .pwmcp-title-cell a { text-decoration: line-through; color: #999; }
+tr.pwmcp-hidden { opacity: 0.6; }
+tr.pwmcp-unpublished.pwmcp-hidden .pwmcp-title-cell a { text-decoration: line-through; color: #999; }
 .pwmcp-spinner { 
     display: inline-block; 
     width: 12px; 
@@ -1876,12 +1890,21 @@ HTML;
         
         if (isset($result['dryRun']) && $result['dryRun']) {
             if (!empty($result['changes'])) {
-                $preview->value = '<ul>';
+                $preview->value = '<div class="pwmcp-changes-list">';
+                
                 foreach ($result['changes'] as $field => $change) {
-                    $preview->value .= "<li><strong>{$field}</strong>: " . 
-                        htmlspecialchars(substr(json_encode($change), 0, 100)) . "...</li>";
+                    $changePreview = $change['preview'] ?? '';
+                    
+                    // Format the preview text (convert newlines to <br> for matrix field details)
+                    $previewText = nl2br(htmlspecialchars($changePreview));
+                    
+                    $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
+                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . htmlspecialchars($field) . '</strong></div>';
+                    $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
+                    $preview->value .= '</div>';
                 }
-                $preview->value .= '</ul>';
+                
+                $preview->value .= '</div>';
             } else {
                 $preview->value = '<p>' . $this->_('No changes detected.') . '</p>';
             }

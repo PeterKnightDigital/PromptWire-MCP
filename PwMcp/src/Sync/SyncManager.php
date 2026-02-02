@@ -886,17 +886,241 @@ class SyncManager {
             $newNorm = $this->normalizeForComparison($newValue);
             
             if ($currentNorm !== $newNorm) {
-                $changes[$fieldName] = [
-                    'field' => $fieldName,
-                    'type' => $currentValue === null ? 'add' : 'modify',
-                    'preview' => is_string($newValue) 
-                        ? substr(strip_tags($newValue), 0, 100) . (strlen($newValue) > 100 ? '...' : '')
-                        : gettype($newValue),
-                ];
+                // Check if this is a matrix/repeater field - expand into sub-field entries
+                $matrixChanges = $this->getMatrixFieldChanges($fieldName, $newValue, $currentValue);
+                
+                if (!empty($matrixChanges)) {
+                    // Add each sub-field as its own entry with breadcrumb name
+                    foreach ($matrixChanges as $subFieldName => $subChange) {
+                        $breadcrumb = "{$fieldName}→{$subFieldName}";
+                        $changes[$breadcrumb] = [
+                            'field' => $breadcrumb,
+                            'type' => 'modify',
+                            'preview' => $subChange['preview'],
+                        ];
+                    }
+                } else {
+                    // Regular field - use standard preview
+                    $changes[$fieldName] = [
+                        'field' => $fieldName,
+                        'type' => $currentValue === null ? 'add' : 'modify',
+                        'preview' => $this->generateChangePreview($newValue, $currentValue),
+                    ];
+                }
             }
         }
         
         return $changes;
+    }
+    
+    /**
+     * Get individual field changes within a matrix/repeater field
+     * 
+     * @param string $parentField Parent field name
+     * @param mixed $newValue New matrix/repeater value
+     * @param mixed $currentValue Current matrix/repeater value
+     * @return array Array of sub-field changes, or empty if not a matrix/repeater
+     */
+    private function getMatrixFieldChanges(string $parentField, $newValue, $currentValue): array {
+        // Must be arrays
+        if (!is_array($newValue)) {
+            return [];
+        }
+        
+        $firstItem = reset($newValue);
+        if (!is_array($firstItem)) {
+            return [];
+        }
+        
+        // Check if it's a matrix/repeater (items have _itemId or _matrixType)
+        if (!isset($firstItem['_itemId']) && !isset($firstItem['_matrixType'])) {
+            return [];
+        }
+        
+        $currentArray = is_array($currentValue) ? $currentValue : [];
+        
+        // Build lookup of current items by _itemId
+        $currentById = [];
+        foreach ($currentArray as $item) {
+            if (is_array($item) && isset($item['_itemId'])) {
+                $currentById[$item['_itemId']] = $item;
+            }
+        }
+        
+        // Find each specific field change in each item - list them individually
+        $result = [];
+        $itemIndex = 0;
+        
+        foreach ($newValue as $newItem) {
+            if (!is_array($newItem) || !isset($newItem['_itemId'])) continue;
+            
+            $itemId = $newItem['_itemId'];
+            $currentItem = $currentById[$itemId] ?? [];
+            $itemIndex++;
+            
+            foreach ($newItem as $subFieldName => $subFieldValue) {
+                // Skip metadata fields
+                if (strpos($subFieldName, '_') === 0) continue;
+                
+                $currentSubValue = $currentItem[$subFieldName] ?? null;
+                $newNorm = $this->normalizeForComparison($subFieldValue);
+                $curNorm = $this->normalizeForComparison($currentSubValue);
+                
+                if ($newNorm !== $curNorm) {
+                    // Generate preview snippet
+                    $preview = '';
+                    if (is_string($subFieldValue)) {
+                        $text = strip_tags($subFieldValue);
+                        $preview = strlen($text) > 80 ? substr($text, 0, 80) . '...' : $text;
+                    } else {
+                        $preview = '(non-text content)';
+                    }
+                    
+                    // Use item index for unique key: "Body[1]", "Body[2]", etc.
+                    $key = "{$subFieldName}[{$itemIndex}]";
+                    $result[$key] = [
+                        'preview' => $preview,
+                    ];
+                }
+            }
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Generate a human-readable preview of a change
+     * 
+     * For simple strings: shows truncated text
+     * For arrays (matrix/repeater): shows which specific fields changed
+     * For page references: shows page titles/paths
+     * 
+     * @param mixed $newValue The new value
+     * @param mixed $currentValue The current value (for comparison context)
+     * @return string Human-readable preview
+     */
+    private function generateChangePreview($newValue, $currentValue): string {
+        // Simple string - show truncated preview
+        if (is_string($newValue)) {
+            $text = strip_tags($newValue);
+            return strlen($text) > 100 ? substr($text, 0, 100) . '...' : $text;
+        }
+        
+        // Null or empty
+        if ($newValue === null || $newValue === '') {
+            return '(empty)';
+        }
+        
+        // Boolean
+        if (is_bool($newValue)) {
+            return $newValue ? 'true' : 'false';
+        }
+        
+        // Numeric
+        if (is_numeric($newValue)) {
+            return (string) $newValue;
+        }
+        
+        // Array - could be matrix, repeater, page reference, or other complex field
+        if (is_array($newValue)) {
+            $itemCount = count($newValue);
+            $currentArray = is_array($currentValue) ? $currentValue : [];
+            
+            // Check if it's a matrix/repeater (items have _itemId or _matrixType)
+            $firstItem = reset($newValue);
+            if (is_array($firstItem)) {
+                if (isset($firstItem['_itemId']) || isset($firstItem['_matrixType'])) {
+                    // Build lookup of current items by _itemId for comparison
+                    $currentById = [];
+                    foreach ($currentArray as $item) {
+                        if (is_array($item) && isset($item['_itemId'])) {
+                            $currentById[$item['_itemId']] = $item;
+                        }
+                    }
+                    
+                    // Find which specific fields changed in which items, with content snippets
+                    $changedDetails = []; // fieldName => ['count' => N, 'snippet' => '...']
+                    foreach ($newValue as $newItem) {
+                        if (!is_array($newItem) || !isset($newItem['_itemId'])) continue;
+                        
+                        $itemId = $newItem['_itemId'];
+                        $currentItem = $currentById[$itemId] ?? [];
+                        
+                        // Compare each field in this item
+                        foreach ($newItem as $fieldName => $fieldValue) {
+                            // Skip metadata fields
+                            if (strpos($fieldName, '_') === 0) continue;
+                            
+                            $currentFieldValue = $currentItem[$fieldName] ?? null;
+                            $newNorm = $this->normalizeForComparison($fieldValue);
+                            $curNorm = $this->normalizeForComparison($currentFieldValue);
+                            
+                            if ($newNorm !== $curNorm) {
+                                if (!isset($changedDetails[$fieldName])) {
+                                    $changedDetails[$fieldName] = ['count' => 0, 'snippet' => ''];
+                                }
+                                $changedDetails[$fieldName]['count']++;
+                                
+                                // Capture a snippet from the first change we find for this field
+                                if (empty($changedDetails[$fieldName]['snippet']) && is_string($fieldValue)) {
+                                    $text = strip_tags($fieldValue);
+                                    $changedDetails[$fieldName]['snippet'] = strlen($text) > 80 
+                                        ? substr($text, 0, 80) . '...' 
+                                        : $text;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (empty($changedDetails)) {
+                        return "No field changes detected";
+                    }
+                    
+                    // Format with breadcrumb style: "→fieldname\nsnippet"
+                    $parts = [];
+                    foreach ($changedDetails as $fieldName => $info) {
+                        $count = $info['count'];
+                        $snippet = $info['snippet'];
+                        $countNote = $count > 1 ? " ({$count} items)" : "";
+                        
+                        if ($snippet) {
+                            $parts[] = "→{$fieldName}{$countNote}\n{$snippet}";
+                        } else {
+                            $parts[] = "→{$fieldName}{$countNote}";
+                        }
+                    }
+                    
+                    // Join with double newlines for separation between fields
+                    return implode("\n\n", $parts);
+                }
+                
+                // Page reference array (items have 'id' and maybe '_pageRef')
+                if (isset($firstItem['_pageRef']) || isset($firstItem['id'])) {
+                    $titles = [];
+                    foreach ($newValue as $ref) {
+                        if (isset($ref['_comment'])) {
+                            // Extract title from comment like "John Browne @ /path/"
+                            $comment = $ref['_comment'];
+                            $atPos = strpos($comment, ' @ ');
+                            $titles[] = $atPos !== false ? substr($comment, 0, $atPos) : $comment;
+                        } elseif (isset($ref['id'])) {
+                            $titles[] = "ID:{$ref['id']}";
+                        }
+                    }
+                    $titleList = implode(', ', array_slice($titles, 0, 3));
+                    if (count($titles) > 3) {
+                        $titleList .= ' +' . (count($titles) - 3) . ' more';
+                    }
+                    return "{$itemCount} page(s): {$titleList}";
+                }
+            }
+            
+            // Generic array - show count
+            return "{$itemCount} item(s)";
+        }
+        
+        // Fallback
+        return gettype($newValue);
     }
     
     /**
