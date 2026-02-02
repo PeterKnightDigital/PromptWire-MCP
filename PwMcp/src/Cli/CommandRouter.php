@@ -209,6 +209,21 @@ class CommandRouter {
                 $published = isset($flags['published']);
                 return $this->pagesPublish($directory, $dryRun, !$published);
                 
+            // ================================================================
+            // PHASE 4: DIRECT WRITE TOOLS
+            // ================================================================
+            
+            case 'matrix:add':
+                $pageIdOrPath = $positional[0] ?? null;
+                $fieldName = $positional[1] ?? null;
+                $matrixType = $positional[2] ?? null;
+                if (!$pageIdOrPath || !$fieldName || !$matrixType) {
+                    return ['error' => 'Usage: matrix:add [page-id-or-path] [field-name] [matrix-type] --content=\'{"field":"value"}\''];
+                }
+                $content = isset($flags['content']) ? json_decode($flags['content'], true) : [];
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                return $this->matrixAdd($pageIdOrPath, $fieldName, $matrixType, $content, $dryRun);
+            
             case 'help':
             default:
                 return $this->help();
@@ -1161,6 +1176,153 @@ class CommandRouter {
         return $syncManager->publishPages($directory, $dryRun, $unpublished);
     }
     
+    // ========================================================================
+    // PHASE 4: DIRECT WRITE TOOLS
+    // ========================================================================
+    
+    /**
+     * Add a new matrix item to a page
+     * 
+     * Creates a new repeater/matrix item with the specified type and content.
+     * Uses ProcessWire's native API to ensure proper item creation.
+     * 
+     * @param int|string $pageIdOrPath Page ID or path
+     * @param string $fieldName Matrix/repeater field name
+     * @param string $matrixType Matrix type name (e.g., 'faq', 'body', 'cta')
+     * @param array $content Field values for the new item
+     * @param bool $dryRun Preview without creating (default: true)
+     * @return array Result with created item info
+     */
+    private function matrixAdd($pageIdOrPath, string $fieldName, string $matrixType, array $content, bool $dryRun = true): array {
+        // Get the page
+        if (is_numeric($pageIdOrPath)) {
+            $page = $this->wire->pages->get((int) $pageIdOrPath);
+        } else {
+            $page = $this->wire->pages->get($pageIdOrPath);
+        }
+        
+        if (!$page || !$page->id) {
+            return ['error' => "Page not found: $pageIdOrPath"];
+        }
+        
+        // Verify the field exists on this page's template
+        $field = $this->wire->fields->get($fieldName);
+        if (!$field) {
+            return ['error' => "Field not found: $fieldName"];
+        }
+        
+        if (!$page->template->hasField($field)) {
+            return ['error' => "Field '$fieldName' is not on template '{$page->template->name}'"];
+        }
+        
+        // Verify it's a repeater/matrix field
+        $fieldType = $field->type->className();
+        if (!in_array($fieldType, ['FieldtypeRepeater', 'FieldtypeRepeaterMatrix'])) {
+            return ['error' => "Field '$fieldName' is not a repeater/matrix field (type: $fieldType)"];
+        }
+        
+        // Get the matrix field value
+        $matrix = $page->get($fieldName);
+        
+        // For RepeaterMatrix, verify the type exists
+        $isMatrix = ($fieldType === 'FieldtypeRepeaterMatrix');
+        $matrixTypeId = null;
+        
+        if ($isMatrix) {
+            // Find the matrix type ID by name
+            for ($i = 1; $i <= 20; $i++) {
+                $typeName = $field->get("matrix{$i}_name");
+                if ($typeName === $matrixType) {
+                    $matrixTypeId = $i;
+                    break;
+                }
+            }
+            
+            if ($matrixTypeId === null) {
+                // List available types for helpful error
+                $availableTypes = [];
+                for ($i = 1; $i <= 20; $i++) {
+                    $typeName = $field->get("matrix{$i}_name");
+                    if ($typeName) {
+                        $availableTypes[] = $typeName;
+                    }
+                }
+                return [
+                    'error' => "Matrix type '$matrixType' not found on field '$fieldName'",
+                    'availableTypes' => $availableTypes,
+                ];
+            }
+        }
+        
+        // Dry-run: show what would be created
+        if ($dryRun) {
+            return [
+                'success' => true,
+                'dryRun' => true,
+                'message' => 'Matrix item would be created (dry-run mode)',
+                'page' => [
+                    'id' => $page->id,
+                    'path' => $page->path,
+                    'title' => $page->title,
+                ],
+                'field' => $fieldName,
+                'matrixType' => $matrixType,
+                'matrixTypeId' => $matrixTypeId,
+                'content' => $content,
+                'currentItemCount' => $matrix->count(),
+                'newItemPosition' => $matrix->count() + 1,
+            ];
+        }
+        
+        // Create the new matrix item
+        if ($isMatrix) {
+            $newItem = $matrix->getNew($matrixType);
+        } else {
+            // Regular repeater
+            $newItem = $matrix->getNew();
+        }
+        
+        if (!$newItem) {
+            return ['error' => 'Failed to create new matrix item'];
+        }
+        
+        // Apply content values
+        $appliedFields = [];
+        $skippedFields = [];
+        
+        foreach ($content as $subFieldName => $value) {
+            // Check if this field exists on the item's template
+            if ($newItem->template->hasField($subFieldName)) {
+                $newItem->set($subFieldName, $value);
+                $appliedFields[] = $subFieldName;
+            } else {
+                $skippedFields[] = $subFieldName;
+            }
+        }
+        
+        // Add to matrix and save
+        $matrix->add($newItem);
+        $page->save($fieldName);
+        
+        return [
+            'success' => true,
+            'message' => 'Matrix item created successfully',
+            'page' => [
+                'id' => $page->id,
+                'path' => $page->path,
+                'title' => $page->title,
+            ],
+            'field' => $fieldName,
+            'matrixType' => $matrixType,
+            'newItem' => [
+                'id' => $newItem->id,
+                'position' => $matrix->count(),
+            ],
+            'appliedFields' => $appliedFields,
+            'skippedFields' => $skippedFields,
+        ];
+    }
+    
     /**
      * Export complete site schema
      * 
@@ -1211,6 +1373,7 @@ class CommandRouter {
                 'page:new [template] [parent] [name]' => 'Create new page scaffold locally',
                 'page:publish [path]' => 'Publish new page to ProcessWire (--dry-run=0 to create)',
                 'pages:publish [directory]' => 'Bulk publish new pages (--dry-run=0 to create)',
+                'matrix:add [page] [field] [type]' => 'Add a new matrix item (--dry-run=0 to create)',
                 'help' => 'Show this help',
             ],
             'flags' => [
@@ -1228,6 +1391,7 @@ class CommandRouter {
                 '--content-format=yaml|json' => 'Sync file format (default: yaml)',
                 '--title="Title"' => 'Page title (page:new)',
                 '--published' => 'Create page as published instead of unpublished',
+                '--content=\'{"field":"value"}\'' => 'JSON content for matrix item (matrix:add)',
             ],
         ];
     }

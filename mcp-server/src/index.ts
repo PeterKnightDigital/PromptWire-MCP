@@ -387,6 +387,40 @@ const tools = [
       },
     },
   },
+  // ========================================================================
+  // PHASE 4: DIRECT WRITE TOOLS
+  // ========================================================================
+  {
+    name: 'pw_matrix_add',
+    description: 'Add a new matrix/repeater item to a page. Supports adding FAQs, body blocks, CTAs, and other matrix types directly without the YAML sync workflow.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        pageIdOrPath: {
+          type: 'string',
+          description: 'Page ID (number) or path (e.g., "/about/" or "/services/web-design/")',
+        },
+        fieldName: {
+          type: 'string',
+          description: 'Name of the matrix/repeater field (e.g., "matrix")',
+        },
+        matrixType: {
+          type: 'string',
+          description: 'Matrix type name (e.g., "faq", "body", "cta", "breakout")',
+        },
+        content: {
+          type: 'object',
+          description: 'Field values for the new item as key-value pairs (e.g., {"question": "What is...?", "answer": "It is..."})',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), preview what would be created. Set to false to create the item.',
+          default: true,
+        },
+      },
+      required: ['pageIdOrPath', 'fieldName', 'matrixType', 'content'],
+    },
+  },
 ];
 
 // ============================================================================
@@ -667,6 +701,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         cmdArgs.push('--published');
       }
       const result = await runPwCommand('pages:publish', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // ========================================================================
+    // PHASE 4: DIRECT WRITE TOOLS
+    // ========================================================================
+
+    // Add a new matrix item to a page
+    case 'pw_matrix_add': {
+      const { pageIdOrPath, fieldName, matrixType, content, dryRun } = args as {
+        pageIdOrPath: string;
+        fieldName: string;
+        matrixType: string;
+        content: Record<string, unknown>;
+        dryRun?: boolean;
+      };
+      const cmdArgs = [pageIdOrPath, fieldName, matrixType];
+      // Pass content as JSON string
+      cmdArgs.push(`--content=${JSON.stringify(content)}`);
+      if (dryRun === false) {
+        cmdArgs.push('--dry-run=0');
+      }
+      const result = await runPwCommand('matrix:add', cmdArgs);
       return formatToolResponse(result);
     }
 

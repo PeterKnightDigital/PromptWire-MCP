@@ -181,6 +181,7 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `page:new [template] [parent] [name]` | Create new page scaffold locally |
 | `page:publish [path]` | Publish new page to ProcessWire |
 | `pages:publish [directory]` | Bulk publish new pages |
+| `matrix:add [page] [field] [type]` | Add a new matrix item to a page |
 | `help` | Show available commands |
 
 ## CLI Flags
@@ -200,6 +201,7 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `--limit=N` | Limit number of pages to pull |
 | `--title="Title"` | Page title (page:new) |
 | `--published` | Create page as published instead of unpublished |
+| `--content='{"field":"value"}'` | JSON content for matrix item (matrix:add) |
 
 ## Example Output
 
@@ -446,11 +448,48 @@ Bulk imports show a confirmation dialog because they overwrite live CMS pages:
 
 This makes the direction of data flow clearer in the visual interface.
 
+## Direct Write Tools (Phase 4)
+
+Add content directly to pages from chat without the YAML sync workflow:
+
+### Add Matrix Items
+
+Add FAQs, body blocks, CTAs, and other matrix items directly:
+
+```bash
+# Preview what would be created (dry-run)
+php site/modules/PwMcp/bin/pw-mcp.php matrix:add /about/ matrix faq \
+  --content='{"question":"What is a web design project?","answer":"We offer web design, development..."}' \
+  --pretty
+
+# Create the item
+php site/modules/PwMcp/bin/pw-mcp.php matrix:add /about/ matrix faq \
+  --content='{"question":"What is a web design project?","answer":"We offer web design, development..."}' \
+  --dry-run=0 --pretty
+```
+
+**Via Cursor Chat:**
+
+> "Add these FAQs to the web design project page:
+> - Q: What is your process? A: We follow an agile approach...
+> - Q: How long does a project take? A: Project timelines vary based on..."
+
+The AI will use `pw_matrix_add` to create each FAQ item.
+
+### Available Matrix Write Tools
+
+| Tool | Description |
+|------|-------------|
+| `pw_matrix_add` | Add a new matrix item with content |
+
+More write tools coming soon: `pw_matrix_update`, `pw_matrix_delete`, `pw_matrix_reorder`
+
 ## Coming Soon
 
 - File and image uploads
 - Page deletion with safety checks
 - Real-time sync notifications
+- Bulk matrix operations
 
 ## License
 
