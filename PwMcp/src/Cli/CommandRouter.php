@@ -1277,6 +1277,10 @@ class CommandRouter {
         // Create the new matrix item
         if ($isMatrix) {
             $newItem = $matrix->getNew($matrixType);
+            // Explicitly set the matrix type ID (some PW versions need this)
+            if ($newItem && $matrixTypeId) {
+                $newItem->set('repeater_matrix_type', $matrixTypeId);
+            }
         } else {
             // Regular repeater
             $newItem = $matrix->getNew();
