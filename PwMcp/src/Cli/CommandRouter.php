@@ -1425,6 +1425,32 @@ class CommandRouter {
         
         // Dry-run: show what would be created
         if ($dryRun) {
+            // Analyze content to detect nested repeaters
+            $contentAnalysis = [];
+            foreach ($content as $subFieldName => $value) {
+                $subField = $this->wire->fields->get($subFieldName);
+                $subFieldType = $subField ? $subField->type->className() : 'unknown';
+                $isNestedRepeater = in_array($subFieldType, ['FieldtypeRepeater', 'FieldtypeRepeaterMatrix']);
+                
+                if ($isNestedRepeater && is_array($value) && !empty($value)) {
+                    $firstItem = reset($value);
+                    if (is_array($firstItem)) {
+                        $contentAnalysis[$subFieldName] = [
+                            'type' => 'nested_repeater',
+                            'itemCount' => count($value),
+                            'subFields' => array_keys($firstItem),
+                        ];
+                        continue;
+                    }
+                }
+                
+                $contentAnalysis[$subFieldName] = [
+                    'type' => 'simple',
+                    'fieldType' => $subFieldType,
+                    'preview' => is_string($value) ? substr($value, 0, 50) . (strlen($value) > 50 ? '...' : '') : gettype($value),
+                ];
+            }
+            
             return [
                 'success' => true,
                 'dryRun' => true,
@@ -1437,7 +1463,7 @@ class CommandRouter {
                 'field' => $fieldName,
                 'matrixType' => $matrixType,
                 'matrixTypeId' => $matrixTypeId,
-                'content' => $content,
+                'contentAnalysis' => $contentAnalysis,
                 'currentItemCount' => $matrix->count(),
                 'newItemPosition' => $matrix->count() + 1,
             ];
@@ -1462,22 +1488,73 @@ class CommandRouter {
         // Apply content values
         $appliedFields = [];
         $skippedFields = [];
+        $nestedRepeaters = [];
         
         foreach ($content as $subFieldName => $value) {
             // Check if this field exists on the item's template
-            if ($newItem->template->hasField($subFieldName)) {
-                $newItem->set($subFieldName, $value);
-                $appliedFields[] = $subFieldName;
-            } else {
+            if (!$newItem->template->hasField($subFieldName)) {
                 $skippedFields[] = $subFieldName;
+                continue;
             }
+            
+            // Check if this field is a nested repeater with array content
+            $subField = $this->wire->fields->get($subFieldName);
+            $subFieldType = $subField ? $subField->type->className() : null;
+            $isNestedRepeater = in_array($subFieldType, ['FieldtypeRepeater', 'FieldtypeRepeaterMatrix']);
+            
+            if ($isNestedRepeater && is_array($value) && !empty($value)) {
+                // Check if it's an array of objects (associative arrays)
+                $firstItem = reset($value);
+                if (is_array($firstItem)) {
+                    // This is a nested repeater - we'll populate it after the parent is saved
+                    $nestedRepeaters[$subFieldName] = $value;
+                    $appliedFields[] = $subFieldName . ' (nested repeater - ' . count($value) . ' items)';
+                    continue;
+                }
+            }
+            
+            // Regular field - set directly
+            $newItem->set($subFieldName, $value);
+            $appliedFields[] = $subFieldName;
         }
         
-        // Add to matrix and save
+        // Add to matrix and save (must save parent before populating nested repeaters)
         $matrix->add($newItem);
         $page->save($fieldName);
         
-        return [
+        // Now populate any nested repeaters
+        $nestedResults = [];
+        foreach ($nestedRepeaters as $nestedFieldName => $nestedItems) {
+            $nestedRepeater = $newItem->get($nestedFieldName);
+            if (!$nestedRepeater) {
+                $nestedResults[$nestedFieldName] = ['error' => 'Could not get nested repeater field'];
+                continue;
+            }
+            
+            $createdCount = 0;
+            foreach ($nestedItems as $itemData) {
+                $nestedNewItem = $nestedRepeater->getNew();
+                if (!$nestedNewItem) {
+                    continue;
+                }
+                
+                // Apply fields to nested item
+                foreach ($itemData as $nestedSubField => $nestedValue) {
+                    if ($nestedNewItem->template->hasField($nestedSubField)) {
+                        $nestedNewItem->set($nestedSubField, $nestedValue);
+                    }
+                }
+                
+                $nestedRepeater->add($nestedNewItem);
+                $createdCount++;
+            }
+            
+            // Save the nested repeater
+            $newItem->save($nestedFieldName);
+            $nestedResults[$nestedFieldName] = ['created' => $createdCount];
+        }
+        
+        $result = [
             'success' => true,
             'message' => 'Matrix item created successfully',
             'page' => [
@@ -1494,6 +1571,12 @@ class CommandRouter {
             'appliedFields' => $appliedFields,
             'skippedFields' => $skippedFields,
         ];
+        
+        if (!empty($nestedResults)) {
+            $result['nestedRepeaters'] = $nestedResults;
+        }
+        
+        return $result;
     }
     
     /**
