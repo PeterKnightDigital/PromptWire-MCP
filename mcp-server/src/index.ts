@@ -391,6 +391,24 @@ const tools = [
   // PHASE 4: DIRECT WRITE TOOLS
   // ========================================================================
   {
+    name: 'pw_matrix_info',
+    description: 'Get detailed structure of a matrix/repeater field. Shows all matrix types, their fields, and any nested repeaters. Use this before adding content to understand the field structure.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        pageIdOrPath: {
+          type: 'string',
+          description: 'Page ID (number) or path (e.g., "/about/")',
+        },
+        fieldName: {
+          type: 'string',
+          description: 'Name of the matrix/repeater field to inspect',
+        },
+      },
+      required: ['pageIdOrPath', 'fieldName'],
+    },
+  },
+  {
     name: 'pw_matrix_add',
     description: 'Add a new matrix/repeater item to a page. Supports adding FAQs, body blocks, CTAs, and other matrix types directly without the YAML sync workflow.',
     inputSchema: {
@@ -707,6 +725,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ========================================================================
     // PHASE 4: DIRECT WRITE TOOLS
     // ========================================================================
+
+    // Get matrix/repeater field structure
+    case 'pw_matrix_info': {
+      const { pageIdOrPath, fieldName } = args as {
+        pageIdOrPath: string;
+        fieldName: string;
+      };
+      const result = await runPwCommand('matrix:info', [pageIdOrPath, fieldName]);
+      return formatToolResponse(result);
+    }
 
     // Add a new matrix item to a page
     case 'pw_matrix_add': {

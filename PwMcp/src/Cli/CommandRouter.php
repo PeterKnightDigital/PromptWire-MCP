@@ -213,6 +213,14 @@ class CommandRouter {
             // PHASE 4: DIRECT WRITE TOOLS
             // ================================================================
             
+            case 'matrix:info':
+                $pageIdOrPath = $positional[0] ?? null;
+                $fieldName = $positional[1] ?? null;
+                if (!$pageIdOrPath || !$fieldName) {
+                    return ['error' => 'Usage: matrix:info [page-id-or-path] [field-name]'];
+                }
+                return $this->matrixInfo($pageIdOrPath, $fieldName);
+            
             case 'matrix:add':
                 $pageIdOrPath = $positional[0] ?? null;
                 $fieldName = $positional[1] ?? null;
@@ -1181,6 +1189,167 @@ class CommandRouter {
     // ========================================================================
     
     /**
+     * Get detailed information about a matrix/repeater field structure
+     * 
+     * Discovers all matrix types, their fields, and any nested repeaters.
+     * Useful for understanding field structure before adding content.
+     * 
+     * @param int|string $pageIdOrPath Page ID or path
+     * @param string $fieldName Matrix/repeater field name
+     * @return array Field structure information
+     */
+    private function matrixInfo($pageIdOrPath, string $fieldName): array {
+        // Get the page
+        if (is_numeric($pageIdOrPath)) {
+            $page = $this->wire->pages->get((int) $pageIdOrPath);
+        } else {
+            $page = $this->wire->pages->get($pageIdOrPath);
+        }
+        
+        if (!$page || !$page->id) {
+            return ['error' => "Page not found: $pageIdOrPath"];
+        }
+        
+        // Verify the field exists on this page's template
+        $field = $this->wire->fields->get($fieldName);
+        if (!$field) {
+            return ['error' => "Field not found: $fieldName"];
+        }
+        
+        if (!$page->template->hasField($field)) {
+            // List available fields on this template
+            $availableFields = [];
+            foreach ($page->template->fields as $f) {
+                $availableFields[] = $f->name;
+            }
+            return [
+                'error' => "Field '$fieldName' is not on template '{$page->template->name}'",
+                'availableFields' => $availableFields,
+            ];
+        }
+        
+        $fieldType = $field->type->className();
+        $isMatrix = ($fieldType === 'FieldtypeRepeaterMatrix');
+        $isRepeater = ($fieldType === 'FieldtypeRepeater');
+        
+        if (!$isMatrix && !$isRepeater) {
+            return [
+                'error' => "Field '$fieldName' is not a matrix or repeater field",
+                'fieldType' => $fieldType,
+            ];
+        }
+        
+        $result = [
+            'page' => [
+                'id' => $page->id,
+                'path' => $page->path,
+                'template' => $page->template->name,
+            ],
+            'field' => [
+                'name' => $fieldName,
+                'type' => $isMatrix ? 'RepeaterMatrix' : 'Repeater',
+                'label' => $field->label ?: $fieldName,
+            ],
+        ];
+        
+        if ($isMatrix) {
+            // Get all matrix types
+            $types = [];
+            for ($i = 1; $i <= 20; $i++) {
+                $typeName = $field->get("matrix{$i}_name");
+                $typeLabel = $field->get("matrix{$i}_label");
+                
+                if ($typeName) {
+                    $typeInfo = [
+                        'id' => $i,
+                        'name' => $typeName,
+                        'label' => $typeLabel ?: $typeName,
+                        'fields' => [],
+                        'nestedRepeaters' => [],
+                    ];
+                    
+                    // Get fields for this matrix type from its template
+                    // Matrix items use a shared template, fields are determined by config
+                    // Note: matrix{$i}_fields contains field IDs, not names
+                    $typeFields = $field->get("matrix{$i}_fields");
+                    if ($typeFields) {
+                        // typeFields can be array or space-separated string of field IDs
+                        $fieldIds = is_array($typeFields) ? $typeFields : explode(' ', $typeFields);
+                        foreach ($fieldIds as $fid) {
+                            $fid = trim($fid);
+                            if (!$fid) continue;
+                            
+                            // Get field by ID (could be numeric ID or name)
+                            $subField = $this->wire->fields->get((int)$fid ?: $fid);
+                            if ($subField) {
+                                $subFieldType = $subField->type->className();
+                                $fieldInfo = [
+                                    'name' => $subField->name,  // Use actual field name
+                                    'type' => $subFieldType,
+                                    'label' => $subField->label ?: $subField->name,
+                                ];
+                                
+                                // Check for nested repeaters
+                                if ($subFieldType === 'FieldtypeRepeater' || $subFieldType === 'FieldtypeRepeaterMatrix') {
+                                    $nestedFields = $this->getRepeaterFields($subField);
+                                    $typeInfo['nestedRepeaters'][$subField->name] = [
+                                        'type' => $subFieldType === 'FieldtypeRepeaterMatrix' ? 'RepeaterMatrix' : 'Repeater',
+                                        'fields' => $nestedFields,
+                                    ];
+                                }
+                                
+                                $typeInfo['fields'][] = $fieldInfo;
+                            }
+                        }
+                    }
+                    
+                    $types[] = $typeInfo;
+                }
+            }
+            $result['matrixTypes'] = $types;
+        } else {
+            // Regular repeater - get its fields
+            $result['fields'] = $this->getRepeaterFields($field);
+        }
+        
+        // Get current item count
+        $matrix = $page->get($fieldName);
+        $result['currentItemCount'] = $matrix ? $matrix->count() : 0;
+        
+        return $result;
+    }
+    
+    /**
+     * Get fields from a repeater field's template
+     * 
+     * @param \ProcessWire\Field $field Repeater field
+     * @return array List of field info
+     */
+    private function getRepeaterFields($field): array {
+        $fields = [];
+        
+        // Get the repeater's template
+        $templateId = $field->get('template_id');
+        if ($templateId) {
+            $template = $this->wire->templates->get($templateId);
+            if ($template) {
+                foreach ($template->fields as $f) {
+                    // Skip internal repeater fields
+                    if (strpos($f->name, 'repeater_') === 0) continue;
+                    
+                    $fields[] = [
+                        'name' => $f->name,
+                        'type' => $f->type->className(),
+                        'label' => $f->label ?: $f->name,
+                    ];
+                }
+            }
+        }
+        
+        return $fields;
+    }
+    
+    /**
      * Add a new matrix item to a page
      * 
      * Creates a new repeater/matrix item with the specified type and content.
@@ -1377,6 +1546,7 @@ class CommandRouter {
                 'page:new [template] [parent] [name]' => 'Create new page scaffold locally',
                 'page:publish [path]' => 'Publish new page to ProcessWire (--dry-run=0 to create)',
                 'pages:publish [directory]' => 'Bulk publish new pages (--dry-run=0 to create)',
+                'matrix:info [page] [field]' => 'Get matrix/repeater field structure and types',
                 'matrix:add [page] [field] [type]' => 'Add a new matrix item (--dry-run=0 to create)',
                 'help' => 'Show this help',
             ],

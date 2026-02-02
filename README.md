@@ -181,6 +181,7 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 | `page:new [template] [parent] [name]` | Create new page scaffold locally |
 | `page:publish [path]` | Publish new page to ProcessWire |
 | `pages:publish [directory]` | Bulk publish new pages |
+| `matrix:info [page] [field]` | Get matrix/repeater field structure |
 | `matrix:add [page] [field] [type]` | Add a new matrix item to a page |
 | `help` | Show available commands |
 
@@ -476,11 +477,54 @@ php site/modules/PwMcp/bin/pw-mcp.php matrix:add /about/ matrix faq \
 
 The AI will use `pw_matrix_add` to create each FAQ item.
 
-### Available Matrix Write Tools
+### Available Matrix Tools
 
 | Tool | Description |
 |------|-------------|
+| `pw_matrix_info` | Discover matrix field structure (types, fields, nested repeaters) |
 | `pw_matrix_add` | Add a new matrix item with content |
+
+### Discovering Field Structure
+
+Before adding content, use `matrix:info` to understand a field's structure:
+
+```bash
+php site/modules/PwMcp/bin/pw-mcp.php matrix:info /about/ matrix --pretty
+```
+
+Returns:
+```json
+{
+  "field": { "name": "matrix", "type": "RepeaterMatrix" },
+  "matrixTypes": [
+    {
+      "id": 1,
+      "name": "body_block",
+      "label": "Body",
+      "fields": [{ "name": "Body", "type": "FieldtypeTextarea" }]
+    },
+    {
+      "id": 2,
+      "name": "faq_block",
+      "label": "FAQs",
+      "fields": [{ "name": "faq", "type": "FieldtypeRepeater" }],
+      "nestedRepeaters": {
+        "faq": {
+          "fields": [
+            { "name": "question", "type": "FieldtypeText" },
+            { "name": "answer", "type": "FieldtypeTextarea" }
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+This tells you:
+- What matrix types are available
+- What fields each type has
+- Whether there are nested repeaters and their field structure
 
 More write tools coming soon: `pw_matrix_update`, `pw_matrix_delete`, `pw_matrix_reorder`
 
