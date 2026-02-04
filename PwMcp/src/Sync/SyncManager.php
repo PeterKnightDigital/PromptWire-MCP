@@ -112,11 +112,13 @@ class SyncManager {
             mkdir($localPath, 0755, true);
         }
         
-        // Generate content snapshot
-        $fields = $this->extractPageFields($page);
+        // Generate content snapshot (with external file extraction for rich text)
+        $fields = $this->extractPageFields($page, $localPath);
         
         // Generate revision hash for conflict detection
-        $revisionHash = $this->generateRevisionHash($fields);
+        // Note: For hashing, we need the inline version to compare with remote
+        $fieldsForHash = $this->extractPageFields($page);
+        $revisionHash = $this->generateRevisionHash($fieldsForHash);
         
         // Create content file first so we can hash it
         $content = ['fields' => $fields];
@@ -125,13 +127,14 @@ class SyncManager {
             $contentPath = $localPath . '/page.yaml';
             $yamlContent = $this->arrayToYaml($content);
             file_put_contents($contentPath, $yamlContent);
-            $contentHash = md5($yamlContent);
         } else {
             $contentPath = $localPath . '/page.json';
             $jsonContent = json_encode($content, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
             file_put_contents($contentPath, $jsonContent);
-            $contentHash = md5($jsonContent);
         }
+        
+        // Compute combined hash of all sync files (page.yaml + external field files)
+        $contentHash = $this->computeCombinedContentHash($localPath);
         
         // Create metadata file with both hashes
         $meta = [
@@ -370,8 +373,11 @@ class SyncManager {
             ];
         }
         
+        // Resolve _file references in content before comparing
+        $resolvedFields = $this->resolveFileReferences($content['fields'], $localDir);
+        
         // Calculate changes
-        $changes = $this->calculateChanges($currentFields, $content['fields']);
+        $changes = $this->calculateChanges($currentFields, $resolvedFields);
         
         if (empty($changes)) {
             return [
@@ -405,15 +411,20 @@ class SyncManager {
             }
             
             $field = $this->wire->fields->get($fieldName);
-            $this->applyFieldValue($page, $field, $value);
+            $this->applyFieldValue($page, $field, $value, $localDir);
         }
         
         // Save the page
         $page->save();
         
-        // Update local file to match what's now in ProcessWire
-        $newFields = $this->extractPageFields($page);
-        $newHash = $this->generateRevisionHash($newFields);
+        // Update local files to match what's now in ProcessWire
+        // Use localDir to preserve external file structure (_file references)
+        $newFields = $this->extractPageFields($page, $localDir);
+        
+        // Generate revision hash from inline content (for remote comparison)
+        $fieldsForHash = $this->extractPageFields($page);
+        $newHash = $this->generateRevisionHash($fieldsForHash);
+        
         $newContent = ['fields' => $newFields];
         
         // Determine format and update content file
@@ -424,7 +435,9 @@ class SyncManager {
             $newFileContent = json_encode($newContent, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         }
         file_put_contents($contentPath, $newFileContent);
-        $newContentHash = md5($newFileContent);
+        
+        // Compute combined hash including external field files
+        $newContentHash = $this->computeCombinedContentHash($localDir);
         
         // Update meta file
         $meta['lastPushedAt'] = date('c');
@@ -640,14 +653,14 @@ class SyncManager {
         
         $remoteChanged = ($currentHash !== $meta['revisionHash']);
         
-        // Check if local file was modified by user
+        // Check if local files were modified by user
+        // Use combined hash to detect changes in page.yaml + external field files
+        $currentFileHash = $this->computeCombinedContentHash($localDir);
+        
+        // Determine content file path
         $contentPath = file_exists($localDir . '/page.yaml') 
             ? $localDir . '/page.yaml' 
             : $localDir . '/page.json';
-        
-        // Compare current file hash against original hash from when it was pulled
-        $currentFileContent = file_get_contents($contentPath);
-        $currentFileHash = md5($currentFileContent);
         
         // If meta has contentHash, use it for accurate local change detection
         if (isset($meta['contentHash'])) {
@@ -655,7 +668,8 @@ class SyncManager {
         } else {
             // Fallback for older pulls without contentHash - use field comparison
             $localContent = $this->readContentFile($contentPath);
-            $changes = $this->calculateChanges($currentFields, $localContent['fields'] ?? []);
+            $resolvedFields = $this->resolveFileReferences($localContent['fields'] ?? [], $localDir);
+            $changes = $this->calculateChanges($currentFields, $resolvedFields);
             $localDirty = !empty($changes);
         }
         
@@ -663,7 +677,8 @@ class SyncManager {
         $changes = [];
         if ($localDirty) {
             $localContent = $this->readContentFile($contentPath);
-            $changes = $this->calculateChanges($currentFields, $localContent['fields'] ?? []);
+            $resolvedFields = $this->resolveFileReferences($localContent['fields'] ?? [], $localDir);
+            $changes = $this->calculateChanges($currentFields, $resolvedFields);
         }
         
         // Determine status
@@ -967,14 +982,8 @@ class SyncManager {
                 $curNorm = $this->normalizeForComparison($currentSubValue);
                 
                 if ($newNorm !== $curNorm) {
-                    // Generate preview snippet
-                    $preview = '';
-                    if (is_string($subFieldValue)) {
-                        $text = strip_tags($subFieldValue);
-                        $preview = strlen($text) > 80 ? substr($text, 0, 80) . '...' : $text;
-                    } else {
-                        $preview = '(non-text content)';
-                    }
+                    // Generate preview snippet based on value type
+                    $preview = $this->generateFieldChangePreview($currentSubValue, $subFieldValue);
                     
                     // Use item index for unique key: "Body[1]", "Body[2]", etc.
                     $key = "{$subFieldName}[{$itemIndex}]";
@@ -1124,6 +1133,59 @@ class SyncManager {
     }
     
     /**
+     * Generate a simple, useful preview of what changed
+     * 
+     * Shows meaningful info for simple changes, minimal for complex ones.
+     * 
+     * @param mixed $oldValue The old/current value
+     * @param mixed $newValue The new value
+     * @return string Simple change description
+     */
+    private function generateFieldChangePreview($oldValue, $newValue): string {
+        $oldEmpty = ($oldValue === null || $oldValue === '' || $oldValue === []);
+        $newEmpty = ($newValue === null || $newValue === '' || $newValue === []);
+        
+        // Cleared
+        if (!$oldEmpty && $newEmpty) {
+            return 'cleared';
+        }
+        
+        // Added
+        if ($oldEmpty && !$newEmpty) {
+            // For simple values, show what was added
+            if (is_array($newValue) && $this->isSimpleScalarArray($newValue)) {
+                return 'added: ' . implode(', ', $newValue);
+            }
+            return 'added';
+        }
+        
+        // Simple arrays of scalars (option IDs like [1] → [2])
+        if (is_array($oldValue) && is_array($newValue) &&
+            $this->isSimpleScalarArray($oldValue) && $this->isSimpleScalarArray($newValue)) {
+            return implode(', ', $oldValue) . ' → ' . implode(', ', $newValue);
+        }
+        
+        // Numeric changes
+        if (is_numeric($oldValue) && is_numeric($newValue)) {
+            return "{$oldValue} → {$newValue}";
+        }
+        
+        // Everything else - field name is enough
+        return '';
+    }
+    
+    /**
+     * Check if array contains only scalar values
+     */
+    private function isSimpleScalarArray(array $arr): bool {
+        if (empty($arr)) return false;
+        foreach ($arr as $val) {
+            if (!is_scalar($val)) return false;
+        }
+        return true;
+    }
+    
+    /**
      * Normalize a value for comparison
      * 
      * Handles equivalence of empty values:
@@ -1239,11 +1301,20 @@ class SyncManager {
      * @param Page $page
      * @param \ProcessWire\Field $field
      * @param mixed $value
+     * @param string|null $localDir Base path for reading external files
      */
-    private function applyFieldValue(Page $page, $field, $value): void {
+    private function applyFieldValue(Page $page, $field, $value, ?string $localDir = null): void {
         $fieldName = $field->name;
         /** @var string $typeName */
         $typeName = $field->type->className();
+        
+        // Handle external file reference (_file)
+        if ($localDir && is_array($value) && isset($value['_file'])) {
+            $fileContent = $this->readExternalField($localDir, $value['_file']);
+            if ($fileContent !== null) {
+                $value = $fileContent;
+            }
+        }
         
         // Handle date fields - convert ISO 8601 back to Unix timestamp
         if ($typeName === 'FieldtypeDatetime' && is_string($value)) {
@@ -1299,7 +1370,7 @@ class SyncManager {
         
         // Handle repeaters - update existing items by ID
         if (strpos($typeName, 'Repeater') !== false) {
-            $this->applyRepeaterValue($page, $field, $value);
+            $this->applyRepeaterValue($page, $field, $value, $localDir);
             return;
         }
         
@@ -1316,9 +1387,10 @@ class SyncManager {
      * @param Page $page Parent page
      * @param \ProcessWire\Field $field Repeater field
      * @param array $items Array of item data from YAML
+     * @param string|null $localDir Base path for reading external files
      * @return array Stats about what was updated
      */
-    private function applyRepeaterValue(Page $page, $field, $items): array {
+    private function applyRepeaterValue(Page $page, $field, $items, ?string $localDir = null): array {
         $fieldName = $field->name;
         $stats = ['updated' => 0, 'skipped_missing' => 0, 'skipped_invalid' => 0];
         
@@ -1372,8 +1444,8 @@ class SyncManager {
                 
                 $itemField = $this->wire->fields->get($key);
                 if ($itemField) {
-                    // Recursively apply field value (handles nested types)
-                    $this->applyFieldValue($repeaterPage, $itemField, $val);
+                    // Recursively apply field value (handles nested types and _file references)
+                    $this->applyFieldValue($repeaterPage, $itemField, $val, $localDir);
                 } else {
                     // Simple value
                     $repeaterPage->set($key, $val);
@@ -1438,9 +1510,10 @@ class SyncManager {
      * Extract editable field values from a page
      * 
      * @param Page $page
+     * @param string|null $localPath Base path for writing external files (null = inline only)
      * @return array Field name => value pairs
      */
-    private function extractPageFields(Page $page): array {
+    private function extractPageFields(Page $page, ?string $localPath = null): array {
         $fields = [];
         
         foreach ($page->template->fields as $field) {
@@ -1452,7 +1525,7 @@ class SyncManager {
                 continue;
             }
             
-            $fields[$name] = $this->formatFieldForExport($field, $value);
+            $fields[$name] = $this->formatFieldForExport($field, $value, $localPath);
         }
         
         return $fields;
@@ -1463,12 +1536,36 @@ class SyncManager {
      * 
      * @param \ProcessWire\Field $field
      * @param mixed $value
+     * @param string|null $localPath Base path for writing external files (null = inline only)
+     * @param array|null $context Context for naming (e.g., ['itemId' => 1933] for matrix items)
      * @return mixed
      */
-    private function formatFieldForExport($field, $value) {
+    private function formatFieldForExport($field, $value, ?string $localPath = null, ?array $context = null) {
         // Null/empty
         if ($value === null || $value === '') {
             return null;
+        }
+        
+        // Rich text fields - extract to external HTML file if localPath provided
+        if ($localPath && $this->isRichTextField($field) && is_string($value) && strlen($value) > 0) {
+            $fieldName = strtolower($field->name);
+            
+            if ($context && isset($context['itemId'])) {
+                // Matrix/Repeater item: matrix/[itemId]-{typeName}-{fieldName}.html (flat)
+                $prefix = '[' . $context['itemId'] . ']';
+                if (!empty($context['typeName'])) {
+                    $prefix .= '-' . $context['typeName'];
+                }
+                $subDir = 'matrix';
+                $filename = $prefix . '-' . $fieldName . '.html';
+            } else {
+                // Page-level field: fields/{fieldName}.html
+                $subDir = 'fields';
+                $filename = $fieldName . '.html';
+            }
+            
+            $relativePath = $this->writeExternalField($localPath, $subDir, $filename, $value);
+            return ['_file' => $relativePath];
         }
         
         // Date/Datetime fields - convert Unix timestamp to ISO 8601
@@ -1511,7 +1608,7 @@ class SyncManager {
         if ($value instanceof \ProcessWire\RepeaterPageArray || 
             (is_object($value) && $value instanceof \ProcessWire\PageArray && 
              strpos(get_class($value), 'Repeater') !== false)) {
-            return $this->formatRepeaterForExport($field, $value);
+            return $this->formatRepeaterForExport($field, $value, $localPath);
         }
         
         // Files/Images
@@ -1531,6 +1628,15 @@ class SyncManager {
             return $files;
         }
         
+        // SelectableOptionArray (Options fields) - return just the option IDs
+        if ($value instanceof \ProcessWire\SelectableOptionArray) {
+            $ids = [];
+            foreach ($value as $option) {
+                $ids[] = $option->id;
+            }
+            return $ids ?: null;
+        }
+        
         // WireArray
         if ($value instanceof \ProcessWire\WireArray) {
             return $value->getArray();
@@ -1545,12 +1651,14 @@ class SyncManager {
      * 
      * Includes _itemId for stable matching on push (not position-based).
      * Also includes _sort for human readability.
+     * Rich text fields within items are extracted to matrix/[itemId]-{typeName}-{fieldName}.html
      * 
      * @param \ProcessWire\Field $field
      * @param \ProcessWire\PageArray $repeater
+     * @param string|null $localPath Base path for writing external files
      * @return array
      */
-    private function formatRepeaterForExport($field, $repeater): array {
+    private function formatRepeaterForExport($field, $repeater, ?string $localPath = null): array {
         $items = [];
         
         foreach ($repeater as $index => $item) {
@@ -1560,27 +1668,208 @@ class SyncManager {
             // This is critical — matching by position breaks if items are reordered
             $itemData['_itemId'] = $item->id;
             
-            // Include matrix type if present
+            // Include matrix type if present and get type name for folder naming
             $typeId = $item->get('repeater_matrix_type');
+            $typeName = null;
             if ($typeId !== null) {
                 $itemData['_matrixType'] = (int) $typeId;
+                // Try to get the human-readable type name
+                $typeName = $this->getMatrixTypeName($field, (int) $typeId);
             }
             
             // Include sort order for human readability (informational only)
             $itemData['_sort'] = $item->sort;
+            
+            // Context for external file naming (matrix items)
+            // Use matrix type name if available, otherwise fall back to field name
+            $context = [
+                'itemId' => $item->id,
+                'typeName' => $typeName ?? strtolower($field->name),
+            ];
             
             // Get field values
             foreach ($item->template->fields as $f) {
                 if (strpos($f->name, 'repeater_') === 0) {
                     continue;
                 }
-                $itemData[$f->name] = $this->formatFieldForExport($f, $item->get($f->name));
+                $itemData[$f->name] = $this->formatFieldForExport($f, $item->get($f->name), $localPath, $context);
             }
             
             $items[] = $itemData;
         }
         
         return $items;
+    }
+    
+    /**
+     * Check if a field is a rich text field (CKEditor/TinyMCE)
+     * 
+     * Only fields using a rich text editor contain HTML that can break YAML parsing.
+     * Plain textarea fields (without CKEditor/TinyMCE) are kept inline.
+     * 
+     * @param \ProcessWire\Field $field
+     * @return bool
+     */
+    private function isRichTextField($field): bool {
+        $typeName = $field->type->className();
+        
+        // Must be a textarea-type field
+        if (!in_array($typeName, ['FieldtypeTextarea', 'FieldtypeTextareaLanguage'])) {
+            return false;
+        }
+        
+        // Check the inputfield class for rich text editors
+        $inputfieldClass = $field->get('inputfieldClass');
+        if ($inputfieldClass) {
+            // CKEditor or TinyMCE indicate rich text
+            if (stripos($inputfieldClass, 'CKEditor') !== false || 
+                stripos($inputfieldClass, 'TinyMCE') !== false) {
+                return true;
+            }
+        }
+        
+        // Also check contentType setting (1 = HTML, 0 = text)
+        $contentType = $field->get('contentType');
+        if ($contentType === 1) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Get the human-readable name for a matrix type
+     * 
+     * @param \ProcessWire\Field $field The repeater matrix field
+     * @param int $typeId The matrix type ID
+     * @return string|null The type name (slug format) or null if not found
+     */
+    private function getMatrixTypeName($field, int $typeId): ?string {
+        // RepeaterMatrix stores type info in field settings
+        // Type names are stored as matrix{N}_name where N is the type ID
+        $typeName = $field->get("matrix{$typeId}_name");
+        
+        if ($typeName) {
+            // Convert to lowercase slug format
+            return strtolower(preg_replace('/[^a-zA-Z0-9]+/', '-', $typeName));
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Write a field's content to an external file
+     * 
+     * Used for rich text fields to prevent YAML parsing issues.
+     * 
+     * @param string $basePath Base path for the page's sync directory
+     * @param string $subDir Subdirectory (e.g., 'fields' or 'matrix')
+     * @param string $filename Filename (e.g., 'body.html')
+     * @param string $content The HTML content to write
+     * @return string Relative path to the file (e.g., 'fields/body.html')
+     */
+    private function writeExternalField(string $basePath, string $subDir, string $filename, string $content): string {
+        $dir = $basePath . '/' . $subDir;
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        $filePath = $dir . '/' . $filename;
+        file_put_contents($filePath, $content);
+        return $subDir . '/' . $filename;
+    }
+    
+    /**
+     * Read content from an external field file
+     * 
+     * @param string $basePath Base path for the page's sync directory
+     * @param string $relativePath Relative path from YAML _file reference
+     * @return string|null File content or null if not found
+     */
+    private function readExternalField(string $basePath, string $relativePath): ?string {
+        $filePath = $basePath . '/' . $relativePath;
+        if (file_exists($filePath)) {
+            return file_get_contents($filePath);
+        }
+        return null;
+    }
+    
+    /**
+     * Resolve _file references in field data to actual content
+     * 
+     * Recursively walks the fields array and replaces any _file references
+     * with the actual file content. This is needed for accurate change detection.
+     * 
+     * @param array $fields Field data from YAML
+     * @param string $localDir Base path for resolving file references
+     * @return array Fields with _file references replaced by actual content
+     */
+    private function resolveFileReferences(array $fields, string $localDir): array {
+        $resolved = [];
+        
+        foreach ($fields as $key => $value) {
+            if (is_array($value)) {
+                // Check if this is a _file reference
+                if (isset($value['_file'])) {
+                    $content = $this->readExternalField($localDir, $value['_file']);
+                    $resolved[$key] = $content ?? '';
+                } else {
+                    // Recursively resolve nested arrays (for repeaters/matrix)
+                    $resolved[$key] = $this->resolveFileReferences($value, $localDir);
+                }
+            } else {
+                $resolved[$key] = $value;
+            }
+        }
+        
+        return $resolved;
+    }
+    
+    /**
+     * Compute a combined hash of all sync files (page.yaml + external field files)
+     * 
+     * Used for detecting local changes across all related files.
+     * 
+     * @param string $localPath Base path for the page's sync directory
+     * @return string MD5 hash of combined content
+     */
+    private function computeCombinedContentHash(string $localPath): string {
+        $hashContent = '';
+        
+        // Add page.yaml content
+        $yamlPath = $localPath . '/page.yaml';
+        if (file_exists($yamlPath)) {
+            $hashContent .= file_get_contents($yamlPath);
+        }
+        
+        // Add external field files (fields/*.html)
+        $fieldsDir = $localPath . '/fields';
+        if (is_dir($fieldsDir)) {
+            $files = glob($fieldsDir . '/*.html');
+            sort($files); // Ensure consistent order
+            foreach ($files as $file) {
+                $hashContent .= file_get_contents($file);
+            }
+        }
+        
+        // Add matrix field files (matrix/{itemId}/*.html) - recursive
+        $matrixDir = $localPath . '/matrix';
+        if (is_dir($matrixDir)) {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($matrixDir, \RecursiveDirectoryIterator::SKIP_DOTS)
+            );
+            $files = [];
+            foreach ($iterator as $file) {
+                if ($file->isFile() && $file->getExtension() === 'html') {
+                    $files[] = $file->getPathname();
+                }
+            }
+            sort($files); // Ensure consistent order
+            foreach ($files as $file) {
+                $hashContent .= file_get_contents($file);
+            }
+        }
+        
+        return md5($hashContent);
     }
     
     /**
@@ -1940,7 +2229,7 @@ class SyncManager {
             
             $field = $this->wire->fields->get($fieldName);
             if ($field) {
-                $this->applyFieldValue($page, $field, $value);
+                $this->applyFieldValue($page, $field, $value, $localPath);
             }
         }
         

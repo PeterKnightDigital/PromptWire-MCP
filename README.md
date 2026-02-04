@@ -272,13 +272,36 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:pull "template=blog-post" --limit=20
 
 Pages are saved to `site/assets/pw-mcp/[page-path]/`:
 - `page.meta.json` — ID, template, revision hash, content hash (don't edit)
-- `page.yaml` — Editable field content
+- `page.yaml` — Editable field content (with `_file` references for rich text)
+- `fields/*.html` — Page-level rich text fields (CKEditor/TinyMCE content)
+- `matrix/*.html` — Matrix item rich text fields
 
-**Note:** The `page.meta.json` file now includes a `contentHash` field that stores an MD5 hash of the actual YAML file content. This enables accurate detection of local changes without false positives from serialization differences.
+**Rich Text Extraction:** CKEditor and TinyMCE fields are automatically saved as separate HTML files to prevent YAML parsing issues. The YAML contains `_file` references pointing to these files:
+
+```yaml
+Body:
+  _file: fields/body.html
+
+matrix:
+  - _itemId: 1933
+    Body:
+      _file: "matrix/[1933]-matrix-body-body.html"
+```
+
+**Matrix HTML file naming:** `[itemId]-typename-fieldname.html`
+- `[1933]-matrix-body-body.html` — Body field in matrix item 1933 (type: matrix-body)
+- `[1936]-breakoutbox-body.html` — Body field in matrix item 1936 (type: breakoutbox)
+- `[1972]-faq-faq_a.html` — FAQ answer in nested repeater item 1972
+
+**Note:** The `page.meta.json` file includes a `contentHash` field that stores a combined MD5 hash of the YAML and all HTML files. This enables accurate detection of local changes.
 
 ### 2. Edit Locally
 
-Edit the `page.yaml` files in your editor or ask the AI to make changes.
+Edit the files in your editor or ask the AI to make changes:
+
+- **Rich text fields** — Edit the `.html` files directly in `fields/` or `matrix/`
+- **Simple fields** — Edit values in `page.yaml` (titles, options, page references, etc.)
+- **Don't edit** — `_file` references in YAML, `_itemId`, `_matrixType`, or `page.meta.json`
 
 ### 3. Check Status
 
@@ -411,23 +434,26 @@ Always visible above the table:
 
 ### Import Preview
 
-When importing changes, a preview shows exactly which fields changed with content snippets:
+When importing changes, a preview lists which fields changed:
 
 ```
 Body
-Lower back injuries can vary widely in how they present and how long...
 
 matrix→Body[1]
-Lower back injuries can be painful, disruptive, and slow to resolve...
 
-matrix→Body[2]
-Common causes include poor posture, heavy lifting, and sports injuries...
+matrix→breakouttheme[2]
+1 → 2
+
+matrix→faq[3]
+added
 ```
 
 **Features:**
-- Simple fields show a truncated preview of the new content
-- Matrix/repeater fields use breadcrumb notation: `matrix→fieldname[item#]`
-- Each changed item within a matrix is listed individually with its content
+- Fields are listed in page order with breadcrumb notation: `matrix→fieldname[item#]`
+- Option/number changes show: `1 → 2`
+- New values show: `added` or `added: 1, 2`
+- Cleared fields show: `cleared`
+- Complex content (HTML) shows just the field name — check the file for details
 
 ### Import Confirmation Modal
 

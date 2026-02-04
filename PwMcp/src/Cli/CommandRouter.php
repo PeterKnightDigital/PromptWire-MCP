@@ -1607,7 +1607,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PW-MCP CLI',
-            'version' => '1.0.0',
+            'version' => '1.1.0',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
