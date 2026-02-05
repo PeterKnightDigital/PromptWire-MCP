@@ -271,7 +271,7 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:pull "template=blog-post" --limit=20
 ```
 
 Pages are saved to `site/assets/pw-mcp/[page-path]/`:
-- `page.meta.json` — ID, template, revision hash, content hash (don't edit)
+- `page.meta.json` — ID, template, revision hash, content hash (includes `_readme` warning not to edit)
 - `page.yaml` — Editable field content (with `_file` references for rich text)
 - `fields/*.html` — Page-level rich text fields (CKEditor/TinyMCE content)
 - `matrix/*.html` — Matrix item rich text fields
@@ -331,9 +331,30 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:push site/assets/pw-mcp/services --d
 - **Page references** in YAML show `id` (editable) and `_comment` (read-only display info)
 - **Repeater items** use `_itemId` for stable matching — don't change these
 - **Files/images** are read-only (file uploads planned for Phase 4)
-- Use `--force` to push even if remote changed (overwrites remote)
+- **page.meta.json** includes a `_readme` field warning not to edit it manually
 
-### 5. Reconcile (Fix Drift)
+### 5. Resolving Conflicts
+
+When a page has been modified both locally (your edits) and remotely (in ProcessWire), a **Conflict** status appears.
+
+**Via CLI:**
+```bash
+# Force push to overwrite ProcessWire with local changes
+php site/modules/PwMcp/bin/pw-mcp.php page:push site/assets/pw-mcp/services/web-design --dry-run=0 --force
+```
+
+**Via Admin UI:**
+1. Click **Import** on the conflicted page
+2. Review both sets of changes:
+   - **Changed in ProcessWire** — What will be overwritten
+   - **Your Local Changes** — What you want to import
+3. Choose:
+   - **Re-export from ProcessWire** — Discards local changes, gets latest remote version
+   - **Force Import (Overwrite)** — Applies local changes, discards remote changes
+
+**Best Practice:** If both changes are important, re-export first, manually reapply your edits, then import.
+
+### 6. Reconcile (Fix Drift)
 
 If pages are moved or deleted in ProcessWire, local folders can become stale:
 

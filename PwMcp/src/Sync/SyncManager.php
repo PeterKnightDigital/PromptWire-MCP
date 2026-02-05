@@ -138,6 +138,7 @@ class SyncManager {
         
         // Create metadata file with both hashes
         $meta = [
+            '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
             'pageId' => $page->id,
             'canonicalPath' => $page->path,
             'template' => $page->template->name,
@@ -363,13 +364,28 @@ class SyncManager {
         $currentHash = $this->generateRevisionHash($currentFields);
         
         if ($currentHash !== $meta['revisionHash'] && !$force) {
+            // Calculate what changed remotely (between when we pulled and now)
+            $pulledFields = $this->readContentFile($contentPath);
+            $remoteChanges = [];
+            if ($pulledFields && isset($pulledFields['fields'])) {
+                // Resolve file references in pulled content for comparison
+                $resolvedPulled = $this->resolveFileReferences($pulledFields['fields'], $localDir);
+                $remoteChanges = $this->calculateChanges($resolvedPulled, $currentFields);
+            }
+            
+            // Also calculate local changes (what user wants to push)
+            $resolvedLocal = $this->resolveFileReferences($content['fields'], $localDir);
+            $localChanges = $this->calculateChanges($currentFields, $resolvedLocal);
+            
             return [
                 'error' => 'Remote page has changed since last pull',
                 'conflict' => true,
-                'hint' => 'Pull the latest version first, or use --force to overwrite',
+                'hint' => 'Re-export to get latest version, or force import to overwrite remote changes',
                 'localPulledAt' => $meta['pulledAt'],
                 'remoteHash' => substr($currentHash, 0, 24) . '...',
                 'localHash' => substr($meta['revisionHash'], 0, 24) . '...',
+                'remoteChanges' => $remoteChanges,  // What changed in ProcessWire
+                'localChanges' => $localChanges,    // What user wants to change
             ];
         }
         
@@ -1363,7 +1379,18 @@ class SyncManager {
         }
         
         // Handle files/images - skip for now (Phase 2+)
-        if (in_array($typeName, ['FieldtypeFile', 'FieldtypeImage', 'FieldtypeCroppableImage3'])) {
+        // Check if it's any file/image type (including namespaced class names and variants)
+        if (strpos($typeName, 'FieldtypeFile') !== false || 
+            strpos($typeName, 'FieldtypeImage') !== false ||
+            strpos($typeName, 'FieldtypeCroppable') !== false) {
+            // Don't modify file fields in this phase
+            return;
+        }
+        
+        // Also check the current page value - if it's a Pagefiles/Pageimages, skip
+        $currentValue = $page->get($fieldName);
+        if ($currentValue instanceof \ProcessWire\Pagefiles || 
+            $currentValue instanceof \ProcessWire\Pageimages) {
             // Don't modify file fields in this phase
             return;
         }
@@ -2017,6 +2044,7 @@ class SyncManager {
         
         // Create metadata file (marked as new)
         $meta = [
+            '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
             'pageId' => null,
             'new' => true,
             'canonicalPath' => $existingPath,

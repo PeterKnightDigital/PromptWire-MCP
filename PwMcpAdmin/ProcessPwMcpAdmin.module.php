@@ -104,6 +104,23 @@ class ProcessPwMcpAdmin extends Process {
     }
 
     /**
+     * Get local sync path for a page
+     * 
+     * Handles the special case where homepage (path="/") is stored in 'home/' folder
+     * 
+     * @param Page $page The page
+     * @return string Absolute path to local sync directory (with trailing slash)
+     */
+    protected function getLocalPathForPage($page): string {
+        $pathSegments = trim($page->path, '/');
+        if (empty($pathSegments)) {
+            // Homepage is stored in 'home/' folder
+            return $this->getWorkspaceRoot() . 'home/';
+        }
+        return $this->getWorkspaceRoot() . $pathSegments . '/';
+    }
+
+    /**
      * Main execute - show sync dashboard with native PW styling
      * 
      * @return string Rendered output
@@ -450,8 +467,7 @@ class ProcessPwMcpAdmin extends Process {
         }
         
         // Not in lookup - check if it's been pulled (would be clean) or not pulled at all
-        $workspaceRoot = $this->getWorkspaceRoot();
-        $localPath = $workspaceRoot . ltrim($page->path, '/');
+        $localPath = $this->getLocalPathForPage($page);
         $metaFile = $localPath . 'page.meta.json';
         
         if (file_exists($metaFile)) {
@@ -1718,7 +1734,7 @@ HTML;
             foreach ($pageIds as $pageId) {
                 $page = $this->wire('pages')->get($pageId);
                 if (!$page->id) continue;
-                $localPath = $this->getWorkspaceRoot() . ltrim($page->path, '/');
+                $localPath = $this->getLocalPathForPage($page);
                 $result = $syncManager->pushPage($localPath, false);
                 if (isset($result['success']) && $result['success']) {
                     $pushed++;
@@ -1840,6 +1856,7 @@ HTML;
         // Check both GET (initial load) and POST (form submission) for page ID
         $pageId = (int) $input->get('id') ?: (int) $input->post('id');
         $confirmed = $input->post('submit_confirm') ? true : false;
+        $forceConfirmed = $input->post('submit_force') ? true : false;
         
         if (!$pageId) {
             $this->error($this->_('No page ID specified'));
@@ -1855,7 +1872,25 @@ HTML;
         }
         
         $syncManager = $this->getSyncManager();
-        $workspacePath = $this->getWorkspaceRoot() . ltrim($page->path, '/');
+        $workspacePath = $this->getLocalPathForPage($page);
+        
+        // Check if force confirmed (overwrite conflict)
+        if ($forceConfirmed) {
+            // Force push - ignore conflict
+            $result = $syncManager->pushPage($workspacePath, false, true); // dryRun = false, force = true
+            
+            if (isset($result['success']) && $result['success']) {
+                $this->message(sprintf(
+                    $this->_('Force imported changes to page "%s"'),
+                    $page->title
+                ));
+            } else {
+                $this->error($result['error'] ?? $this->_('Failed to push page'));
+            }
+            
+            $this->wire('session')->redirect($this->wire('page')->url);
+            return '';
+        }
         
         // Check if confirmed
         if ($confirmed) {
@@ -1908,6 +1943,94 @@ HTML;
             } else {
                 $preview->value = '<p>' . $this->_('No changes detected.') . '</p>';
             }
+        } elseif (isset($result['conflict']) && $result['conflict']) {
+            // Conflict detected - show in same style as regular preview
+            $preview->label = $this->_('Import Preview');
+            
+            // Warning message at top
+            $preview->value = '<div class="NoticeWarning" style="margin-bottom: 20px;">';
+            $preview->value .= $this->_('This page has been modified in ProcessWire since you exported it.');
+            $preview->value .= '</div>';
+            
+            $preview->value .= '<div class="pwmcp-changes-list">';
+            
+            // Show remote changes (what changed in ProcessWire)
+            if (!empty($result['remoteChanges'])) {
+                $preview->value .= '<div style="margin-bottom: 24px;">';
+                $preview->value .= '<div style="margin-bottom: 12px; font-weight: 600;">' . $this->_('Changed in ProcessWire (will be overwritten):') . '</div>';
+                foreach ($result['remoteChanges'] as $field => $change) {
+                    $changePreview = $change['preview'] ?? '';
+                    $previewText = nl2br(htmlspecialchars($changePreview));
+                    
+                    $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
+                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . htmlspecialchars($field) . '</strong></div>';
+                    if ($previewText) {
+                        $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
+                    }
+                    $preview->value .= '</div>';
+                }
+                $preview->value .= '</div>';
+            }
+            
+            // Show local changes (what user wants to push)
+            if (!empty($result['localChanges'])) {
+                $preview->value .= '<div style="margin-bottom: 16px;">';
+                $preview->value .= '<div style="margin-bottom: 12px; font-weight: 600;">' . $this->_('Your Local Changes:') . '</div>';
+                foreach ($result['localChanges'] as $field => $change) {
+                    $changePreview = $change['preview'] ?? '';
+                    $previewText = nl2br(htmlspecialchars($changePreview));
+                    
+                    $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
+                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . htmlspecialchars($field) . '</strong></div>';
+                    if ($previewText) {
+                        $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
+                    }
+                    $preview->value .= '</div>';
+                }
+                $preview->value .= '</div>';
+            }
+            
+            $preview->value .= '</div>';
+            
+            $form->add($preview);
+            
+            // Add explanation text field
+            $explanation = $modules->get('InputfieldMarkup');
+            $explanation->value = '<p style="color: #666;">' . 
+                $this->_('Re-export to get the latest version, or force import to overwrite with your local changes.') . 
+                '</p>';
+            $form->add($explanation);
+            
+            // Hidden page ID
+            $f = $modules->get('InputfieldHidden');
+            $f->attr('name', 'id');
+            $f->attr('value', $pageId);
+            $form->add($f);
+            
+            // Re-export button (link)
+            $btn = $modules->get('InputfieldButton');
+            $btn->value = $this->_('Re-export from ProcessWire');
+            $btn->href = $this->wire('page')->url . 'pull/?id=' . $pageId;
+            $btn->icon = 'download';
+            $form->add($btn);
+            
+            // Force Import button
+            $f = $modules->get('InputfieldSubmit');
+            $f->attr('name', 'submit_force');
+            $f->value = $this->_('Force Import (Overwrite)');
+            $f->icon = 'bolt';
+            $f->setSecondary(true);
+            $form->add($f);
+            
+            // Cancel button
+            $btn = $modules->get('InputfieldButton');
+            $btn->value = $this->_('Cancel');
+            $btn->href = $this->wire('page')->url;
+            $btn->setSecondary(true);
+            $form->add($btn);
+            
+            return $form->render();
+            
         } elseif (isset($result['error'])) {
             $preview->value = '<p class="uk-alert uk-alert-danger">' . 
                 htmlspecialchars($result['error']) . '</p>';
@@ -1955,7 +2078,7 @@ HTML;
             return '<p>' . $this->_('Page not found') . '</p>';
         }
         
-        $workspacePath = $this->getWorkspaceRoot() . ltrim($page->path, '/');
+        $workspacePath = $this->getLocalPathForPage($page);
         $yamlPath = $workspacePath . 'page.yaml';
         
         if (!file_exists($yamlPath)) {
