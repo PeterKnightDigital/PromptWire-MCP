@@ -83,21 +83,37 @@ Cursor (Chat) → MCP Server (Node.js) → CLI (PHP) → ProcessWire API
 
 ## Installation
 
-### 1. Install the ProcessWire Module
+### 1. Download the Module
 
-Copy or clone the `PwMcp` folder into your ProcessWire site's modules directory:
+Download or clone the repository:
 
 ```bash
-# Option A: Clone the entire repo, then copy the module
+# Option A: Clone with Git
 git clone https://github.com/PeterKnightDigital/ProcessWire-MCP.git
-cp -r ProcessWire-MCP/PwMcp /path/to/your-site/site/modules/
 
-# Option B: Download and extract just the PwMcp folder from GitHub
+# Option B: Download ZIP from GitHub and unzip
 ```
 
-Then in ProcessWire admin: **Modules → Refresh → Install PwMcp**
+### 2. Copy Modules to ProcessWire
 
-### 2. Build the MCP Server
+Copy **both** module folders into your ProcessWire site's `site/modules/` directory:
+
+```bash
+cp -r ProcessWire-MCP/PwMcp /path/to/your-site/site/modules/
+cp -r ProcessWire-MCP/PwMcpAdmin /path/to/your-site/site/modules/
+```
+
+Your modules folder should now contain:
+```
+site/modules/PwMcp/           ← Core module (required)
+site/modules/PwMcpAdmin/      ← Admin UI (optional, adds visual sync interface)
+```
+
+Then in ProcessWire admin: **Modules → Refresh → Install PwMcp** (and optionally **PwMcpAdmin**)
+
+### 3. Build the MCP Server
+
+The MCP server can remain in the downloaded/cloned location:
 
 ```bash
 cd /path/to/ProcessWire-MCP/mcp-server
@@ -105,9 +121,9 @@ npm install
 npm run build
 ```
 
-### 3. Configure Cursor
+### 4. Configure Cursor
 
-Add to `~/.cursor/mcp.json`:
+Create a workspace config file at `your-site/.cursor/mcp.json` (recommended for multi-site setups):
 
 ```json
 {
@@ -116,12 +132,16 @@ Add to `~/.cursor/mcp.json`:
       "command": "node",
       "args": ["/path/to/ProcessWire-MCP/mcp-server/dist/index.js"],
       "env": {
-        "PW_PATH": "/path/to/your-processwire-site"
+        "PW_PATH": "/path/to/your-processwire-site",
+        "PW_MCP_CLI_PATH": "/path/to/your-processwire-site/site/modules/PwMcp/bin/pw-mcp.php",
+        "PHP_PATH": "/usr/bin/php"
       }
     }
   }
 }
 ```
+
+**Tip:** For multi-site setups, name your server to identify the site (e.g., `"ProcessWire MCP: MySite.com"`).
 
 **Environment Variables:**
 
