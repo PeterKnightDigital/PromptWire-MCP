@@ -24,7 +24,7 @@ class ProcessPwMcpAdmin extends Process {
         return [
             'title' => 'PW-MCP Admin',
             'summary' => 'Admin UI for PW-MCP: manage content sync between ProcessWire and YAML files',
-            'version' => '1.0.0',
+            'version' => '1.1.0',
             'author' => 'Peter Knight',
             'icon' => 'refresh',
             'requires' => ['ProcessWire>=3.0.165', 'PwMcp'],
