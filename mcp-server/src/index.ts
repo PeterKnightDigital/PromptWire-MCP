@@ -103,7 +103,7 @@ const tools = [
       properties: {
         idOrPath: {
           type: 'string',
-          description: 'Page ID (number) or path (e.g., "/about/" or "/guides/web-design/")',
+          description: 'Page ID (number) or path (e.g., "/about/" or "/blog/my-post/")',
         },
         includeFiles: {
           type: 'boolean',

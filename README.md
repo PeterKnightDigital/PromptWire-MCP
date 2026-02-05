@@ -306,12 +306,12 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
 
 ```json
 {
-  "id": 1764,
-  "path": "/guides/getting-started-guide/",
+  "id": 1042,
+  "path": "/blog/getting-started-with-processwire/",
   "template": "blog-post",
   "fields": {
     "matrix": {
-      "_count": 11,
+      "_count": 5,
       "_items": [
         {
           "_typeId": 1,
@@ -579,20 +579,20 @@ Add FAQs, body blocks, CTAs, and other matrix items directly:
 ```bash
 # Preview what would be created (dry-run)
 php site/modules/PwMcp/bin/pw-mcp.php matrix:add /about/ matrix faq \
-  --content='{"question":"What is a web design project?","answer":"We offer web design, development..."}' \
+  --content='{"question":"What services do you offer?","answer":"We offer web design, development..."}' \
   --pretty
 
 # Create the item
 php site/modules/PwMcp/bin/pw-mcp.php matrix:add /about/ matrix faq \
-  --content='{"question":"What is a web design project?","answer":"We offer web design, development..."}' \
+  --content='{"question":"What services do you offer?","answer":"We offer web design, development..."}' \
   --dry-run=0 --pretty
 ```
 
 **Via Cursor Chat:**
 
-> "Add these FAQs to the web design project page:
-> - Q: What is your process? A: We follow an agile approach...
-> - Q: How long does a project take? A: Project timelines vary based on..."
+> "Add these FAQs to the about page:
+> - Q: What services do you offer? A: We offer web design, development, and consulting...
+> - Q: How long does a typical project take? A: Project timelines vary based on scope..."
 
 The AI will use `pw_matrix_add` to create each FAQ item.
 
