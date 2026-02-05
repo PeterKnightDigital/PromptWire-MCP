@@ -31,6 +31,13 @@
 namespace ProcessWire;
 
 // ============================================================================
+// SUPPRESS DEPRECATION WARNINGS
+// ============================================================================
+// ProcessWire's older code triggers PHP 8.2+ deprecation notices which
+// pollute stdout and break JSON parsing. Suppress them here.
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
+
+// ============================================================================
 // BOOTSTRAP PROCESSWIRE
 // ============================================================================
 

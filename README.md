@@ -4,6 +4,22 @@ ProcessWire ↔ Cursor MCP Bridge
 
 A ProcessWire module that exposes site structure and content to Cursor IDE via the Model Context Protocol (MCP). Query your ProcessWire site using natural language in Cursor.
 
+## Requirements
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| ProcessWire | 3.0.210+ | 3.0.244+ or 3.0.255 |
+| PHP | 8.0+ | 8.2+ |
+| Node.js | 18+ | 20+ |
+| Cursor IDE | With MCP support | Latest version |
+
+**ProcessWire Version Notes:**
+- **3.0.210+** is required for proper PHP 8.2+ compatibility
+- **3.0.244+** (Jan 2025) or **3.0.255** (Jan 2026) recommended for best stability
+- Older versions (3.0.165+) may work but could show deprecation warnings with PHP 8.2+
+
+See [ProcessWire master versions](https://processwire.com/blog/categories/master-versions/) for the latest releases.
+
 ## Using in Cursor Chat
 
 Just ask naturally — the AI will use the MCP tools automatically:
@@ -308,13 +324,6 @@ php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
   }
 }
 ```
-
-## Requirements
-
-- ProcessWire 3.0.165+
-- PHP 8.0+
-- Node.js 18+
-- Cursor IDE with MCP support
 
 ## Content Sync Workflow
 
