@@ -128,6 +128,69 @@ Add to `~/.cursor/mcp.json`:
 
 Press `Cmd+Shift+P` → "Reload Window"
 
+## Multi-Site Configuration
+
+If you work on multiple ProcessWire sites, you have two options for managing MCP configurations:
+
+### Option 1: Workspace-Level Config (Recommended)
+
+Instead of using the global `~/.cursor/mcp.json`, create a project-specific config file in each site's root directory:
+
+```
+/path/to/your-site/.cursor/mcp.json
+```
+
+Example for a site at `/Users/me/Sites/my-site`:
+
+```json
+{
+  "mcpServers": {
+    "ProcessWire MCP": {
+      "command": "node",
+      "args": ["/Users/me/Sites/my-site/site/modules/ProcessWire-MCP/mcp-server/dist/index.js"],
+      "env": {
+        "PW_PATH": "/Users/me/Sites/my-site",
+        "PW_MCP_CLI_PATH": "/Users/me/Sites/my-site/site/modules/ProcessWire-MCP/PwMcp/bin/pw-mcp.php",
+        "PHP_PATH": "/Applications/MAMP/bin/php/php8.3.28/bin/php"
+      }
+    }
+  }
+}
+```
+
+**How it works:** When you open a project in Cursor, it automatically uses the `.cursor/mcp.json` from that project's root directory. Each site carries its own configuration—no manual switching needed.
+
+### Option 2: Multiple Named Servers (Global Config)
+
+Alternatively, define multiple servers in your global `~/.cursor/mcp.json` with different names:
+
+```json
+{
+  "mcpServers": {
+    "ProcessWire MCP - Site A": {
+      "command": "node",
+      "args": ["/path/to/site-a/site/modules/ProcessWire-MCP/mcp-server/dist/index.js"],
+      "env": {
+        "PW_PATH": "/path/to/site-a",
+        "PW_MCP_CLI_PATH": "/path/to/site-a/site/modules/ProcessWire-MCP/PwMcp/bin/pw-mcp.php"
+      }
+    },
+    "ProcessWire MCP - Site B": {
+      "command": "node",
+      "args": ["/path/to/site-b/site/modules/ProcessWire-MCP/mcp-server/dist/index.js"],
+      "env": {
+        "PW_PATH": "/path/to/site-b",
+        "PW_MCP_CLI_PATH": "/path/to/site-b/site/modules/ProcessWire-MCP/PwMcp/bin/pw-mcp.php"
+      }
+    }
+  }
+}
+```
+
+Then toggle the appropriate server on/off in Cursor Settings → Tools & MCP based on which site you're working on.
+
+**Important:** The global config at `~/.cursor/mcp.json` applies to all projects. If you're working on multiple sites simultaneously, use Option 1 to avoid accidentally querying the wrong site.
+
 ## CLI Usage
 
 You can also use the CLI directly for testing:
