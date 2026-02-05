@@ -22,20 +22,20 @@ class ProcessPwMcpAdmin extends Process {
      */
     public static function getModuleInfo(): array {
         return [
-            'title' => 'MCP Sync',
-            'summary' => 'Manage content sync between ProcessWire and YAML files',
+            'title' => 'PW-MCP Admin',
+            'summary' => 'Admin UI for PW-MCP: manage content sync between ProcessWire and YAML files',
             'version' => '1.0.0',
             'author' => 'Peter Knight',
             'icon' => 'refresh',
             'requires' => ['ProcessWire>=3.0.165', 'PwMcp'],
-            'permission' => 'pw-mcp-sync',
+            'permission' => 'pw-mcp-admin',
             'permissions' => [
-                'pw-mcp-sync' => 'Use MCP Sync dashboard',
+                'pw-mcp-admin' => 'Use PW-MCP Admin dashboard',
             ],
             'page' => [
-                'name' => 'mcp-sync',
+                'name' => 'pw-mcp-admin',
                 'parent' => 'setup',
-                'title' => 'MCP Sync',
+                'title' => 'PW-MCP Admin',
             ],
         ];
     }
