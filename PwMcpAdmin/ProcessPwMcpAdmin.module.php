@@ -469,19 +469,6 @@ class ProcessPwMcpAdmin extends Process {
         // FILTER BAR
         // =====================================================================
         
-        $out .= '<form method="get" action="./" class="pwmcp-filters">';
-        $out .= '<div class="pwmcp-filter-row">';
-        
-        // Main filters group (connected)
-        $out .= '<div class="pwmcp-filter-group">';
-        
-        // Search field
-        $out .= '<div class="pwmcp-filter-field pwmcp-filter-search">';
-        $out .= '<label class="uk-form-label" for="pwmcp-search">' . $this->lucideIcon('search', 14) . ' ' . $this->_('Search') . '</label>';
-        $autofocus = $searchQuery ? ' autofocus' : '';
-        $out .= '<input type="text" class="uk-input" id="pwmcp-search" name="q" value="' . htmlspecialchars($searchQuery) . '" placeholder="' . $this->_('Search pages...') . '"' . $autofocus . '>';
-        $out .= '</div>';
-        
         // Calculate counts for filters AND build page hierarchy for JS
         $templateCounts = [];
         $statusCounts = [
@@ -514,43 +501,44 @@ class ProcessPwMcpAdmin extends Process {
             $pageStatuses[$page->id] = $status;
         }
         
+        // Build filter form using ProcessWire Inputfield API (native admin theme styling)
+        /** @var InputfieldWrapper $filterWrapper */
+        $filterWrapper = new InputfieldWrapper();
+        
+        // Search field
+        /** @var InputfieldText $f */
+        $f = $this->wire('modules')->get('InputfieldText');
+        $f->attr('name', 'q');
+        $f->attr('id', 'pwmcp-search');
+        $f->label = $this->_('Search');
+        $f->attr('placeholder', $this->_('Search pages...'));
+        $f->attr('value', $searchQuery);
+        $f->columnWidth = 40;
+        if ($searchQuery) $f->attr('autofocus', 'autofocus');
+        $filterWrapper->add($f);
+        
         // Template filter
-        $out .= '<div class="pwmcp-filter-field">';
-        $out .= '<label class="uk-form-label">' . $this->lucideIcon('layout-template', 14) . ' ' . $this->_('Template') . '</label>';
-        $currentTemplateLabel = $templateFilter ? $templateFilter : $this->_('All');
-        $out .= '<div class="uk-inline" style="width: 100%;">';
-        $out .= '<button class="uk-input pwmcp-dropdown-btn" type="button">';
-        $out .= '<span class="pwmcp-dropdown-label">' . $currentTemplateLabel . '</span>';
-        $out .= $this->lucideIcon('chevron-down', 14);
-        $out .= '</button>';
-        $out .= '<div uk-dropdown="mode: click; boundary: ! .pwmcp-filters; boundary-align: true; pos: bottom-justify">';
-        $out .= '<ul class="uk-nav uk-dropdown-nav pwmcp-dropdown-nav">';
-        
-        $allCount = $totalPages;
-        $allClass = !$templateFilter ? ' class="uk-active"' : '';
-        $out .= '<li' . $allClass . '><a href="#" data-filter-name="template" data-filter-value="">';
-        $out .= '<span>' . $this->_('All') . '</span>';
-        $out .= '<span class="pwmcp-count">' . $allCount . '</span>';
-        $out .= '</a></li>';
-        
+        /** @var InputfieldSelect $f */
+        $f = $this->wire('modules')->get('InputfieldSelect');
+        $f->attr('name', 'template');
+        $f->label = $this->_('Template');
+        $f->addOption('', $this->_('All') . ' (' . $totalPages . ')');
         foreach ($this->wire('templates') as $template) {
             if ($template->flags & Template::flagSystem) continue;
-            // Skip repeater/matrix templates from filter dropdown
             if (strpos($template->name, 'repeater_') === 0) continue;
             $count = $templateCounts[$template->name] ?? 0;
-            $activeClass = ($templateFilter === $template->name) ? ' class="uk-active"' : '';
-            $out .= '<li' . $activeClass . '><a href="#" data-filter-name="template" data-filter-value="' . $template->name . '">';
-            $out .= '<span>' . $template->name . '</span>';
-            $out .= '<span class="pwmcp-count">' . $count . '</span>';
-            $out .= '</a></li>';
+            $f->addOption($template->name, $template->name . ' (' . $count . ')');
         }
-        $out .= '</ul></div></div>';
-        $out .= '<input type="hidden" name="template" id="pwmcp-template-input" value="' . htmlspecialchars($templateFilter) . '">';
-        $out .= '</div>';
+        $f->attr('value', $templateFilter);
+        $f->attr('onchange', 'this.form.submit()');
+        $f->columnWidth = 30;
+        $filterWrapper->add($f);
         
         // Status filter
-        $out .= '<div class="pwmcp-filter-field">';
-        $out .= '<label class="uk-form-label">' . $this->lucideIcon('activity', 14) . ' ' . $this->_('Change Status') . '</label>';
+        /** @var InputfieldSelect $f */
+        $f = $this->wire('modules')->get('InputfieldSelect');
+        $f->attr('name', 'status');
+        $f->label = $this->_('Change Status');
         $statuses = [
             '' => [$this->_('All'), $totalPages],
             'clean' => [$this->_('In Sync'), $statusCounts['clean']],
@@ -559,31 +547,18 @@ class ProcessPwMcpAdmin extends Process {
             'conflict' => [$this->_('Conflict'), $statusCounts['conflict']],
             'notPulled' => [$this->_('Never Exported'), $statusCounts['notPulled']],
         ];
-        
-        $currentStatusLabel = $statusFilter ? $statuses[$statusFilter][0] : $this->_('All');
-        $out .= '<div class="uk-inline" style="width: 100%;">';
-        $out .= '<button class="uk-input pwmcp-dropdown-btn" type="button">';
-        $out .= '<span class="pwmcp-dropdown-label">' . $currentStatusLabel . '</span>';
-        $out .= $this->lucideIcon('chevron-down', 14);
-        $out .= '</button>';
-        $out .= '<div uk-dropdown="mode: click; boundary: ! .pwmcp-filters; boundary-align: true; pos: bottom-justify; flip: false">';
-        $out .= '<ul class="uk-nav uk-dropdown-nav pwmcp-dropdown-nav">';
-        
         foreach ($statuses as $val => $data) {
             list($label, $count) = $data;
-            $activeClass = ($statusFilter === $val) ? ' class="uk-active"' : '';
-            $out .= '<li' . $activeClass . '><a href="#" data-filter-name="status" data-filter-value="' . $val . '">';
-            $out .= '<span>' . $label . '</span>';
-            $out .= '<span class="pwmcp-count">' . $count . '</span>';
-            $out .= '</a></li>';
+            $f->addOption($val, $label . ' (' . $count . ')');
         }
-        $out .= '</ul></div></div>';
-        $out .= '<input type="hidden" name="status" id="pwmcp-status-input" value="' . htmlspecialchars($statusFilter) . '">';
-        $out .= '</div>';
+        $f->attr('value', $statusFilter);
+        $f->attr('onchange', 'this.form.submit()');
+        $f->columnWidth = 30;
+        $filterWrapper->add($f);
         
-        $out .= '</div>'; // End filter group
-        
-        $out .= '</div></form>';
+        $out .= '<form method="get" action="./" class="pwmcp-filters">';
+        $out .= $filterWrapper->render();
+        $out .= '</form>';
         
         // =====================================================================
         // PAGE TABLE - Using native MarkupAdminDataTable
@@ -902,103 +877,8 @@ class ProcessPwMcpAdmin extends Process {
 .pwmcp-header-buttons .uk-button { border-radius: 3px; }
 .pwmcp-header-buttons .uk-button i { margin-right: 4px; }
 
-/* Filter bar styling - matches ProcessWire native admin */
+/* Filter bar styling */
 .pwmcp-filters { margin-bottom: 1.5em; }
-.pwmcp-filter-row { 
-    display: flex;
-    flex-wrap: wrap;
-    align-items: stretch;
-}
-.pwmcp-filter-group {
-    display: flex;
-    border: 1px solid #e5e5e5;
-    border-radius: 0;
-    background: #fff;
-}
-.pwmcp-filter-group .pwmcp-filter-field { 
-    display: flex; 
-    flex-direction: column;
-    padding: 12px 16px;
-    background: #fff;
-    border-left: 1px solid #e5e5e5;
-}
-.pwmcp-filter-group .pwmcp-filter-field:first-child { 
-    border-left: none;
-}
-.pwmcp-filter-group .pwmcp-filter-field:last-child { 
-    border-radius: 0;
-}
-.pwmcp-filter-field > .uk-form-label { 
-    display: flex; 
-    align-items: center; 
-    gap: 6px; 
-    margin-bottom: 8px;
-}
-.pwmcp-filter-field > .uk-form-label .pwmcp-lucide { color: #999; }
-.pwmcp-filter-field .uk-input,
-.pwmcp-filter-field .uk-select { 
-    min-width: 140px;
-    height: 36px;
-}
-/* Dropdown button inherits uk-input appearance */
-.pwmcp-dropdown-btn {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    min-width: 140px;
-    height: 36px;
-    box-sizing: border-box;
-    cursor: pointer;
-    gap: 8px;
-}
-.pwmcp-dropdown-btn .pwmcp-dropdown-label {
-    flex: 1;
-    text-align: left;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.pwmcp-dropdown-btn .pwmcp-lucide {
-    flex-shrink: 0;
-    color: #6c7a89;
-}
-/* Dropdown menu styling */
-.pwmcp-filter-field .uk-dropdown {
-    border-radius: 4px;
-    padding: 4px 0;
-}
-.pwmcp-dropdown-nav {
-    min-width: 200px;
-    max-height: 400px;
-    overflow-y: auto;
-}
-.pwmcp-dropdown-nav li a {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 12px;
-    gap: 16px;
-    color: #666;
-}
-.pwmcp-dropdown-nav li a:hover {
-    color: #1e87f0;
-}
-.pwmcp-dropdown-nav li.uk-active a {
-    color: #1e87f0;
-}
-.pwmcp-dropdown-nav li a span:first-child {
-    flex: 1;
-}
-.pwmcp-dropdown-nav .pwmcp-count {
-    color: #999;
-    font-size: 12px;
-    font-weight: normal;
-    flex-shrink: 0;
-}
-.pwmcp-dropdown-nav li.uk-active .pwmcp-count {
-    color: #1e87f0;
-}
 
 /* Selection toolbar */
 .pwmcp-selection-toolbar {
@@ -1135,8 +1015,7 @@ tr.pwmcp-selected {
 .pwmcp-modal-footer .uk-button {
     border-radius: 3px;
 }
-.pwmcp-filter-search { min-width: 400px; max-width: 520px; }
-.pwmcp-filter-search input.pwmcp-searching { 
+input.pwmcp-searching { 
     background-color: #e8f4fc;
 }
 .pwmcp-count-row {
@@ -1894,24 +1773,6 @@ document.addEventListener('DOMContentLoaded', function() {
         updateSelection();
     }
     
-    // UIkit dropdown filter handlers
-    document.querySelectorAll('.pwmcp-dropdown-nav a').forEach(function(link) {
-        link.addEventListener('click', function(e) {
-            e.preventDefault();
-            var filterName = this.getAttribute('data-filter-name');
-            var filterValue = this.getAttribute('data-filter-value');
-            var input = document.getElementById('pwmcp-' + filterName + '-input');
-            
-            if (input) {
-                input.value = filterValue;
-                // Submit the form
-                var form = input.closest('form');
-                if (form) {
-                    form.submit();
-                }
-            }
-        });
-    });
     
     // Function to initialize action buttons with custom tooltips (no native tooltips)
     function initializeActionButtons() {
