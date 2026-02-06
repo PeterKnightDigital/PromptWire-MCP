@@ -625,22 +625,18 @@ class ProcessPwMcpAdmin extends Process {
             }
         }
         
-        // Expand All toggle row
-        $out .= '<div class="pwmcp-count-row">';
+        // Start form for bulk actions (wraps the table)
+        $out .= '<form method="post" action="./" id="pwmcp-tree-form">';
+        $out .= '<input type="hidden" name="bulk_action" value="" class="pwmcp-bulk-action-field">';
+        
+        // Selection toolbar - includes Expand All toggle and total page count
+        $out .= '<div class="pwmcp-selection-toolbar" data-total-pages="' . $totalPages . '">';
+        $out .= '<div class="pwmcp-selection-summary">';
         $out .= '<label class="pwmcp-switch">';
         $out .= '<input type="checkbox" id="pwmcp-expand-all">';
         $out .= '<span class="pwmcp-slider"></span>';
         $out .= '</label>';
         $out .= '<span class="pwmcp-switch-label">' . $this->_('Expand All') . '</span>';
-        $out .= '</div>';
-        
-        // Start form for bulk actions (wraps the table)
-        $out .= '<form method="post" action="./" id="pwmcp-tree-form">';
-        $out .= '<input type="hidden" name="bulk_action" value="" class="pwmcp-bulk-action-field">';
-        
-        // Selection toolbar - includes total page count for "X of Y" display
-        $out .= '<div class="pwmcp-selection-toolbar" data-total-pages="' . $totalPages . '">';
-        $out .= '<div class="pwmcp-selection-summary">';
         $out .= '<span class="pwmcp-selection-count">' . sprintf($this->_('0 of %d pages selected'), $totalPages) . '</span>';
         $out .= '</div>';
         $out .= '<div class="pwmcp-selection-actions">';
@@ -885,13 +881,13 @@ class ProcessPwMcpAdmin extends Process {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
-    background: #f8f8f8;
-    border: 1px solid #d7d7d7;
-    border-radius: 4px;
-    margin-bottom: 12px;
+    padding: 8px 0;
+    margin-bottom: 4px;
 }
 .pwmcp-selection-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     font-size: 14px;
     color: #666;
 }
@@ -1018,15 +1014,6 @@ tr.pwmcp-selected {
 input.pwmcp-searching { 
     background-color: #e8f4fc;
 }
-.pwmcp-count-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin: 12px 0;
-    font-size: 13px;
-    color: #666;
-}
-.pwmcp-count { font-weight: normal; }
 .pwmcp-switch-label { font-size: 13px; color: #666; }
 /* Toggle switch */
 .pwmcp-switch {
