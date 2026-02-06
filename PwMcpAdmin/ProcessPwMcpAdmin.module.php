@@ -806,13 +806,13 @@ class ProcessPwMcpAdmin extends Process {
         $html .= '</td>';
         
         // Template
-        $html .= '<td>' . $page->template->name . '</td>';
+        $html .= '<td class="pwmcp-col-secondary">' . $page->template->name . '</td>';
         
         // Status badge
         $html .= '<td>' . $this->getStatusBadge($status) . '</td>';
         
         // Modified
-        $html .= '<td>' . ($page->modified ? wireRelativeTimeStr($page->modified) : '-') . '</td>';
+        $html .= '<td class="pwmcp-col-secondary">' . ($page->modified ? wireRelativeTimeStr($page->modified) : '-') . '</td>';
         
         // Actions
         $html .= '<td>' . $this->getRowActions($page, $status) . '</td>';
@@ -892,7 +892,8 @@ class ProcessPwMcpAdmin extends Process {
     color: #666;
 }
 .pwmcp-selection-count {
-    font-weight: 500;
+    font-weight: normal;
+    font-size: 0.875rem;
 }
 .pwmcp-selection-actions {
     display: flex;
@@ -1014,7 +1015,7 @@ tr.pwmcp-selected {
 input.pwmcp-searching { 
     background-color: #e8f4fc;
 }
-.pwmcp-switch-label { font-size: 13px; color: #666; }
+.pwmcp-switch-label { font-size: 0.875rem; color: #666; font-weight: normal; }
 /* Toggle switch */
 .pwmcp-switch {
     position: relative;
@@ -1139,15 +1140,17 @@ a.pwmcp-action * { cursor: pointer !important; }
     color: #999 !important;
     stroke: #999 !important;
 }
+.pwmcp-tree-table td, .pwmcp-tree-table th { padding-top: 7px; padding-bottom: 7px; }
+.pwmcp-col-secondary { font-size: 0.875rem; color: var(--pw-text-color, #354b60); }
 /* Status badge overrides - each status has consistent intensity with lighter fill than border */
-.pwmcp-tree-table .uk-label { font-size: 12px !important; font-weight: normal !important; padding: 3px 7px !important; border-radius: 5px !important; border: 1px solid !important; display: inline-block !important; line-height: 1.4 !important; text-transform: none !important; }
+.pwmcp-tree-table .uk-label { font-size: 11px !important; font-weight: normal !important; padding: 2px 6px !important; border-radius: 4px !important; border: 1px solid !important; display: inline-block !important; line-height: 1.3 !important; text-transform: none !important; }
 .pwmcp-tree-table .uk-label-success { color: rgba(35, 120, 60, 1) !important; border-color: rgba(60, 150, 85, 1) !important; background-color: rgba(40, 167, 69, 0.15) !important; }
 .pwmcp-tree-table .uk-label-warning { color: rgba(150, 110, 0, 1) !important; border-color: rgba(200, 155, 30, 1) !important; background-color: rgba(255, 193, 7, 0.15) !important; }
 .pwmcp-tree-table .uk-label-primary { color: rgba(25, 95, 160, 1) !important; border-color: rgba(65, 145, 210, 1) !important; background-color: rgba(30, 135, 240, 0.15) !important; }
 .pwmcp-tree-table .uk-label-danger { color: rgba(165, 40, 50, 1) !important; border-color: rgba(200, 75, 85, 1) !important; background-color: rgba(220, 53, 69, 0.15) !important; }
 .pwmcp-tree-table .uk-label-muted { color: rgba(120, 120, 120, 1) !important; border-color: rgba(180, 180, 180, 1) !important; background-color: rgba(200, 200, 200, 0.1) !important; }
 .pwmcp-toggle-spacer { display: inline-block; width: 14px; }
-.pwmcp-title-cell { white-space: nowrap; line-height: 1.6em; max-width: 350px; overflow: hidden; text-overflow: ellipsis; }
+.pwmcp-title-cell { white-space: nowrap; line-height: 1.4; max-width: 350px; overflow: hidden; text-overflow: ellipsis; }
 .pwmcp-title-cell a { display: inline; }
 .pwmcp-title-cell small { font-size: 13px; color: #999; }
 /* Page publish status styling - matches ProcessWire's official tree */
