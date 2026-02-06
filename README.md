@@ -364,9 +364,33 @@ php site/modules/PwMcp/bin/pw-mcp.php pages:pull "template=blog-post" --limit=20
 
 Pages are saved to `site/assets/pw-mcp/[page-path]/`:
 - `page.meta.json` — ID, template, revision hash, content hash (includes `_readme` warning not to edit)
-- `page.yaml` — Editable field content (with `_file` references for rich text)
+- `page.yaml` — Editable field content with field label comments
 - `fields/*.html` — Page-level rich text fields (CKEditor/TinyMCE content)
 - `matrix/*.html` — Matrix item rich text fields
+
+**Field Labels:** The YAML includes comments with human-readable field labels:
+
+```yaml
+fields:
+  # Page Title
+  title: About Us
+  # SEO Title
+  seo_title: About Our Company
+  # Body Content
+  Body:
+    _file: fields/body.html
+```
+
+**Option Fields:** Select/radio fields show both the ID and label:
+
+```yaml
+  # Breakout Theme
+  breakouttheme:
+    id: 1
+    _label: Light Blue
+```
+
+Only the `id` is used on import — the `_label` is for readability.
 
 **Rich Text Extraction:** CKEditor and TinyMCE fields are automatically saved as separate HTML files to prevent YAML parsing issues. The YAML contains `_file` references pointing to these files:
 

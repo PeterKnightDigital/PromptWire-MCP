@@ -121,6 +121,34 @@ class ProcessPwMcpAdmin extends Process {
     }
 
     /**
+     * Get human-readable label for a field
+     * 
+     * Handles both simple field names and matrix/repeater paths like "matrix→body[1]"
+     * 
+     * @param string $fieldName Field name or path
+     * @return string|null Field label or null if not found
+     */
+    protected function getFieldLabel(string $fieldName): ?string {
+        // Handle matrix/repeater paths like "matrix→body[1]"
+        // Extract the base field name
+        $baseName = $fieldName;
+        if (strpos($fieldName, '→') !== false) {
+            $parts = explode('→', $fieldName);
+            $baseName = $parts[0];
+        }
+        
+        // Remove array notation like [1]
+        $baseName = preg_replace('/\[\d+\]/', '', $baseName);
+        
+        $field = $this->wire('fields')->get($baseName);
+        if ($field && $field->label) {
+            return $field->label;
+        }
+        
+        return null;
+    }
+
+    /**
      * Main execute - show sync dashboard with native PW styling
      * 
      * @return string Rendered output
@@ -1930,12 +1958,18 @@ HTML;
                 foreach ($result['changes'] as $field => $change) {
                     $changePreview = $change['preview'] ?? '';
                     
+                    // Get field label if available
+                    $fieldLabel = $this->getFieldLabel($field);
+                    $fieldDisplay = $fieldLabel ? htmlspecialchars($field) . ' <span style="color: #888; font-weight: normal;">(' . htmlspecialchars($fieldLabel) . ')</span>' : htmlspecialchars($field);
+                    
                     // Format the preview text (convert newlines to <br> for matrix field details)
                     $previewText = nl2br(htmlspecialchars($changePreview));
                     
                     $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
-                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . htmlspecialchars($field) . '</strong></div>';
-                    $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
+                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . $fieldDisplay . '</strong></div>';
+                    if ($previewText) {
+                        $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
+                    }
                     $preview->value .= '</div>';
                 }
                 
@@ -1960,10 +1994,12 @@ HTML;
                 $preview->value .= '<div style="margin-bottom: 12px; font-weight: 600;">' . $this->_('Changed in ProcessWire (will be overwritten):') . '</div>';
                 foreach ($result['remoteChanges'] as $field => $change) {
                     $changePreview = $change['preview'] ?? '';
+                    $fieldLabel = $this->getFieldLabel($field);
+                    $fieldDisplay = $fieldLabel ? htmlspecialchars($field) . ' <span style="color: #888; font-weight: normal;">(' . htmlspecialchars($fieldLabel) . ')</span>' : htmlspecialchars($field);
                     $previewText = nl2br(htmlspecialchars($changePreview));
                     
                     $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
-                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . htmlspecialchars($field) . '</strong></div>';
+                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . $fieldDisplay . '</strong></div>';
                     if ($previewText) {
                         $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
                     }
@@ -1978,10 +2014,12 @@ HTML;
                 $preview->value .= '<div style="margin-bottom: 12px; font-weight: 600;">' . $this->_('Your Local Changes:') . '</div>';
                 foreach ($result['localChanges'] as $field => $change) {
                     $changePreview = $change['preview'] ?? '';
+                    $fieldLabel = $this->getFieldLabel($field);
+                    $fieldDisplay = $fieldLabel ? htmlspecialchars($field) . ' <span style="color: #888; font-weight: normal;">(' . htmlspecialchars($fieldLabel) . ')</span>' : htmlspecialchars($field);
                     $previewText = nl2br(htmlspecialchars($changePreview));
                     
                     $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
-                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . htmlspecialchars($field) . '</strong></div>';
+                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . $fieldDisplay . '</strong></div>';
                     if ($previewText) {
                         $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
                     }

@@ -120,12 +120,15 @@ class SyncManager {
         $fieldsForHash = $this->extractPageFields($page);
         $revisionHash = $this->generateRevisionHash($fieldsForHash);
         
+        // Build field labels map for YAML comments
+        $fieldLabels = $this->getFieldLabelsForTemplate($page->template);
+        
         // Create content file first so we can hash it
         $content = ['fields' => $fields];
         
         if ($format === 'yaml') {
             $contentPath = $localPath . '/page.yaml';
-            $yamlContent = $this->arrayToYaml($content);
+            $yamlContent = $this->arrayToYamlWithLabels($content, $fieldLabels);
             file_put_contents($contentPath, $yamlContent);
         } else {
             $contentPath = $localPath . '/page.json';
@@ -446,7 +449,8 @@ class SyncManager {
         // Determine format and update content file
         $isYaml = file_exists($contentPath) && str_ends_with($contentPath, '.yaml');
         if ($isYaml) {
-            $newFileContent = $this->arrayToYaml($newContent);
+            $fieldLabels = $this->getFieldLabelsForTemplate($page->template);
+            $newFileContent = $this->arrayToYamlWithLabels($newContent, $fieldLabels);
         } else {
             $newFileContent = json_encode($newContent, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         }
@@ -1168,11 +1172,36 @@ class SyncManager {
         
         // Added
         if ($oldEmpty && !$newEmpty) {
+            // Check for option field format (single option with id/_label)
+            if (is_array($newValue) && isset($newValue['id']) && isset($newValue['_label'])) {
+                return 'added: ' . $newValue['_label'];
+            }
+            // Check for option field array format
+            if (is_array($newValue) && !empty($newValue) && isset($newValue[0]['_label'])) {
+                $labels = array_map(fn($opt) => $opt['_label'], $newValue);
+                return 'added: ' . implode(', ', $labels);
+            }
             // For simple values, show what was added
             if (is_array($newValue) && $this->isSimpleScalarArray($newValue)) {
                 return 'added: ' . implode(', ', $newValue);
             }
             return 'added';
+        }
+        
+        // Option field changes (single option with id/_label)
+        if (is_array($oldValue) && is_array($newValue) &&
+            isset($oldValue['id']) && isset($oldValue['_label']) &&
+            isset($newValue['id']) && isset($newValue['_label'])) {
+            return $oldValue['_label'] . ' → ' . $newValue['_label'];
+        }
+        
+        // Option field changes (array of options with id/_label)
+        if (is_array($oldValue) && is_array($newValue) &&
+            !empty($oldValue) && !empty($newValue) &&
+            isset($oldValue[0]['_label']) && isset($newValue[0]['_label'])) {
+            $oldLabels = array_map(fn($opt) => $opt['_label'], $oldValue);
+            $newLabels = array_map(fn($opt) => $opt['_label'], $newValue);
+            return implode(', ', $oldLabels) . ' → ' . implode(', ', $newLabels);
         }
         
         // Simple arrays of scalars (option IDs like [1] → [2])
@@ -1215,8 +1244,40 @@ class SyncManager {
      */
     private function normalizeForComparison($value): string {
         $normalized = $this->normalizeEmptyValues($value);
+        $normalized = $this->stripDisplayOnlyFields($normalized);
         $sorted = $this->sortKeysRecursive($normalized);
         return json_encode($sorted, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+    
+    /**
+     * Strip display-only fields that shouldn't affect comparison
+     * 
+     * Removes _label, _comment, and similar metadata fields that are
+     * for human readability but don't represent actual content changes.
+     * 
+     * @param mixed $value
+     * @return mixed
+     */
+    private function stripDisplayOnlyFields($value) {
+        if (!is_array($value)) {
+            return $value;
+        }
+        
+        // Check if this is an option field format (has id and _label)
+        if (isset($value['id']) && isset($value['_label'])) {
+            return $value['id'];  // Just compare the ID
+        }
+        
+        $result = [];
+        foreach ($value as $key => $val) {
+            // Skip display-only keys
+            if ($key === '_label' || $key === '_comment') {
+                continue;
+            }
+            $result[$key] = $this->stripDisplayOnlyFields($val);
+        }
+        
+        return $result;
     }
     
     /**
@@ -1375,6 +1436,19 @@ class SyncManager {
         if (is_array($value) && !empty($value) && isset($value[0]['_ref']) && $value[0]['_ref'] === 'page') {
             $pageIds = array_map(fn($p) => $p['id'], $value);
             $page->set($fieldName, $pageIds);
+            return;
+        }
+        
+        // Handle Options fields (single option with id/_label)
+        if (is_array($value) && isset($value['id']) && isset($value['_label'])) {
+            $page->set($fieldName, [(int) $value['id']]);
+            return;
+        }
+        
+        // Handle Options fields (array of options with id/_label)
+        if (is_array($value) && !empty($value) && isset($value[0]['id']) && isset($value[0]['_label'])) {
+            $optionIds = array_map(fn($opt) => (int) $opt['id'], $value);
+            $page->set($fieldName, $optionIds);
             return;
         }
         
@@ -1655,13 +1729,20 @@ class SyncManager {
             return $files;
         }
         
-        // SelectableOptionArray (Options fields) - return just the option IDs
+        // SelectableOptionArray (Options fields) - return ID with label comment
         if ($value instanceof \ProcessWire\SelectableOptionArray) {
-            $ids = [];
+            $options = [];
             foreach ($value as $option) {
-                $ids[] = $option->id;
+                $options[] = [
+                    'id' => $option->id,
+                    '_label' => $option->title ?: $option->value,  // Read-only, shows what ID means
+                ];
             }
-            return $ids ?: null;
+            // For single option, return just the one item
+            if (count($options) === 1) {
+                return $options[0];
+            }
+            return $options ?: null;
         }
         
         // WireArray
@@ -1949,6 +2030,69 @@ class SyncManager {
     }
     
     /**
+     * Convert array to YAML with field label comments
+     * 
+     * Adds human-readable comments above fields in the 'fields' section.
+     * 
+     * @param array $data The data array
+     * @param array $fieldLabels Map of field names to labels
+     * @return string YAML content with comments
+     */
+    private function arrayToYamlWithLabels(array $data, array $fieldLabels): string {
+        $yaml = '';
+        
+        foreach ($data as $key => $value) {
+            if ($key === 'fields' && is_array($value)) {
+                // Special handling for fields section - add comments
+                $yaml .= "fields:\n";
+                foreach ($value as $fieldName => $fieldValue) {
+                    // Add label comment if available
+                    if (isset($fieldLabels[$fieldName]) && $fieldLabels[$fieldName] !== $fieldName) {
+                        $yaml .= "  # " . $fieldLabels[$fieldName] . "\n";
+                    }
+                    
+                    // Output the field
+                    if (is_array($fieldValue) && !empty($fieldValue)) {
+                        $yaml .= "  " . $fieldName . ":\n";
+                        $yaml .= $this->arrayToYaml($fieldValue, 2);
+                    } elseif (is_array($fieldValue)) {
+                        $yaml .= "  " . $fieldName . ": []\n";
+                    } else {
+                        $yaml .= "  " . $fieldName . ': ' . $this->yamlValue($fieldValue, 2) . "\n";
+                    }
+                }
+            } else {
+                // Standard handling for other sections
+                if (is_array($value) && !empty($value)) {
+                    $yaml .= $key . ":\n";
+                    $yaml .= $this->arrayToYaml($value, 1);
+                } elseif (is_array($value)) {
+                    $yaml .= $key . ": []\n";
+                } else {
+                    $yaml .= $key . ': ' . $this->yamlValue($value, 1) . "\n";
+                }
+            }
+        }
+        
+        return $yaml;
+    }
+    
+    /**
+     * Get field labels for a template
+     * 
+     * @param \ProcessWire\Template $template
+     * @return array Map of field name => label
+     */
+    private function getFieldLabelsForTemplate($template): array {
+        $labels = [];
+        foreach ($template->fields as $field) {
+            $label = $field->label ?: $field->name;
+            $labels[$field->name] = $label;
+        }
+        return $labels;
+    }
+    
+    /**
      * Format a value for YAML output
      * 
      * @param mixed $value
@@ -2064,8 +2208,9 @@ class SyncManager {
         $fields['title'] = $title;
         
         $content = ['fields' => $fields];
+        $fieldLabels = $this->getFieldLabelsForTemplate($templateObj);
         $contentPath = $localPath . '/page.yaml';
-        file_put_contents($contentPath, $this->arrayToYaml($content));
+        file_put_contents($contentPath, $this->arrayToYamlWithLabels($content, $fieldLabels));
         
         return [
             'success' => true,
@@ -2276,7 +2421,8 @@ class SyncManager {
         // Update content file to match what's in ProcessWire
         $fields = $this->extractPageFields($page);
         $newContent = ['fields' => $fields];
-        file_put_contents($yamlPath, $this->arrayToYaml($newContent));
+        $fieldLabels = $this->getFieldLabelsForTemplate($page->template);
+        file_put_contents($yamlPath, $this->arrayToYamlWithLabels($newContent, $fieldLabels));
         
         return [
             'success' => true,
