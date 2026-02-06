@@ -2045,7 +2045,14 @@ class SyncManager {
             if ($key === 'fields' && is_array($value)) {
                 // Special handling for fields section - add comments
                 $yaml .= "fields:\n";
+                $isFirst = true;
                 foreach ($value as $fieldName => $fieldValue) {
+                    // Add blank line before each field (except first) for readability
+                    if (!$isFirst) {
+                        $yaml .= "\n";
+                    }
+                    $isFirst = false;
+                    
                     // Add label comment if available
                     if (isset($fieldLabels[$fieldName]) && $fieldLabels[$fieldName] !== $fieldName) {
                         $yaml .= "  # " . $fieldLabels[$fieldName] . "\n";
