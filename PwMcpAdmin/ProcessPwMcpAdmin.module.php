@@ -991,9 +991,11 @@ a.pwmcp-action[title] { cursor: pointer !important; }
 a.pwmcp-action * { cursor: pointer !important; }
 /* Custom tooltip system for action elements - no native tooltips */
 .pwmcp-action { position: relative !important; }
-/* Selection toolbar buttons - override action icon colors */
-.pwmcp-selection-actions .pwmcp-action { color: inherit !important; padding: inherit !important; }
+/* Selection toolbar buttons - override action icon colors and add padding */
+.pwmcp-selection-actions .pwmcp-action { color: inherit !important; padding: 0 15px !important; }
 .pwmcp-selection-actions .pwmcp-action:hover { color: inherit !important; }
+.pwmcp-selection-actions .uk-button { padding-left: 15px; padding-right: 15px; }
+.pwmcp-selection-actions .uk-button svg { margin-right: 6px; }
 .pwmcp-action-tooltip {
     position: absolute;
     bottom: 100%;
