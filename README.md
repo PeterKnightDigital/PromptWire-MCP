@@ -547,6 +547,7 @@ The module includes **PwMcpAdmin** — a full-featured admin interface in Proces
 - **Filter dropdowns** — UIkit-styled filters with live counts per option
 - **Action icons** — Quick access to Export, Import, and View YAML
 - **Custom tooltips** — Helpful descriptions on hover
+- **Import preview controls** — Per-field refresh and exclude/include toggles
 
 ### Tree Selection Behavior
 
@@ -591,6 +592,19 @@ added
 - New values show: `added` or `added: 1, 2`
 - Cleared fields show: `cleared`
 - Complex content (HTML) shows just the field name — check the file for details
+
+**Per-field controls** — Each field in the preview has action icons:
+
+| Icon | Action | Description |
+|------|--------|-------------|
+| Refresh (↻) | Refresh contents | Re-reads the local file and updates the preview for that field |
+| Toggle (on/off) | Exclude/include | Toggles whether a field is included in the import |
+
+- **Excluded fields** are styled with a pink strikethrough, reduced opacity, and normal font weight — matching ProcessWire's uninstalled module appearance
+- A vertical divider separates the action icons from the expand/collapse chevron
+- Custom tooltips appear on hover, styled consistently with the sync screen
+
+**Header actions** — The **Confirm Import** and **Cancel** buttons are cloned to the top-right of the page title for quick access, matching ProcessWire's native button placement on other admin screens.
 
 ### Import Confirmation Modal
 
