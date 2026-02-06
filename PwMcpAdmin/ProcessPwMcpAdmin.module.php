@@ -477,9 +477,9 @@ class ProcessPwMcpAdmin extends Process {
         
         // Search field
         $out .= '<div class="pwmcp-filter-field pwmcp-filter-search">';
-        $out .= '<label for="pwmcp-search">' . $this->lucideIcon('search', 14) . ' ' . $this->_('Search') . '</label>';
+        $out .= '<label class="uk-form-label" for="pwmcp-search">' . $this->lucideIcon('search', 14) . ' ' . $this->_('Search') . '</label>';
         $autofocus = $searchQuery ? ' autofocus' : '';
-        $out .= '<input type="text" id="pwmcp-search" name="q" value="' . htmlspecialchars($searchQuery) . '" placeholder="' . $this->_('Search pages...') . '"' . $autofocus . '>';
+        $out .= '<input type="text" class="uk-input" id="pwmcp-search" name="q" value="' . htmlspecialchars($searchQuery) . '" placeholder="' . $this->_('Search pages...') . '"' . $autofocus . '>';
         $out .= '</div>';
         
         // Calculate counts for filters AND build page hierarchy for JS
@@ -516,10 +516,10 @@ class ProcessPwMcpAdmin extends Process {
         
         // Template filter
         $out .= '<div class="pwmcp-filter-field">';
-        $out .= '<label>' . $this->lucideIcon('layout-template', 14) . ' ' . $this->_('Template') . '</label>';
+        $out .= '<label class="uk-form-label">' . $this->lucideIcon('layout-template', 14) . ' ' . $this->_('Template') . '</label>';
         $currentTemplateLabel = $templateFilter ? $templateFilter : $this->_('All');
         $out .= '<div class="uk-inline" style="width: 100%;">';
-        $out .= '<button class="pwmcp-dropdown-btn" type="button">';
+        $out .= '<button class="uk-input pwmcp-dropdown-btn" type="button">';
         $out .= '<span class="pwmcp-dropdown-label">' . $currentTemplateLabel . '</span>';
         $out .= $this->lucideIcon('chevron-down', 14);
         $out .= '</button>';
@@ -550,7 +550,7 @@ class ProcessPwMcpAdmin extends Process {
         
         // Status filter
         $out .= '<div class="pwmcp-filter-field">';
-        $out .= '<label>' . $this->lucideIcon('activity', 14) . ' ' . $this->_('Change Status') . '</label>';
+        $out .= '<label class="uk-form-label">' . $this->lucideIcon('activity', 14) . ' ' . $this->_('Change Status') . '</label>';
         $statuses = [
             '' => [$this->_('All'), $totalPages],
             'clean' => [$this->_('In Sync'), $statusCounts['clean']],
@@ -562,7 +562,7 @@ class ProcessPwMcpAdmin extends Process {
         
         $currentStatusLabel = $statusFilter ? $statuses[$statusFilter][0] : $this->_('All');
         $out .= '<div class="uk-inline" style="width: 100%;">';
-        $out .= '<button class="pwmcp-dropdown-btn" type="button">';
+        $out .= '<button class="uk-input pwmcp-dropdown-btn" type="button">';
         $out .= '<span class="pwmcp-dropdown-label">' . $currentStatusLabel . '</span>';
         $out .= $this->lucideIcon('chevron-down', 14);
         $out .= '</button>';
@@ -911,8 +911,8 @@ class ProcessPwMcpAdmin extends Process {
 }
 .pwmcp-filter-group {
     display: flex;
-    border: 1px solid #d7d7d7;
-    border-radius: 4px 0 0 4px;
+    border: 1px solid #e5e5e5;
+    border-radius: 0;
     background: #fff;
 }
 .pwmcp-filter-group .pwmcp-filter-field { 
@@ -920,78 +920,37 @@ class ProcessPwMcpAdmin extends Process {
     flex-direction: column;
     padding: 12px 16px;
     background: #fff;
-    border-left: 1px solid #d7d7d7;
+    border-left: 1px solid #e5e5e5;
 }
 .pwmcp-filter-group .pwmcp-filter-field:first-child { 
     border-left: none;
-    border-radius: 4px 0 0 4px;
 }
 .pwmcp-filter-group .pwmcp-filter-field:last-child { 
     border-radius: 0;
 }
-.pwmcp-filter-field > label:first-child { 
+.pwmcp-filter-field > .uk-form-label { 
     display: flex; 
     align-items: center; 
     gap: 6px; 
-    font-size: 13px; 
-    font-weight: normal; 
-    color: #6c7a89; 
     margin-bottom: 8px;
 }
-.pwmcp-filter-field > label:first-child .pwmcp-lucide { color: #6c7a89; }
-.pwmcp-filter-field input[type="text"],
-.pwmcp-filter-field select { 
-    padding: 8px 12px; 
-    border: none;
-    border-radius: 2px;
-    font-size: 14px;
+.pwmcp-filter-field > .uk-form-label .pwmcp-lucide { color: #999; }
+.pwmcp-filter-field .uk-input,
+.pwmcp-filter-field .uk-select { 
     min-width: 140px;
-    background: #f1f1f1;
-    color: #354052;
-    transition: background-color 0.15s;
     height: 36px;
-    box-sizing: border-box;
 }
-.pwmcp-filter-field select { 
-    padding-right: 48px !important; 
-    background-position: right 12px center !important;
-}
-.pwmcp-filter-field input[type="text"]:hover,
-.pwmcp-filter-field select:hover { 
-    background: #e8e8e8;
-}
-.pwmcp-filter-field input[type="text"]:focus,
-.pwmcp-filter-field select:focus { 
-    background: #fff;
-    outline: 2px solid #1e87f0;
-    outline-offset: -2px;
-}
-/* UIkit dropdown button styling */
+/* Dropdown button inherits uk-input appearance */
 .pwmcp-dropdown-btn {
     display: flex;
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    padding: 8px 12px;
-    border: none;
-    border-radius: 2px;
-    font-size: 14px;
     min-width: 140px;
-    background: #f1f1f1;
-    color: #354052;
-    transition: background-color 0.15s;
     height: 36px;
     box-sizing: border-box;
     cursor: pointer;
     gap: 8px;
-}
-.pwmcp-dropdown-btn:hover {
-    background: #e8e8e8;
-}
-.pwmcp-dropdown-btn:focus {
-    background: #fff;
-    outline: 2px solid #1e87f0;
-    outline-offset: -2px;
 }
 .pwmcp-dropdown-btn .pwmcp-dropdown-label {
     flex: 1;
