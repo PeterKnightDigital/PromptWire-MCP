@@ -76,6 +76,9 @@ class ProcessPwMcpAdmin extends Process {
             'search' => '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
             'layout-template' => '<rect width="18" height="7" x="3" y="3" rx="1"/><rect width="9" height="7" x="3" y="14" rx="1"/><rect width="5" height="7" x="16" y="14" rx="1"/>',
             'activity' => '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
+            'arrow-left' => '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+            'toggle-right' => '<rect width="20" height="12" x="2" y="6" rx="6"/><circle cx="16" cy="12" r="2"/>',
+            'toggle-left' => '<rect width="20" height="12" x="2" y="6" rx="6"/><circle cx="8" cy="12" r="2"/>',
         ];
         
         $path = $icons[$name] ?? '';
@@ -147,6 +150,284 @@ class ProcessPwMcpAdmin extends Process {
         
         return null;
     }
+    
+    /**
+     * Get field description/notes
+     * 
+     * @param string $fieldName Field name
+     * @return string|null Field description or null
+     */
+    protected function getFieldDescription(string $fieldName): ?string {
+        // Extract base field name (handle matrix paths)
+        $baseName = $fieldName;
+        if (strpos($fieldName, '→') !== false) {
+            $parts = explode('→', $fieldName);
+            $baseName = $parts[0];
+        }
+        $baseName = preg_replace('/\[\d+\]/', '', $baseName);
+        
+        $field = $this->wire('fields')->get($baseName);
+        if ($field && $field->description) {
+            return $field->description;
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Heuristic: value looks like rich text (HTML) and likely has an external file in sync.
+     *
+     * @param mixed $value
+     * @return bool
+     */
+    protected function looksLikeRichText($value): bool {
+        if (!is_string($value) || $value === '') {
+            return false;
+        }
+        $tags = ['<p', '<h1', '<h2', '<h3', '<h4', '<h5', '<h6', '<ul', '<ol', '<table', '<div', '<blockquote'];
+        foreach ($tags as $tag) {
+            if (stripos($value, $tag) !== false) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Format a field value for display in the preview
+     *
+     * @param mixed $value The field value
+     * @param string|null $fieldName Optional field machine name to show at bottom right (may contain HTML if $fieldNameIsHtml)
+     * @param bool $fieldNameIsHtml When true, $fieldName is output unescaped (for built helper text with bold labels)
+     * @return string HTML-formatted content
+     */
+    protected function formatFieldValueForPreview($value, ?string $fieldName = null, bool $fieldNameIsHtml = false): string {
+        $content = '';
+        
+        if ($value === null || $value === '') {
+            $content = '<em style="color: #999;">' . $this->_('(empty)') . '</em>';
+        } elseif (is_bool($value)) {
+            $content = '<input type="text" class="pwmcp-preview-input" value="' . ($value ? $this->_('Yes') : $this->_('No')) . '" disabled />';
+        } elseif (is_numeric($value)) {
+            $content = '<input type="text" class="pwmcp-preview-input" value="' . htmlspecialchars((string) $value) . '" disabled />';
+        } elseif (is_string($value)) {
+            // Count lines to decide between input and textarea
+            $lineCount = substr_count($value, "\n") + 1;
+            if ($lineCount <= 1 && strlen($value) < 100) {
+                // Short single-line value - use a text input
+                $content = '<input type="text" class="pwmcp-preview-input" value="' . htmlspecialchars($value) . '" disabled />';
+            } else {
+                // Multi-line or long content - use a textarea (shows raw HTML source)
+                $rows = min(max($lineCount, 8), 30);
+                $content = '<textarea class="pwmcp-preview-textarea" rows="' . $rows . '" disabled>' . htmlspecialchars($value) . '</textarea>';
+            }
+        } elseif (is_array($value)) {
+            // Check for page reference
+            if (isset($value['_pageRef']) || (isset($value[0]) && isset($value[0]['_pageRef']))) {
+                $refs = isset($value['_pageRef']) ? [$value] : $value;
+                $titles = [];
+                foreach ($refs as $ref) {
+                    $titles[] = $ref['_comment'] ?? ('ID: ' . ($ref['id'] ?? '?'));
+                }
+                $content = '<input type="text" class="pwmcp-preview-input" value="' . htmlspecialchars(implode(', ', $titles)) . '" disabled />';
+            }
+            // Check for option field
+            elseif (isset($value['_label'])) {
+                $content = '<input type="text" class="pwmcp-preview-input" value="' . htmlspecialchars($value['_label']) . '" disabled />';
+            }
+            elseif (isset($value[0]['_label'])) {
+                $labels = array_map(fn($v) => $v['_label'], $value);
+                $content = '<input type="text" class="pwmcp-preview-input" value="' . htmlspecialchars(implode(', ', $labels)) . '" disabled />';
+            }
+            // Generic array - show as formatted
+            else {
+                $formatted = print_r($value, true);
+                $rows = min(substr_count($formatted, "\n") + 1, 15);
+                $content = '<textarea class="pwmcp-preview-textarea" rows="' . $rows . '" disabled>' . htmlspecialchars($formatted) . '</textarea>';
+            }
+        } else {
+            $content = '<input type="text" class="pwmcp-preview-input" value="' . htmlspecialchars((string) $value) . '" disabled />';
+        }
+        
+        // Add field name at bottom right (like ProcessWire page editor)
+        if ($fieldName) {
+            $content .= '<div class="pwmcp-field-name">' . ($fieldNameIsHtml ? $fieldName : htmlspecialchars($fieldName)) . '</div>';
+        }
+        
+        return $content;
+    }
+    
+    /**
+     * Build the changes preview using ProcessWire Inputfield structure
+     * 
+     * @param array $changes Array of field changes
+     * @param int|null $pageId Page ID for display reference
+     * @return InputfieldWrapper
+     */
+    protected function buildChangesPreview(array $changes, ?int $pageId = null): InputfieldWrapper {
+        $modules = $this->wire('modules');
+        $wrapper = $modules->get('InputfieldWrapper');
+        
+        // Group changes by parent field (for matrix items)
+        $grouped = [];
+        $regularFields = [];
+        
+        foreach ($changes as $fieldKey => $change) {
+            $parentField = $change['parentField'] ?? null;
+            if ($parentField) {
+                if (!isset($grouped[$parentField])) {
+                    $grouped[$parentField] = [];
+                }
+                $grouped[$parentField][$fieldKey] = $change;
+            } else {
+                $regularFields[$fieldKey] = $change;
+            }
+        }
+        
+        // Add regular fields first
+        foreach ($regularFields as $fieldKey => $change) {
+            $fieldLabel = $this->getFieldLabel($fieldKey);
+            $fieldDesc = $this->getFieldDescription($fieldKey);
+            $newValue = $change['newValue'] ?? null;
+            
+            // Build helper text with bold labels: Field • ID • File (file only for rich text)
+            $machineKey = '<strong>Field:</strong> ' . htmlspecialchars($fieldKey);
+            if ($pageId) {
+                $machineKey .= '   •   <strong>ID:</strong> ' . (int) $pageId;
+            }
+            if ($this->looksLikeRichText($newValue)) {
+                $machineKey .= '   •   <strong>File:</strong> fields/' . htmlspecialchars(strtolower($fieldKey)) . '.html';
+            }
+            
+            $f = $modules->get('InputfieldMarkup');
+            $f->wrapAttr('data-pwmcp-field-key', $fieldKey);
+            $f->label = $fieldLabel ?: $fieldKey;
+            if ($fieldDesc) {
+                $f->description = $fieldDesc;
+            }
+            $f->collapsed = Inputfield::collapsedNo; // Open by default
+            $f->value = $this->formatFieldValueForPreview($newValue, $machineKey, true);
+            
+            $wrapper->add($f);
+        }
+        
+        // Add matrix/repeater groups
+        foreach ($grouped as $parentField => $subChanges) {
+            $parentLabel = $this->getFieldLabel($parentField);
+            $parentDesc = $this->getFieldDescription($parentField);
+            
+            // Create a fieldset for the matrix field
+            $fieldset = $modules->get('InputfieldFieldset');
+            $fieldset->label = $parentLabel ?: $parentField;
+            if ($parentDesc) {
+                $fieldset->description = $parentDesc;
+            }
+            $fieldset->collapsed = Inputfield::collapsedNo;
+            
+            // Add each sub-field as a nested inputfield
+            foreach ($subChanges as $subKey => $subChange) {
+                $subFieldName = $subChange['subField'] ?? preg_replace('/\[\d+\]$/', '', $subKey);
+                // Strip parent prefix if subKey contains it (e.g. "matrix→Body[1]" → "Body[1]")
+                if (strpos($subFieldName, '→') !== false) {
+                    $parts = explode('→', $subFieldName);
+                    $subFieldName = end($parts);
+                }
+                
+                $itemIndex = $subChange['itemIndex'] ?? null;
+                $matrixType = $subChange['matrixType'] ?? null;
+                
+                // Build label: use matrix type label for the accordion label
+                // e.g. "Body [2]", "Breakout Box [1]", "FAQ [3]"
+                if ($matrixType) {
+                    // Label comes pre-formatted from SyncManager, use as-is
+                    $displayLabel = $matrixType;
+                } else {
+                    $subLabel = $this->getFieldLabel($subFieldName);
+                    $displayLabel = $subLabel ?: $subFieldName;
+                }
+                if ($itemIndex) {
+                    $displayLabel .= ' [' . $itemIndex . ']';
+                }
+                
+                $newValue = $subChange['newValue'] ?? null;
+                $itemId = $subChange['itemId'] ?? null;
+                $typeSlug = $subChange['typeSlug'] ?? null;
+                $subField = $subChange['subField'] ?? preg_replace('/\[\d+\]$/', '', $subKey);
+                // Helper text with bold labels: Field • ID • File (file only for rich text when typeSlug known)
+                $machineKey = '<strong>Field:</strong> ' . htmlspecialchars($subKey) . '   •   <strong>ID:</strong> ' . (int) $itemId;
+                if ($typeSlug && $this->looksLikeRichText($newValue)) {
+                    $machineKey .= '   •   <strong>File:</strong> ' . htmlspecialchars('[' . $itemId . ']-' . $typeSlug . '-' . strtolower($subField) . '.html');
+                }
+                
+                $subF = $modules->get('InputfieldMarkup');
+                $subF->wrapAttr('data-pwmcp-field-key', $subKey);
+                $subF->label = $displayLabel;
+                $subF->collapsed = Inputfield::collapsedNo;
+                $subF->value = $this->formatFieldValueForPreview($newValue, $machineKey, true);
+                
+                $fieldset->add($subF);
+            }
+            
+            $wrapper->add($fieldset);
+        }
+        
+        return $wrapper;
+    }
+
+    /**
+     * Build the helper text (Field • ID • File) for a single change - used by preview and refresh.
+     *
+     * @param array $change Change entry from SyncManager (keys: newValue, itemId, typeSlug, subField, etc.)
+     * @param string $fieldKey Full field key (e.g. "body" or "matrix→Body[2]")
+     * @param int|null $pageId Page ID for regular fields
+     * @return string HTML helper string for formatFieldValueForPreview
+     */
+    protected function buildFieldPreviewHelperText(array $change, string $fieldKey, ?int $pageId): string {
+        $newValue = $change['newValue'] ?? null;
+        $itemId = $change['itemId'] ?? null;
+        $typeSlug = $change['typeSlug'] ?? null;
+        $subField = $change['subField'] ?? preg_replace('/\[\d+\]$/', '', $fieldKey);
+        if ($itemId !== null) {
+            $machineKey = '<strong>Field:</strong> ' . htmlspecialchars($fieldKey) . '   •   <strong>ID:</strong> ' . (int) $itemId;
+            if ($typeSlug && $this->looksLikeRichText($newValue)) {
+                $machineKey .= '   •   <strong>File:</strong> ' . htmlspecialchars('[' . $itemId . ']-' . $typeSlug . '-' . strtolower($subField) . '.html');
+            }
+        } else {
+            $machineKey = '<strong>Field:</strong> ' . htmlspecialchars($fieldKey);
+            if ($pageId) {
+                $machineKey .= '   •   <strong>ID:</strong> ' . (int) $pageId;
+            }
+            if ($this->looksLikeRichText($newValue)) {
+                $machineKey .= '   •   <strong>File:</strong> fields/' . htmlspecialchars(strtolower($fieldKey)) . '.html';
+            }
+        }
+        return $machineKey;
+    }
+
+    /**
+     * AJAX: return refreshed HTML for one field's preview (re-read from disk).
+     *
+     * @param int $pageId
+     * @param string $fieldKey
+     * @return string JSON with { html: "..." } or { error: "..." }
+     */
+    protected function refreshPushFieldPreview(int $pageId, string $fieldKey): string {
+        $page = $this->wire('pages')->get($pageId);
+        if (!$page || !$page->id) {
+            return json_encode(['error' => 'Page not found']);
+        }
+        $syncManager = $this->getSyncManager();
+        $workspacePath = $this->getLocalPathForPage($page);
+        $result = $syncManager->pushPage($workspacePath, true);
+        if (!isset($result['changes'][$fieldKey])) {
+            return json_encode(['error' => 'Field not in changes']);
+        }
+        $change = $result['changes'][$fieldKey];
+        $newValue = $change['newValue'] ?? null;
+        $helper = $this->buildFieldPreviewHelperText($change, $fieldKey, $pageId);
+        $html = $this->formatFieldValueForPreview($newValue, $helper, true);
+        return json_encode(['html' => $html]);
+    }
 
     /**
      * Main execute - show sync dashboard with native PW styling
@@ -216,6 +497,8 @@ class ProcessPwMcpAdmin extends Process {
         
         foreach ($pages->find("include=all") as $page) {
             if ($page->template->flags & Template::flagSystem) continue;
+            // Skip repeater/matrix item pages - these are internal storage, not real content pages
+            if (strpos($page->template->name, 'repeater_') === 0) continue;
             $totalPages++;
             
             // Build hierarchy map
@@ -252,6 +535,8 @@ class ProcessPwMcpAdmin extends Process {
         
         foreach ($this->wire('templates') as $template) {
             if ($template->flags & Template::flagSystem) continue;
+            // Skip repeater/matrix templates from filter dropdown
+            if (strpos($template->name, 'repeater_') === 0) continue;
             $count = $templateCounts[$template->name] ?? 0;
             $activeClass = ($templateFilter === $template->name) ? ' class="uk-active"' : '';
             $out .= '<li' . $activeClass . '><a href="#" data-filter-name="template" data-filter-value="' . $template->name . '">';
@@ -1071,6 +1356,40 @@ tr[data-depth="1"] { background-color: #fcfcfc; }
 tr[data-depth="2"] { background-color: #f9f9f9; }
 tr[data-depth="3"] { background-color: #f6f6f6; }
 tr[data-depth="4"] { background-color: #f3f3f3; }
+
+/* Import preview - disabled input/textarea styles (match PW page editor) */
+.pwmcp-preview-input,
+.pwmcp-preview-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #354b60;
+    background: #f5f5f5;
+    border: 1px solid #cdcdcd;
+    border-radius: 2px;
+    padding: 8px 10px;
+    cursor: default;
+}
+.pwmcp-preview-input:disabled,
+.pwmcp-preview-textarea:disabled {
+    opacity: 0.85;
+}
+.pwmcp-preview-textarea {
+    resize: vertical;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: Consolas, monaco, monospace;
+    font-size: 13px;
+    tab-size: 2;
+}
+/* Field machine name below field content */
+.pwmcp-field-name {
+    font-size: 13px;
+    color: #999;
+    margin-top: 10px;
+}
 </style>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
@@ -1128,15 +1447,10 @@ document.addEventListener('DOMContentLoaded', function() {
         var toolbar = document.querySelector('.pwmcp-selection-toolbar');
         var totalPages = toolbar ? parseInt(toolbar.getAttribute('data-total-pages')) || 0 : 0;
         
-        var hiddenCount = 0;
         var modifiedCount = 0;
         
-        // Count hidden and modified pages
+        // Count modified pages in selection
         selectionState.forEach(function(pageId) {
-            var row = document.querySelector('tr[data-page-id="' + pageId + '"]');
-            if (!row) {
-                hiddenCount++;
-            }
             if (isPageModified(pageId)) {
                 modifiedCount++;
             }
@@ -1144,9 +1458,6 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Update summary text with "X of Y pages selected" format
         var text = count + ' of ' + totalPages + ' pages selected';
-        if (hiddenCount > 0) {
-            text += ' (' + hiddenCount + ' hidden)';
-        }
         if (modifiedCount > 0) {
             text += ', ' + modifiedCount + ' modified';
         }
@@ -1895,6 +2206,13 @@ HTML;
         $syncManager = $this->getSyncManager();
         $workspacePath = $this->getLocalPathForPage($page);
         
+        // AJAX: refresh one field's preview (re-read from disk)
+        if ($input->post('refresh_field') && $input->post('field_key')) {
+            header('Content-Type: application/json');
+            echo $this->refreshPushFieldPreview($pageId, $input->post('field_key'));
+            return '';
+        }
+        
         // Check if force confirmed (overwrite conflict)
         if ($forceConfirmed) {
             // Force push - ignore conflict
@@ -1915,8 +2233,12 @@ HTML;
         
         // Check if confirmed
         if ($confirmed) {
-            // Actually push
-            $result = $syncManager->pushPage($workspacePath, false); // dryRun = false
+            $excludedRaw = $input->post('pwmcp_excluded');
+            $excludedKeys = is_string($excludedRaw) && $excludedRaw !== ''
+                ? array_map('trim', explode(',', $excludedRaw))
+                : [];
+            // Actually push (excluding any fields the user unchecked)
+            $result = $syncManager->pushPage($workspacePath, false, false, $excludedKeys);
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
@@ -1940,90 +2262,225 @@ HTML;
         $form->attr('method', 'post');
         $form->attr('action', $this->wire('page')->url . 'push/?id=' . $pageId);
         
-        // Show preview
-        $preview = $modules->get('InputfieldMarkup');
-        $preview->label = $this->_('Changes to Apply');
+        // Include preview styles
+        $cssField = $modules->get('InputfieldMarkup');
+        $cssField->addClass('InputfieldHeaderHidden');
+        $cssField->value = '<style>
+.pwmcp-preview-input,
+.pwmcp-preview-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #354b60;
+    background: #f5f5f5;
+    border: 1px solid #cdcdcd;
+    border-radius: 2px;
+    padding: 8px 10px;
+    cursor: default;
+}
+.pwmcp-preview-input:disabled,
+.pwmcp-preview-textarea:disabled {
+    opacity: 0.85;
+}
+.pwmcp-preview-textarea {
+    resize: vertical;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: Consolas, monaco, monospace;
+    font-size: 13px;
+    tab-size: 2;
+}
+.pwmcp-field-name {
+    font-size: 13px;
+    color: #999;
+    margin-top: 10px;
+}
+.pwmcp-field-actions { float: right; display: inline-flex; align-items: center; gap: 0; margin-right: 8px; height: 24px; }
+.pwmcp-field-actions button { position: relative; background: none; border: none; padding: 0 6px; cursor: pointer; color: #999; line-height: 1; display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; height: 24px; }
+.pwmcp-field-actions button svg { display: block; }
+.pwmcp-field-actions button:hover { color: #354b60; }
+.pwmcp-field-actions button .pwmcp-action-tooltip { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%) translateY(-4px); background: rgba(0, 0, 0, 0.9); color: #fff; padding: 6px 10px; border-radius: 3px; font-size: 12px; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden; transition: opacity 0.15s ease, visibility 0.15s ease; transition-delay: 0.1s; z-index: 10000; margin-bottom: 4px; }
+.pwmcp-field-actions button .pwmcp-action-tooltip::after { content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: rgba(0, 0, 0, 0.9); }
+.pwmcp-field-actions button:hover .pwmcp-action-tooltip { opacity: 1; visibility: visible; }
+.pwmcp-field-actions button.pwmcp-toggle-off svg { color: #c33; }
+.pwmcp-field-actions::after { content: ""; width: 1px; height: 16px; background: #ddd; margin-left: 8px; margin-right: 4px; display: inline-block; vertical-align: middle; align-self: center; }
+.pwmcp-excluded > .InputfieldHeader { text-decoration: line-through; text-decoration-color: #e83561; color: #e83561 !important; opacity: 0.75; font-weight: normal !important; }
+.pwmcp-excluded > .InputfieldHeader .pwmcp-field-actions { text-decoration: none; }
+.pwmcp-header-actions { float: right; margin-top: 6px; display: inline-flex; gap: 8px; align-items: center; }
+.InputfieldHeaderHidden { display: none !important; }
+</style>';
+        $form->add($cssField);
         
+        // Show preview using ProcessWire's native Inputfield structure
         if (isset($result['dryRun']) && $result['dryRun']) {
             if (!empty($result['changes'])) {
-                $preview->value = '<div class="pwmcp-changes-list">';
+                // Build preview wrapper with native PW field structure
+                $changesWrapper = $this->buildChangesPreview($result['changes'], $pageId);
                 
-                foreach ($result['changes'] as $field => $change) {
-                    $changePreview = $change['preview'] ?? '';
-                    
-                    // Get field label if available
-                    $fieldLabel = $this->getFieldLabel($field);
-                    $fieldDisplay = $fieldLabel ? htmlspecialchars($field) . ' <span style="color: #888; font-weight: normal;">(' . htmlspecialchars($fieldLabel) . ')</span>' : htmlspecialchars($field);
-                    
-                    // Format the preview text (convert newlines to <br> for matrix field details)
-                    $previewText = nl2br(htmlspecialchars($changePreview));
-                    
-                    $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
-                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . $fieldDisplay . '</strong></div>';
-                    if ($previewText) {
-                        $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
-                    }
-                    $preview->value .= '</div>';
+                // Add wrapper to form (each field appears as its own collapsible)
+                foreach ($changesWrapper as $inputfield) {
+                    $form->add($inputfield);
                 }
-                
-                $preview->value .= '</div>';
+                // Hidden input for excluded field keys (comma-separated)
+                $hiddenExcluded = $modules->get('InputfieldHidden');
+                $hiddenExcluded->attr('name', 'pwmcp_excluded');
+                $hiddenExcluded->attr('id', 'pwmcp_excluded');
+                $hiddenExcluded->attr('value', '');
+                $form->add($hiddenExcluded);
+                // Script: add Refresh + Don't import icons to each field header and handle clicks
+                $pushActionsJs = $modules->get('InputfieldMarkup');
+                $pushActionsJs->addClass('InputfieldHeaderHidden');
+                $refreshLabel = $this->_('Refresh contents');
+                $excludeLabel = $this->_('Exclude from import');
+                $includeLabel = $this->_('Include in import');
+                $pushActionsJs->value = '<script>
+document.addEventListener("DOMContentLoaded", function() {
+var form = document.querySelector("form[action*=\"push/\"]");
+if (!form) return;
+var excludedInput = document.getElementById("pwmcp_excluded");
+if (!excludedInput) return;
+var pushUrl = form.getAttribute("action");
+var idInput = form.querySelector("input[name=\'id\']");
+var pageId = idInput ? idInput.value : "";
+var fields = form.querySelectorAll("[data-pwmcp-field-key]");
+function getExcluded() { var v = excludedInput.value; return v ? v.split(",") : []; }
+function setExcluded(arr) { excludedInput.value = arr.join(","); }
+fields.forEach(function(wrap) {
+    var key = wrap.getAttribute("data-pwmcp-field-key");
+    if (!key) return;
+    var header = wrap.querySelector(".InputfieldHeader");
+    if (!header) return;
+    var actions = document.createElement("span");
+    actions.className = "pwmcp-field-actions";
+    var refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.innerHTML = \'<svg class="pwmcp-lucide" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>\';
+    var refreshTooltip = document.createElement("span");
+    refreshTooltip.className = "pwmcp-action-tooltip";
+    refreshTooltip.textContent = "' . addslashes($refreshLabel) . '";
+    refreshBtn.appendChild(refreshTooltip);
+    var toggleOnSvg = \'<svg class="pwmcp-lucide" xmlns="http://www.w3.org/2000/svg" width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="12" x="2" y="6" rx="6"/><circle cx="16" cy="12" r="2"/></svg>\';
+    var toggleOffSvg = \'<svg class="pwmcp-lucide" xmlns="http://www.w3.org/2000/svg" width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="12" x="2" y="6" rx="6"/><circle cx="8" cy="12" r="2"/></svg>\';
+    var excludeBtn = document.createElement("button");
+    excludeBtn.type = "button";
+    excludeBtn.innerHTML = toggleOnSvg;
+    var excludeTooltip = document.createElement("span");
+    excludeTooltip.className = "pwmcp-action-tooltip";
+    excludeTooltip.textContent = "' . addslashes($excludeLabel) . '";
+    excludeBtn.appendChild(excludeTooltip);
+    excludeBtn.setAttribute("data-pwmcp-exclude-key", key);
+    refreshBtn.addEventListener("click", function(e) {
+        e.preventDefault(); e.stopPropagation();
+        var fd = new FormData();
+        fd.append("id", pageId);
+        fd.append("refresh_field", "1");
+        fd.append("field_key", key);
+        refreshBtn.disabled = true;
+        fetch(pushUrl, { method: "POST", body: fd, headers: { "X-Requested-With": "XMLHttpRequest" } })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var content = wrap.querySelector(".InputfieldContent");
+                if (content && data && data.html) content.innerHTML = data.html;
+            })
+            .catch(function() {})
+            .finally(function() { refreshBtn.disabled = false; });
+    });
+    excludeBtn.addEventListener("click", function(e) {
+        e.preventDefault(); e.stopPropagation();
+        var arr = getExcluded();
+        var idx = arr.indexOf(key);
+        var tooltip = excludeBtn.querySelector(".pwmcp-action-tooltip");
+        if (idx >= 0) {
+            arr.splice(idx, 1);
+            wrap.classList.remove("pwmcp-excluded");
+            excludeBtn.classList.remove("pwmcp-toggle-off");
+            excludeBtn.innerHTML = toggleOnSvg;
+            if (tooltip) { tooltip.textContent = "' . addslashes($excludeLabel) . '"; excludeBtn.appendChild(tooltip); }
+        } else {
+            arr.push(key);
+            wrap.classList.add("pwmcp-excluded");
+            excludeBtn.classList.add("pwmcp-toggle-off");
+            excludeBtn.innerHTML = toggleOffSvg;
+            if (tooltip) { tooltip.textContent = "' . addslashes($includeLabel) . '"; excludeBtn.appendChild(tooltip); }
+        }
+        setExcluded(arr);
+    });
+    actions.appendChild(refreshBtn);
+    actions.appendChild(excludeBtn);
+    var toggle = header.querySelector(".toggle-icon") || header.querySelector("i:last-child");
+    if (toggle && toggle.nextSibling) { header.insertBefore(actions, toggle.nextSibling); }
+    else { header.appendChild(actions); }
+});
+// Clone form buttons to header next to H1
+var head = document.getElementById("pw-content-head");
+var h1 = head ? head.querySelector("h1") : null;
+if (h1 && form) {
+    var originalConfirm = form.querySelector("button[name=submit_confirm], input[type=submit][name=submit_confirm]");
+    var originalCancel = form.querySelector("a.ui-button[href], button.ui-priority-secondary");
+    if (originalConfirm || originalCancel) {
+        var headerBtns = document.createElement("div");
+        headerBtns.className = "pwmcp-header-actions";
+        if (originalConfirm) {
+            var confirmClone = originalConfirm.cloneNode(true);
+            confirmClone.removeAttribute("name");
+            confirmClone.addEventListener("click", function(e) {
+                e.preventDefault();
+                originalConfirm.click();
+            });
+            headerBtns.appendChild(confirmClone);
+        }
+        if (originalCancel) {
+            var cancelClone = originalCancel.cloneNode(true);
+            headerBtns.appendChild(cancelClone);
+        }
+        h1.style.display = "inline-block";
+        head.appendChild(headerBtns);
+    }
+}
+});
+</script>';
+                $form->add($pushActionsJs);
             } else {
+                $preview = $modules->get('InputfieldMarkup');
+                $preview->label = $this->_('Changes to Apply');
                 $preview->value = '<p>' . $this->_('No changes detected.') . '</p>';
+                $form->add($preview);
             }
         } elseif (isset($result['conflict']) && $result['conflict']) {
-            // Conflict detected - show in same style as regular preview
-            $preview->label = $this->_('Import Preview');
-            
-            // Warning message at top
-            $preview->value = '<div class="NoticeWarning" style="margin-bottom: 20px;">';
-            $preview->value .= $this->_('This page has been modified in ProcessWire since you exported it.');
-            $preview->value .= '</div>';
-            
-            $preview->value .= '<div class="pwmcp-changes-list">';
+            // Conflict warning
+            $warning = $modules->get('InputfieldMarkup');
+            $warning->value = '<div class="NoticeWarning" style="margin-bottom: 20px;">';
+            $warning->value .= $this->_('This page has been modified in ProcessWire since you exported it.');
+            $warning->value .= '</div>';
+            $form->add($warning);
             
             // Show remote changes (what changed in ProcessWire)
             if (!empty($result['remoteChanges'])) {
-                $preview->value .= '<div style="margin-bottom: 24px;">';
-                $preview->value .= '<div style="margin-bottom: 12px; font-weight: 600;">' . $this->_('Changed in ProcessWire (will be overwritten):') . '</div>';
-                foreach ($result['remoteChanges'] as $field => $change) {
-                    $changePreview = $change['preview'] ?? '';
-                    $fieldLabel = $this->getFieldLabel($field);
-                    $fieldDisplay = $fieldLabel ? htmlspecialchars($field) . ' <span style="color: #888; font-weight: normal;">(' . htmlspecialchars($fieldLabel) . ')</span>' : htmlspecialchars($field);
-                    $previewText = nl2br(htmlspecialchars($changePreview));
-                    
-                    $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
-                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . $fieldDisplay . '</strong></div>';
-                    if ($previewText) {
-                        $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
-                    }
-                    $preview->value .= '</div>';
+                $remoteFieldset = $modules->get('InputfieldFieldset');
+                $remoteFieldset->label = $this->_('Changed in ProcessWire (will be overwritten)');
+                $remoteFieldset->collapsed = Inputfield::collapsedNo;
+                
+                $remoteWrapper = $this->buildChangesPreview($result['remoteChanges'], $pageId);
+                foreach ($remoteWrapper as $inputfield) {
+                    $remoteFieldset->add($inputfield);
                 }
-                $preview->value .= '</div>';
+                $form->add($remoteFieldset);
             }
             
             // Show local changes (what user wants to push)
             if (!empty($result['localChanges'])) {
-                $preview->value .= '<div style="margin-bottom: 16px;">';
-                $preview->value .= '<div style="margin-bottom: 12px; font-weight: 600;">' . $this->_('Your Local Changes:') . '</div>';
-                foreach ($result['localChanges'] as $field => $change) {
-                    $changePreview = $change['preview'] ?? '';
-                    $fieldLabel = $this->getFieldLabel($field);
-                    $fieldDisplay = $fieldLabel ? htmlspecialchars($field) . ' <span style="color: #888; font-weight: normal;">(' . htmlspecialchars($fieldLabel) . ')</span>' : htmlspecialchars($field);
-                    $previewText = nl2br(htmlspecialchars($changePreview));
-                    
-                    $preview->value .= '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5;">';
-                    $preview->value .= '<div style="margin-bottom: 6px;"><strong>' . $fieldDisplay . '</strong></div>';
-                    if ($previewText) {
-                        $preview->value .= '<div style="color: #666; word-break: break-word; padding-left: 12px; border-left: 3px solid #e5e5e5;">' . $previewText . '</div>';
-                    }
-                    $preview->value .= '</div>';
+                $localFieldset = $modules->get('InputfieldFieldset');
+                $localFieldset->label = $this->_('Your Local Changes');
+                $localFieldset->collapsed = Inputfield::collapsedNo;
+                
+                $localWrapper = $this->buildChangesPreview($result['localChanges'], $pageId);
+                foreach ($localWrapper as $inputfield) {
+                    $localFieldset->add($inputfield);
                 }
-                $preview->value .= '</div>';
+                $form->add($localFieldset);
             }
-            
-            $preview->value .= '</div>';
-            
-            $form->add($preview);
             
             // Add explanation text field
             $explanation = $modules->get('InputfieldMarkup');
@@ -2063,11 +2520,11 @@ HTML;
             return $form->render();
             
         } elseif (isset($result['error'])) {
-            $preview->value = '<p class="uk-alert uk-alert-danger">' . 
+            $errorField = $modules->get('InputfieldMarkup');
+            $errorField->value = '<p class="uk-alert uk-alert-danger">' . 
                 htmlspecialchars($result['error']) . '</p>';
+            $form->add($errorField);
         }
-        
-        $form->add($preview);
         
         // Hidden page ID
         $f = $modules->get('InputfieldHidden');
@@ -2093,12 +2550,14 @@ HTML;
     }
 
     /**
-     * View YAML content (read-only modal)
+     * View YAML content (read-only)
      */
     public function ___executeViewYaml(): string {
         $input = $this->wire('input');
         $modules = $this->wire('modules');
         $pageId = (int) $input->get('id');
+        
+        $this->headline($this->_('View YAML'));
         
         if (!$pageId) {
             return '<p>' . $this->_('No page ID specified') . '</p>';
@@ -2119,10 +2578,18 @@ HTML;
         $yamlContent = file_get_contents($yamlPath);
         
         $out = '<div class="pwmcp-yaml-viewer">';
-        $out .= '<p class="notes">' . $this->_('Path:') . ' <code>' . 
-            htmlspecialchars($yamlPath) . '</code></p>';
+        $out .= '<p><strong>' . htmlspecialchars($page->title) . '</strong> <span class="detail">' . $page->path . '</span></p>';
         $out .= '<pre style="background:#f5f5f5; padding:1em; overflow:auto; max-height:500px;">' . 
             htmlspecialchars($yamlContent) . '</pre>';
+        
+        // Back button - use the module's page URL for proper navigation
+        $dashboardUrl = $this->wire('page')->url;
+        $out .= '<p style="margin-top:1em;">';
+        $out .= '<a href="' . $dashboardUrl . '" class="ui-button ui-state-default">';
+        $out .= '<span class="ui-button-text">' . $this->lucideIcon('arrow-left', 14) . ' ' . $this->_('Dashboard') . '</span>';
+        $out .= '</a>';
+        $out .= '</p>';
+        
         $out .= '</div>';
         
         return $out;

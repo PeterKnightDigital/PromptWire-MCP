@@ -309,9 +309,10 @@ class SyncManager {
      * @param string $localPath Path to local page directory or yaml file
      * @param bool $dryRun If true, show what would change without applying (default: true)
      * @param bool $force Force push even if remote has changed (dangerous)
+     * @param array $excludeKeys Field keys to skip when applying (e.g. ["body", "matrix→Body[2]"])
      * @return array Result with changes applied or preview
      */
-    public function pushPage(string $localPath, bool $dryRun = true, bool $force = false): array {
+    public function pushPage(string $localPath, bool $dryRun = true, bool $force = false, array $excludeKeys = []): array {
         // Normalize path - accept either directory or yaml file path
         if (str_ends_with($localPath, '.yaml') || str_ends_with($localPath, '.json')) {
             $localDir = dirname($localPath);
@@ -428,9 +429,13 @@ class SyncManager {
             if (!$page->template->hasField($fieldName)) {
                 continue;
             }
+            // Skip top-level fields that the user excluded from import
+            if (!empty($excludeKeys) && in_array($fieldName, $excludeKeys)) {
+                continue;
+            }
             
             $field = $this->wire->fields->get($fieldName);
-            $this->applyFieldValue($page, $field, $value, $localDir);
+            $this->applyFieldValue($page, $field, $value, $localDir, $excludeKeys);
         }
         
         // Save the page
@@ -930,16 +935,27 @@ class SyncManager {
                         $breadcrumb = "{$fieldName}→{$subFieldName}";
                         $changes[$breadcrumb] = [
                             'field' => $breadcrumb,
+                            'parentField' => $fieldName,
+                            'subField' => preg_replace('/\[\d+\]$/', '', $subFieldName),
                             'type' => 'modify',
                             'preview' => $subChange['preview'],
+                            'newValue' => $subChange['newValue'] ?? null,
+                            'oldValue' => $subChange['oldValue'] ?? null,
+                            'itemIndex' => $subChange['itemIndex'] ?? null,
+                            'itemId' => $subChange['itemId'] ?? null,
+                            'matrixType' => $subChange['matrixType'] ?? null,
+                            'typeSlug' => $subChange['typeSlug'] ?? null,
                         ];
                     }
                 } else {
                     // Regular field - use standard preview
                     $changes[$fieldName] = [
                         'field' => $fieldName,
+                        'parentField' => null,
                         'type' => $currentValue === null ? 'add' : 'modify',
                         'preview' => $this->generateChangePreview($newValue, $currentValue),
+                        'newValue' => $newValue,
+                        'oldValue' => $currentValue,
                     ];
                 }
             }
@@ -982,6 +998,21 @@ class SyncManager {
             }
         }
         
+        // Build matrix type lookup (numeric ID → label) if this is a matrix field
+        $matrixTypeLabels = [];
+        $field = $this->wire->fields->get($parentField);
+        if ($field && $field instanceof \ProcessWire\RepeaterMatrixField) {
+            // getMatrixTypes('type', 'label') returns [1 => 'Body', 7 => 'Breakout Box', ...]
+            $matrixTypeLabels = $field->getMatrixTypes('type', 'label');
+            // Fall back to names if labels are empty
+            $matrixTypeNames = $field->getMatrixTypes('type', 'name');
+            foreach ($matrixTypeLabels as $typeId => $label) {
+                if (empty($label) && isset($matrixTypeNames[$typeId])) {
+                    $matrixTypeLabels[$typeId] = ucwords(str_replace('_', ' ', $matrixTypeNames[$typeId]));
+                }
+            }
+        }
+        
         // Find each specific field change in each item - list them individually
         $result = [];
         $itemIndex = 0;
@@ -992,6 +1023,19 @@ class SyncManager {
             $itemId = $newItem['_itemId'];
             $currentItem = $currentById[$itemId] ?? [];
             $itemIndex++;
+            
+            // Resolve matrix type to human-readable label and slug (for file naming)
+            $matrixTypeId = $newItem['_matrixType'] ?? null;
+            $matrixType = null;
+            $typeSlug = null;
+            if ($matrixTypeId !== null && isset($matrixTypeLabels[$matrixTypeId])) {
+                $matrixType = $matrixTypeLabels[$matrixTypeId];
+            } elseif ($matrixTypeId !== null) {
+                $matrixType = "Type {$matrixTypeId}";
+            }
+            if ($matrixTypeId !== null && $field) {
+                $typeSlug = $this->getMatrixTypeName($field, (int) $matrixTypeId);
+            }
             
             foreach ($newItem as $subFieldName => $subFieldValue) {
                 // Skip metadata fields
@@ -1009,6 +1053,12 @@ class SyncManager {
                     $key = "{$subFieldName}[{$itemIndex}]";
                     $result[$key] = [
                         'preview' => $preview,
+                        'newValue' => $subFieldValue,
+                        'oldValue' => $currentSubValue,
+                        'itemIndex' => $itemIndex,
+                        'itemId' => $itemId,
+                        'matrixType' => $matrixType,
+                        'typeSlug' => $typeSlug,
                     ];
                 }
             }
@@ -1215,6 +1265,13 @@ class SyncManager {
             return "{$oldValue} → {$newValue}";
         }
         
+        // String/text changes - show a snippet of the new content
+        if (is_string($newValue) && !empty($newValue)) {
+            $text = strip_tags($newValue);
+            $text = trim(preg_replace('/\s+/', ' ', $text)); // Normalize whitespace
+            return strlen($text) > 100 ? substr($text, 0, 100) . '...' : $text;
+        }
+        
         // Everything else - field name is enough
         return '';
     }
@@ -1379,8 +1436,9 @@ class SyncManager {
      * @param \ProcessWire\Field $field
      * @param mixed $value
      * @param string|null $localDir Base path for reading external files
+     * @param array $excludeKeys Field keys to skip (e.g. matrix→Body[2]) - used for repeater sub-fields
      */
-    private function applyFieldValue(Page $page, $field, $value, ?string $localDir = null): void {
+    private function applyFieldValue(Page $page, $field, $value, ?string $localDir = null, array $excludeKeys = []): void {
         $fieldName = $field->name;
         /** @var string $typeName */
         $typeName = $field->type->className();
@@ -1471,7 +1529,7 @@ class SyncManager {
         
         // Handle repeaters - update existing items by ID
         if (strpos($typeName, 'Repeater') !== false) {
-            $this->applyRepeaterValue($page, $field, $value, $localDir);
+            $this->applyRepeaterValue($page, $field, $value, $localDir, $excludeKeys);
             return;
         }
         
@@ -1489,9 +1547,10 @@ class SyncManager {
      * @param \ProcessWire\Field $field Repeater field
      * @param array $items Array of item data from YAML
      * @param string|null $localDir Base path for reading external files
+     * @param array $excludeKeys Field keys to skip (e.g. matrix→Body[2]) - sub-fields excluded from import
      * @return array Stats about what was updated
      */
-    private function applyRepeaterValue(Page $page, $field, $items, ?string $localDir = null): array {
+    private function applyRepeaterValue(Page $page, $field, $items, ?string $localDir = null, array $excludeKeys = []): array {
         $fieldName = $field->name;
         $stats = ['updated' => 0, 'skipped_missing' => 0, 'skipped_invalid' => 0];
         
@@ -1511,6 +1570,10 @@ class SyncManager {
             $allowedIds[$existingItem->id] = $existingItem;
         }
         
+        // Pre-normalize excluded keys for case-insensitive comparison
+        $excludeNormalized = !empty($excludeKeys) ? array_map('strtolower', $excludeKeys) : [];
+        
+        $itemIndex = 0;
         // Process each item from the YAML
         foreach ($items as $itemData) {
             // Must have _itemId
@@ -1520,6 +1583,7 @@ class SyncManager {
             }
             
             $itemId = (int) $itemData['_itemId'];
+            $itemIndex++;
             
             // Validate: item must belong to this page's repeater field
             // This prevents accidentally updating a random repeater item
@@ -1538,6 +1602,12 @@ class SyncManager {
                     continue;
                 }
                 
+                // Skip this sub-field if it was excluded from import (e.g. matrix→Body[2])
+                $changeKey = $fieldName . '→' . $key . '[' . $itemIndex . ']';
+                if (!empty($excludeNormalized) && in_array(strtolower($changeKey), $excludeNormalized)) {
+                    continue;
+                }
+                
                 // Check if field exists on repeater template
                 if (!$repeaterPage->template->hasField($key)) {
                     continue;
@@ -1546,7 +1616,7 @@ class SyncManager {
                 $itemField = $this->wire->fields->get($key);
                 if ($itemField) {
                     // Recursively apply field value (handles nested types and _file references)
-                    $this->applyFieldValue($repeaterPage, $itemField, $val, $localDir);
+                    $this->applyFieldValue($repeaterPage, $itemField, $val, $localDir, $excludeKeys);
                 } else {
                     // Simple value
                     $repeaterPage->set($key, $val);
