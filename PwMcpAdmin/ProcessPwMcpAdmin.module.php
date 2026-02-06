@@ -650,7 +650,7 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '</div>';
         
         // Build table manually for expand/collapse support
-        $out .= '<table class="AdminDataTable AdminDataList uk-table pwmcp-tree-table">';
+        $out .= '<table class="AdminDataTable AdminDataList uk-table uk-table-divider uk-table-small pwmcp-tree-table">';
         $out .= '<thead><tr>';
         $out .= '<th style="width:30px;"><input type="checkbox" class="pwmcp-select-all"></th>';
         $out .= '<th>' . $this->_('Title') . '</th>';
@@ -1060,18 +1060,7 @@ input.pwmcp-searching {
     transform: translateX(16px);
 }
 
-/* Tree table styling */
-.pwmcp-tree-table { border-collapse: collapse; }
-.pwmcp-tree-table thead th { border-bottom: 1px solid #f1f1f1; padding: 8px; }
-.pwmcp-tree-table thead th:nth-child(3),
-.pwmcp-tree-table thead th:nth-child(4),
-.pwmcp-tree-table thead th:nth-child(5) { font-size: 13px; }
-.pwmcp-tree-table tbody tr { border-bottom: 1px solid #f1f1f1; }
-.pwmcp-tree-table tbody tr:hover { border-color: #eee; }
-.pwmcp-tree-table tbody td { padding: 4px 8px; vertical-align: middle; }
-.pwmcp-tree-table tbody td:nth-child(3),
-.pwmcp-tree-table tbody td:nth-child(4),
-.pwmcp-tree-table tbody td:nth-child(5) { font-size: 13px; }
+/* Tree table styling - only overrides not handled by AdminDataTable/AdminDataList */
 .pwmcp-toggle { 
     cursor: pointer; 
     display: inline-flex;
