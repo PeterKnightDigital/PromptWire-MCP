@@ -365,15 +365,8 @@ class ProcessPwMcpAdmin extends Process {
             }
         }
         
-        // Count display with Expand All toggle
-        $count = count($filteredPages);
+        // Expand All toggle row
         $out .= '<div class="pwmcp-count-row">';
-        $out .= '<span class="pwmcp-count">';
-        $out .= sprintf($this->_('%d pages'), $count);
-        if ($searchQuery) {
-            $out .= ' ' . sprintf($this->_('matching "%s"'), '<strong>' . htmlspecialchars($searchQuery) . '</strong>');
-        }
-        $out .= '</span>';
         $out .= '<label class="pwmcp-switch">';
         $out .= '<input type="checkbox" id="pwmcp-expand-all">';
         $out .= '<span class="pwmcp-slider"></span>';
@@ -385,10 +378,10 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<form method="post" action="./" id="pwmcp-tree-form">';
         $out .= '<input type="hidden" name="bulk_action" value="" class="pwmcp-bulk-action-field">';
         
-        // Selection toolbar
-        $out .= '<div class="pwmcp-selection-toolbar">';
+        // Selection toolbar - includes total page count for "X of Y" display
+        $out .= '<div class="pwmcp-selection-toolbar" data-total-pages="' . $totalPages . '">';
         $out .= '<div class="pwmcp-selection-summary">';
-        $out .= '<span class="pwmcp-selection-count">No pages selected</span>';
+        $out .= '<span class="pwmcp-selection-count">' . sprintf($this->_('0 of %d pages selected'), $totalPages) . '</span>';
         $out .= '</div>';
         $out .= '<div class="pwmcp-selection-actions">';
         $out .= '<button type="button" class="uk-button uk-button-default uk-button-small pwmcp-bulk-export pwmcp-action" data-pwmcp-tooltip="Export to File (YAML)" disabled>';
@@ -1132,34 +1125,32 @@ document.addEventListener('DOMContentLoaded', function() {
         var summaryEl = document.querySelector('.pwmcp-selection-count');
         var exportBtn = document.querySelector('.pwmcp-bulk-export');
         var importBtn = document.querySelector('.pwmcp-bulk-import');
+        var toolbar = document.querySelector('.pwmcp-selection-toolbar');
+        var totalPages = toolbar ? parseInt(toolbar.getAttribute('data-total-pages')) || 0 : 0;
         
         var hiddenCount = 0;
         var modifiedCount = 0;
         
-        // Update summary text
-        if (count === 0) {
-            summaryEl.textContent = 'No pages selected';
-        } else {
-            selectionState.forEach(function(pageId) {
-                var row = document.querySelector('tr[data-page-id="' + pageId + '"]');
-                if (!row) {
-                    hiddenCount++;
-                }
-                // Use pre-loaded status data for accurate modified count
-                if (isPageModified(pageId)) {
-                    modifiedCount++;
-                }
-            });
-            
-            var text = count + ' page' + (count === 1 ? '' : 's') + ' selected';
-            if (hiddenCount > 0) {
-                text += ' (' + hiddenCount + ' hidden)';
+        // Count hidden and modified pages
+        selectionState.forEach(function(pageId) {
+            var row = document.querySelector('tr[data-page-id="' + pageId + '"]');
+            if (!row) {
+                hiddenCount++;
             }
-            if (modifiedCount > 0) {
-                text += ', ' + modifiedCount + ' modified';
+            if (isPageModified(pageId)) {
+                modifiedCount++;
             }
-            summaryEl.textContent = text;
+        });
+        
+        // Update summary text with "X of Y pages selected" format
+        var text = count + ' of ' + totalPages + ' pages selected';
+        if (hiddenCount > 0) {
+            text += ' (' + hiddenCount + ' hidden)';
         }
+        if (modifiedCount > 0) {
+            text += ', ' + modifiedCount + ' modified';
+        }
+        summaryEl.textContent = text;
         
         // Update button states
         exportBtn.disabled = (count === 0);
