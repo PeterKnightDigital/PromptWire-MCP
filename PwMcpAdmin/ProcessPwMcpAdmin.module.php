@@ -764,9 +764,10 @@ class ProcessPwMcpAdmin extends Process {
      * @param int $depth Nesting depth for indentation
      * @param array $syncLookup Sync status lookup array
      * @param bool $isExpanded Whether the node should show as expanded
+     * @param bool $ajaxMode If true, badge cell is left empty for client-side rendering
      * @return string HTML for the table row
      */
-    protected function buildTreeRow(Page $page, string $status, int $depth, array $syncLookup, bool $isExpanded = false): string {
+    protected function buildTreeRow(Page $page, string $status, int $depth, array $syncLookup, bool $isExpanded = false, bool $ajaxMode = false): string {
         $indent = $depth * 20; // 20px per level
         $isModified = in_array($status, ['localDirty', 'conflict']);
         
@@ -808,14 +809,18 @@ class ProcessPwMcpAdmin extends Process {
         // Template
         $html .= '<td class="pwmcp-col-secondary">' . $page->template->name . '</td>';
         
-        // Status badge
-        $html .= '<td>' . $this->getStatusBadge($status) . '</td>';
+        // Status badge - in AJAX mode, render empty cell for client-side badge application
+        $html .= '<td class="pwmcp-badge-cell">';
+        if (!$ajaxMode) {
+            $html .= $this->getStatusBadge($status);
+        }
+        $html .= '</td>';
         
         // Modified
         $html .= '<td class="pwmcp-col-secondary">' . ($page->modified ? wireRelativeTimeStr($page->modified) : '-') . '</td>';
         
-        // Actions
-        $html .= '<td>' . $this->getRowActions($page, $status) . '</td>';
+        // Actions - in AJAX mode, render with empty status (JS will update data-status)
+        $html .= '<td>' . $this->getRowActions($page, $ajaxMode ? 'notPulled' : $status) . '</td>';
         
         $html .= '</tr>';
         
@@ -824,6 +829,9 @@ class ProcessPwMcpAdmin extends Process {
     
     /**
      * AJAX endpoint: Get children of a page as HTML rows
+     * 
+     * Badges are applied client-side from the pre-loaded pwmcpPageStatuses JS variable.
+     * This avoids the expensive getSyncStatus() call (filesystem scan + DB queries for all pulled pages).
      */
     public function ___executeChildren(): string {
         $input = $this->wire('input');
@@ -836,22 +844,26 @@ class ProcessPwMcpAdmin extends Process {
             return '';
         }
         
-        // Get children first (fast)
+        // Get children (fast - single DB query on pages table)
         $children = $pages->find("parent=$parentId, include=all, sort=sort");
         
-        // Get sync status for accurate badge display
-        $syncManager = $this->getSyncManager();
-        $statusData = $syncManager->getSyncStatus();
-        $syncLookup = $this->buildSyncLookup($statusData);
+        // No getSyncStatus() call here - badges are applied client-side
+        // from the pwmcpPageStatuses JS variable (already computed on initial page load).
+        // We only do a quick file_exists() per child to determine pulled/not-pulled 
+        // for the action buttons (export/import/view).
+        $syncLookup = [];
         
         $html = '';
         foreach ($children as $child) {
             if ($child->template->flags & Template::flagSystem) continue;
             
-            // Get accurate status using the same logic as main page
-            $status = $this->getPageStatus($child, $syncLookup);
+            // Quick check: is this page pulled? (just file_exists, no hash/diff calculation)
+            $localPath = $this->getLocalPathForPage($child);
+            $isPulled = file_exists($localPath . 'page.meta.json');
+            $actionStatus = $isPulled ? 'clean' : 'notPulled';
             
-            $html .= $this->buildTreeRow($child, $status, $depth, $syncLookup);
+            // Badge HTML is left empty - JS applies it from pwmcpPageStatuses
+            $html .= $this->buildTreeRow($child, $actionStatus, $depth, $syncLookup, false, true);
         }
         
         // Return raw HTML (for AJAX)
@@ -1211,6 +1223,36 @@ tr[data-depth="4"] { background-color: #f3f3f3; }
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var childrenUrl = '{$childrenUrl}';
+    
+    // Badge renderer - applies status badges to AJAX-loaded rows using pre-loaded lookup
+    var badgeHtml = {
+        'clean':         '<span class="uk-label uk-label-success">In Sync</span>',
+        'localDirty':    '<span class="uk-label uk-label-warning">Local Changes</span>',
+        'remoteChanged': '<span class="uk-label uk-label-primary">Remote Changes</span>',
+        'conflict':      '<span class="uk-label uk-label-danger">Conflict</span>',
+        'notPulled':     '<span class="uk-label uk-label-muted">Never Exported</span>'
+    };
+    
+    function applyBadgesToNewRows(startAfterRow) {
+        if (typeof pwmcpPageStatuses === 'undefined') return;
+        var row = startAfterRow.nextElementSibling;
+        var baseDepth = parseInt(startAfterRow.getAttribute('data-depth'), 10);
+        while (row) {
+            var rowDepth = parseInt(row.getAttribute('data-depth'), 10);
+            if (rowDepth <= baseDepth) break;
+            var pageId = row.getAttribute('data-page-id');
+            var status = pwmcpPageStatuses[pageId] || 'notPulled';
+            // Apply badge
+            var badgeCell = row.querySelector('.pwmcp-badge-cell');
+            if (badgeCell && !badgeCell.innerHTML.trim()) {
+                badgeCell.innerHTML = badgeHtml[status] || badgeHtml['notPulled'];
+            }
+            // Update data-status and data-modified attributes
+            row.setAttribute('data-status', status);
+            row.setAttribute('data-modified', (status === 'localDirty' || status === 'conflict') ? '1' : '0');
+            row = row.nextElementSibling;
+        }
+    }
     
     // Real-time search with debounce
     var searchInput = document.getElementById('pwmcp-search');
@@ -1669,6 +1711,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     spinner.remove();
                     if (html.trim()) {
                         currentRow.insertAdjacentHTML('afterend', html);
+                        // Apply badges from pre-loaded status lookup
+                        applyBadgesToNewRows(currentRow);
                         // Initialize tooltips and cursors for newly loaded content
                         initializeActionButtons();
                         
@@ -1715,6 +1759,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 .then(function(html) {
                     if (html.trim()) {
                         currentRow.insertAdjacentHTML('afterend', html);
+                        // Apply badges from pre-loaded status lookup
+                        applyBadgesToNewRows(currentRow);
                         // Initialize tooltips and cursors for newly loaded content
                         initializeActionButtons();
                     }
