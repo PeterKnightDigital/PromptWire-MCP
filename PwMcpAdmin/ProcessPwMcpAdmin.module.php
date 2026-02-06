@@ -566,7 +566,7 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<span class="pwmcp-dropdown-label">' . $currentStatusLabel . '</span>';
         $out .= $this->lucideIcon('chevron-down', 14);
         $out .= '</button>';
-        $out .= '<div uk-dropdown="mode: click; boundary: ! .pwmcp-filters; boundary-align: true; pos: bottom-justify">';
+        $out .= '<div uk-dropdown="mode: click; boundary: ! .pwmcp-filters; boundary-align: true; pos: bottom-justify; flip: false">';
         $out .= '<ul class="uk-nav uk-dropdown-nav pwmcp-dropdown-nav">';
         
         foreach ($statuses as $val => $data) {
@@ -1176,7 +1176,7 @@ tr.pwmcp-selected {
 .pwmcp-modal-footer .uk-button {
     border-radius: 3px;
 }
-.pwmcp-filter-search { min-width: 200px; max-width: 260px; }
+.pwmcp-filter-search { min-width: 400px; max-width: 520px; }
 .pwmcp-filter-search input.pwmcp-searching { 
     background-color: #e8f4fc;
 }
