@@ -898,7 +898,7 @@ class ProcessPwMcpAdmin extends Process {
         return <<<HTML
 <style>
 /* Header buttons */
-.pwmcp-header-buttons { display: flex; gap: 8px; margin-bottom: 1.5em; }
+.pwmcp-header-buttons { float: right; margin-top: 6px; display: inline-flex; gap: 8px; align-items: center; }
 .pwmcp-header-buttons .uk-button { border-radius: 3px; }
 .pwmcp-header-buttons .uk-button i { margin-right: 4px; }
 
@@ -2028,6 +2028,15 @@ document.addEventListener('DOMContentLoaded', function() {
     var tableBody = document.getElementById('pwmcp-tree-body');
     if (tableBody) {
         observer.observe(tableBody, { childList: true, subtree: true });
+    }
+
+    // Move header buttons to top-right next to H1
+    var headerBtns = document.querySelector('.pwmcp-header-buttons');
+    var head = document.getElementById('pw-content-head');
+    var h1 = head ? head.querySelector('h1') : null;
+    if (headerBtns && h1) {
+        h1.style.display = 'inline-block';
+        head.appendChild(headerBtns);
     }
 });
 </script>
