@@ -57,34 +57,17 @@ class ProcessPwMcpAdmin extends Process {
     }
 
     /**
-     * Get Lucide icon SVG markup
+     * Get Lucide icon SVG markup.
+     * Delegates to the shared LucideIcons helper so icon paths are
+     * maintained in one place across all PwMcp modules.
      * 
-     * @param string $name Icon name
+     * @param string $name Icon name (e.g. 'file-input')
      * @param int $size Icon size in pixels (default 16)
      * @return string SVG markup
      */
     protected function lucideIcon(string $name, int $size = 16): string {
-        $icons = [
-            'download' => '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
-            'upload' => '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
-            'file-text' => '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
-            'refresh-cw' => '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>',
-            'wrench' => '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z"/>',
-            'check' => '<path d="M20 6 9 17l-5-5"/>',
-            'chevron-right' => '<path d="m9 18 6-6-6-6"/>',
-            'chevron-down' => '<path d="m6 9 6 6 6-6"/>',
-            'search' => '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
-            'layout-template' => '<rect width="18" height="7" x="3" y="3" rx="1"/><rect width="9" height="7" x="3" y="14" rx="1"/><rect width="5" height="7" x="16" y="14" rx="1"/>',
-            'activity' => '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
-            'arrow-left' => '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
-            'toggle-right' => '<rect width="20" height="12" x="2" y="6" rx="6"/><circle cx="16" cy="12" r="2"/>',
-            'toggle-left' => '<rect width="20" height="12" x="2" y="6" rx="6"/><circle cx="8" cy="12" r="2"/>',
-        ];
-        
-        $path = $icons[$name] ?? '';
-        if (!$path) return '';
-        
-        return '<svg class="pwmcp-lucide" xmlns="http://www.w3.org/2000/svg" width="' . $size . '" height="' . $size . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' . $path . '</svg>';
+        require_once dirname(__DIR__) . '/PwMcp/src/UI/LucideIcons.php';
+        return \PwMcp\UI\LucideIcons::render($name, $size);
     }
 
     /**
@@ -538,14 +521,14 @@ class ProcessPwMcpAdmin extends Process {
         /** @var InputfieldSelect $f */
         $f = $this->wire('modules')->get('InputfieldSelect');
         $f->attr('name', 'status');
-        $f->label = $this->_('Change Status');
+        $f->label = $this->_('Sync Status');
         $statuses = [
             '' => [$this->_('All'), $totalPages],
-            'clean' => [$this->_('In Sync'), $statusCounts['clean']],
-            'localDirty' => [$this->_('Local Changes'), $statusCounts['localDirty']],
-            'remoteChanged' => [$this->_('Remote Changed'), $statusCounts['remoteChanged']],
+            'clean' => [$this->_('Clean'), $statusCounts['clean']],
+            'localDirty' => [$this->_('File Newer'), $statusCounts['localDirty']],
+            'remoteChanged' => [$this->_('Wire Newer'), $statusCounts['remoteChanged']],
             'conflict' => [$this->_('Conflict'), $statusCounts['conflict']],
-            'notPulled' => [$this->_('Never Exported'), $statusCounts['notPulled']],
+            'notPulled' => [$this->_('Untracked'), $statusCounts['notPulled']],
         ];
         foreach ($statuses as $val => $data) {
             list($label, $count) = $data;
@@ -640,11 +623,11 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<span class="pwmcp-selection-count">' . sprintf($this->_('0 of %d pages selected'), $totalPages) . '</span>';
         $out .= '</div>';
         $out .= '<div class="pwmcp-selection-actions">';
-        $out .= '<button type="button" class="uk-button uk-button-default uk-button-small pwmcp-bulk-export pwmcp-action" data-pwmcp-tooltip="Export to File (YAML)" disabled>';
-        $out .= $this->lucideIcon('download', 16) . ' <span>Export</span>';
+        $out .= '<button type="button" class="uk-button uk-button-default uk-button-small pwmcp-bulk-export" uk-tooltip="title: Wire to File" disabled>';
+        $out .= $this->lucideIcon('file-input', 16) . ' <span>Wire to File</span>';
         $out .= '</button>';
-        $out .= '<button type="button" class="uk-button uk-button-primary uk-button-small pwmcp-bulk-import pwmcp-action" data-pwmcp-tooltip="Import from File (YAML)" disabled>';
-        $out .= $this->lucideIcon('upload', 16) . ' <span>Import</span>';
+        $out .= '<button type="button" class="uk-button uk-button-primary uk-button-small pwmcp-bulk-import" uk-tooltip="title: File to Wire" disabled>';
+        $out .= $this->lucideIcon('file-output', 16) . ' <span>File to Wire</span>';
         $out .= '</button>';
         $out .= '</div>';
         $out .= '</div>';
@@ -655,7 +638,7 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<th style="width:30px;"><input type="checkbox" class="pwmcp-select-all"></th>';
         $out .= '<th>' . $this->_('Title') . '</th>';
         $out .= '<th>' . $this->_('Template') . '</th>';
-        $out .= '<th>' . $this->_('Change Status') . '</th>';
+        $out .= '<th>' . $this->_('Sync Status') . '</th>';
         $out .= '<th>' . $this->_('Modified') . '</th>';
         $out .= '<th>' . $this->_('Actions') . '</th>';
         $out .= '</tr></thead>';
@@ -670,12 +653,12 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '</tbody></table>';
         $out .= '</form>';
         
-        // Import confirmation modal
+        // Push confirmation modal
         $out .= '<div id="pwmcp-import-modal" class="pwmcp-modal" style="display:none;">';
         $out .= '<div class="pwmcp-modal-backdrop"></div>';
         $out .= '<div class="pwmcp-modal-dialog">';
         $out .= '<div class="pwmcp-modal-header">';
-        $out .= '<h3>Confirm Import</h3>';
+        $out .= '<h3>Confirm Push</h3>';
         $out .= '<button type="button" class="pwmcp-modal-close">&times;</button>';
         $out .= '</div>';
         $out .= '<div class="pwmcp-modal-body">';
@@ -819,8 +802,9 @@ class ProcessPwMcpAdmin extends Process {
         // Modified
         $html .= '<td class="pwmcp-col-secondary">' . ($page->modified ? wireRelativeTimeStr($page->modified) : '-') . '</td>';
         
-        // Actions - in AJAX mode, render with empty status (JS will update data-status)
-        $html .= '<td>' . $this->getRowActions($page, $ajaxMode ? 'notPulled' : $status) . '</td>';
+        // Actions - uses $status to determine which buttons are enabled
+        // In AJAX mode, $status comes from file_exists() check (clean or notPulled)
+        $html .= '<td>' . $this->getRowActions($page, $status) . '</td>';
         
         $html .= '</tr>';
         
@@ -950,7 +934,7 @@ tr.pwmcp-selected {
     pointer-events: none;
 }
 
-/* Import confirmation modal */
+/* Push confirmation modal */
 .pwmcp-modal {
     position: fixed;
     top: 0;
@@ -1094,45 +1078,11 @@ a.pwmcp-action { display: inline-flex !important; align-items: center !important
 a.pwmcp-action:hover { color: #c9302c !important; cursor: pointer !important; }
 a.pwmcp-action[title] { cursor: pointer !important; }
 a.pwmcp-action * { cursor: pointer !important; }
-/* Custom tooltip system for action elements - no native tooltips */
-.pwmcp-action { position: relative !important; }
 /* Selection toolbar buttons - override action icon colors and add padding */
 .pwmcp-selection-actions .pwmcp-action { color: inherit !important; padding: 0 15px !important; }
 .pwmcp-selection-actions .pwmcp-action:hover { color: inherit !important; }
 .pwmcp-selection-actions .uk-button { padding-left: 15px; padding-right: 15px; }
 .pwmcp-selection-actions .uk-button svg { margin-right: 6px; }
-.pwmcp-action-tooltip {
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%) translateY(-4px);
-    background: rgba(0, 0, 0, 0.9);
-    color: #fff;
-    padding: 6px 10px;
-    border-radius: 3px;
-    font-size: 12px;
-    white-space: nowrap;
-    pointer-events: none;
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 0.15s ease, visibility 0.15s ease;
-    transition-delay: 0.1s;
-    z-index: 10000;
-    margin-bottom: 4px;
-}
-.pwmcp-action:hover .pwmcp-action-tooltip {
-    opacity: 1;
-    visibility: visible;
-}
-.pwmcp-action-tooltip::after {
-    content: '';
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    border: 4px solid transparent;
-    border-top-color: rgba(0, 0, 0, 0.9);
-}
 /* Force cursor on all child elements to prevent question mark */
 .pwmcp-action svg { cursor: pointer !important; pointer-events: none !important; }
 .pwmcp-action .pwmcp-lucide { cursor: pointer !important; pointer-events: none !important; }
@@ -1186,7 +1136,7 @@ tr[data-depth="2"] { background-color: #f9f9f9; }
 tr[data-depth="3"] { background-color: #f6f6f6; }
 tr[data-depth="4"] { background-color: #f3f3f3; }
 
-/* Import preview - disabled input/textarea styles (match PW page editor) */
+/* Push preview - disabled input/textarea styles (match PW page editor) */
 .pwmcp-preview-input,
 .pwmcp-preview-textarea {
     width: 100%;
@@ -1226,11 +1176,11 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Badge renderer - applies status badges to AJAX-loaded rows using pre-loaded lookup
     var badgeHtml = {
-        'clean':         '<span class="uk-label uk-label-success">In Sync</span>',
-        'localDirty':    '<span class="uk-label uk-label-warning">Local Changes</span>',
-        'remoteChanged': '<span class="uk-label uk-label-primary">Remote Changes</span>',
+        'clean':         '<span class="uk-label uk-label-success">Clean</span>',
+        'localDirty':    '<span class="uk-label uk-label-warning">File Newer</span>',
+        'remoteChanged': '<span class="uk-label uk-label-primary">Wire Newer</span>',
         'conflict':      '<span class="uk-label uk-label-danger">Conflict</span>',
-        'notPulled':     '<span class="uk-label uk-label-muted">Never Exported</span>'
+        'notPulled':     '<span class="uk-label uk-label-muted">Untracked</span>'
     };
     
     function applyBadgesToNewRows(startAfterRow) {
@@ -1242,6 +1192,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (rowDepth <= baseDepth) break;
             var pageId = row.getAttribute('data-page-id');
             var status = pwmcpPageStatuses[pageId] || 'notPulled';
+            var isPulled = (status !== 'notPulled');
             // Apply badge
             var badgeCell = row.querySelector('.pwmcp-badge-cell');
             if (badgeCell && !badgeCell.innerHTML.trim()) {
@@ -1250,6 +1201,38 @@ document.addEventListener('DOMContentLoaded', function() {
             // Update data-status and data-modified attributes
             row.setAttribute('data-status', status);
             row.setAttribute('data-modified', (status === 'localDirty' || status === 'conflict') ? '1' : '0');
+            // Fix action buttons to match actual status (server only knows clean/notPulled)
+            var actions = row.querySelectorAll('.pwmcp-action');
+            for (var i = 0; i < actions.length; i++) {
+                var action = actions[i];
+                // Skip the first action (Pull) - always enabled
+                if (i === 0) continue;
+                if (isPulled) {
+                    action.classList.remove('pwmcp-action-disabled');
+                    action.style.cursor = 'pointer';
+                    // Restore href and tooltip if it was disabled
+                    if (action.getAttribute('href') === '#' && pageId) {
+                        var baseUrl = childrenUrl.replace('children/', '');
+                        if (i === 1) {
+                            action.setAttribute('href', baseUrl + 'push/?id=' + pageId);
+                            action.setAttribute('uk-tooltip', 'title: File to Wire');
+                        } else if (i === 2) {
+                            action.setAttribute('href', baseUrl + 'view-yaml/?id=' + pageId);
+                            action.setAttribute('uk-tooltip', 'title: View YAML');
+                            action.classList.add('pw-modal');
+                        }
+                    }
+                } else {
+                    action.classList.add('pwmcp-action-disabled');
+                    action.setAttribute('href', '#');
+                    action.classList.remove('pw-modal');
+                    if (i === 1) {
+                        action.setAttribute('uk-tooltip', 'title: No local file yet');
+                    } else if (i === 2) {
+                        action.setAttribute('uk-tooltip', 'title: No local file yet');
+                    }
+                }
+            }
             row = row.nextElementSibling;
         }
     }
@@ -1576,7 +1559,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var treeForm = document.getElementById('pwmcp-tree-form');
     var hiddenBulkAction = treeForm ? treeForm.querySelector('.pwmcp-bulk-action-field') : null;
     
-    // Export button handler
+    // Pull button handler
     if (exportBtn && treeForm && hiddenBulkAction) {
         exportBtn.addEventListener('click', function(e) {
             e.preventDefault();
@@ -1596,7 +1579,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // Import button handler - shows confirmation modal
+    // Push button handler - shows confirmation modal
     if (importBtn) {
         importBtn.addEventListener('click', function(e) {
             e.preventDefault();
@@ -1622,13 +1605,13 @@ document.addEventListener('DOMContentLoaded', function() {
             var message = modal.querySelector('.pwmcp-modal-message');
             var confirmBtn = modal.querySelector('.pwmcp-modal-confirm');
             
-            var messageText = 'You are about to import ' + modifiedCount + ' page' + (modifiedCount === 1 ? '' : 's') + ' from local YAML files, overwriting their current content in ProcessWire.';
+            var messageText = 'You are about to push ' + modifiedCount + ' page' + (modifiedCount === 1 ? '' : 's') + ' from local YAML files, overwriting their current content in ProcessWire.';
             if (cleanCount > 0) {
                 messageText += ' ' + cleanCount + ' page' + (cleanCount === 1 ? '' : 's') + ' with no local changes will be skipped.';
             }
             
             message.textContent = messageText;
-            confirmBtn.textContent = 'Import ' + modifiedCount + ' page' + (modifiedCount === 1 ? '' : 's');
+            confirmBtn.textContent = 'Push ' + modifiedCount + ' page' + (modifiedCount === 1 ? '' : 's');
             
             modal.style.display = 'block';
         });
@@ -1713,7 +1696,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         currentRow.insertAdjacentHTML('afterend', html);
                         // Apply badges from pre-loaded status lookup
                         applyBadgesToNewRows(currentRow);
-                        // Initialize tooltips and cursors for newly loaded content
+                        // Initialize disabled state handlers for newly loaded content
                         initializeActionButtons();
                         
                         // Update selection state after expand
@@ -1761,7 +1744,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         currentRow.insertAdjacentHTML('afterend', html);
                         // Apply badges from pre-loaded status lookup
                         applyBadgesToNewRows(currentRow);
-                        // Initialize tooltips and cursors for newly loaded content
+                        // Initialize disabled state handlers for newly loaded content
                         initializeActionButtons();
                     }
                     pendingLoads--;
@@ -1799,7 +1782,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     
-    // Function to initialize action buttons with custom tooltips (no native tooltips)
+    // Initialize action buttons - disabled state handling
     function initializeActionButtons() {
         document.querySelectorAll('.pwmcp-action').forEach(function(action) {
             var isDisabled = action.classList.contains('pwmcp-action-disabled');
@@ -1822,58 +1805,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     return false;
                 });
             }
-            
-            // Setup custom tooltip from data attribute
-            var tooltipText = action.getAttribute('data-pwmcp-tooltip');
-            if (tooltipText && !action.hasAttribute('data-tooltip-initialized')) {
-                // Mark as initialized to prevent duplicates
-                action.setAttribute('data-tooltip-initialized', 'true');
-                
-                // Remove any title attribute to prevent native tooltips
-                action.removeAttribute('title');
-                
-                // Check if tooltip element already exists
-                var existingTooltip = action.querySelector('.pwmcp-action-tooltip');
-                if (!existingTooltip) {
-                    // Create custom tooltip element
-                    var tooltip = document.createElement('span');
-                    tooltip.className = 'pwmcp-action-tooltip';
-                    tooltip.textContent = tooltipText;
-                    action.appendChild(tooltip);
-                }
-            }
         });
     }
     
     // Initialize on page load
     initializeActionButtons();
-    
-    // Watch for dynamically added action buttons
-    var observer = new MutationObserver(function(mutations) {
-        var needsInit = false;
-        mutations.forEach(function(mutation) {
-            if (mutation.addedNodes.length) {
-                mutation.addedNodes.forEach(function(node) {
-                    if (node.nodeType === 1) { // Element node
-                        if (node.classList && node.classList.contains('pwmcp-action')) {
-                            needsInit = true;
-                        } else if (node.querySelector && node.querySelector('.pwmcp-action')) {
-                            needsInit = true;
-                        }
-                    }
-                });
-            }
-        });
-        if (needsInit) {
-            initializeActionButtons();
-        }
-    });
-    
-    // Observe the table body for changes
-    var tableBody = document.getElementById('pwmcp-tree-body');
-    if (tableBody) {
-        observer.observe(tableBody, { childList: true, subtree: true });
-    }
 
     // Move header buttons to top-right next to H1
     var headerBtns = document.querySelector('.pwmcp-header-buttons');
@@ -1914,7 +1850,7 @@ HTML;
                     $pulled++;
                 }
             }
-            $this->message(sprintf($this->_('Exported %d pages'), $pulled));
+            $this->message(sprintf($this->_('Pulled %d pages to YAML'), $pulled));
         } elseif ($action === 'push') {
             $pushed = 0;
             foreach ($pageIds as $pageId) {
@@ -1926,7 +1862,7 @@ HTML;
                     $pushed++;
                 }
             }
-            $this->message(sprintf($this->_('Imported %d pages'), $pushed));
+            $this->message(sprintf($this->_('Pushed %d pages to PW'), $pushed));
         }
         
         $this->wire('session')->redirect($this->wire('page')->url);
@@ -1941,12 +1877,12 @@ HTML;
      */
     protected function getStatusBadge(string $status): string {
         $labels = [
-            'clean' => ['In Sync', 'uk-label-success'],
-            'localDirty' => ['Local Changes', 'uk-label-warning'],
-            'remoteChanged' => ['Remote Changes', 'uk-label-primary'],
+            'clean' => ['Clean', 'uk-label-success'],
+            'localDirty' => ['File Newer', 'uk-label-warning'],
+            'remoteChanged' => ['Wire Newer', 'uk-label-primary'],
             'conflict' => ['Conflict', 'uk-label-danger'],
             'orphan' => ['Orphan', ''],
-            'notPulled' => ['Never Exported', 'uk-label-muted'],
+            'notPulled' => ['Untracked', 'uk-label-muted'],
         ];
         
         $label = $labels[$status] ?? ['Unknown', ''];
@@ -1965,31 +1901,31 @@ HTML;
     protected function getRowActions(Page $page, string $status): string {
         $actions = [];
         $baseUrl = $this->wire('page')->url;
-        $isNotExported = ($status === 'notPulled');
+        $isUntracked = ($status === 'notPulled');
         
-        // Export button - always active
-        $actions[] = "<a href='{$baseUrl}pull/?id={$page->id}' class='pwmcp-action' data-pwmcp-tooltip='Export to File (YAML)'>" .
-            $this->lucideIcon('download') . "</a>";
+        // Wire to File button - always active
+        $actions[] = "<a href='{$baseUrl}pull/?id={$page->id}' class='pwmcp-action' uk-tooltip='title: Wire to File'>" .
+            $this->lucideIcon('file-input') . "</a>";
         
-        // Import button - disabled if not exported yet
-        $importClass = $isNotExported ? 'pwmcp-action pwmcp-action-disabled' : 'pwmcp-action';
-        $importHref = $isNotExported ? '#' : "{$baseUrl}push/?id={$page->id}";
-        $importTooltip = $isNotExported ? 'Export page first to enable import' : 'Import from File (YAML)';
-        $actions[] = "<a href='{$importHref}' class='{$importClass}' data-pwmcp-tooltip='{$importTooltip}'>" .
-            $this->lucideIcon('upload') . "</a>";
+        // File to Wire button - disabled if no local file yet
+        $pushClass = $isUntracked ? 'pwmcp-action pwmcp-action-disabled' : 'pwmcp-action';
+        $pushHref = $isUntracked ? '#' : "{$baseUrl}push/?id={$page->id}";
+        $pushTooltip = $isUntracked ? 'No local file yet' : 'File to Wire';
+        $actions[] = "<a href='{$pushHref}' class='{$pushClass}' uk-tooltip='title: {$pushTooltip}'>" .
+            $this->lucideIcon('file-output') . "</a>";
         
-        // View YAML button - disabled if not exported yet
-        $viewClass = $isNotExported ? 'pwmcp-action pwmcp-action-disabled' : 'pw-modal pwmcp-action';
-        $viewHref = $isNotExported ? '#' : "{$baseUrl}view-yaml/?id={$page->id}";
-        $viewTooltip = $isNotExported ? 'Export page first to view YAML' : 'View YAML';
-        $actions[] = "<a href='{$viewHref}' class='{$viewClass}' data-pwmcp-tooltip='{$viewTooltip}'>" .
-            $this->lucideIcon('file-text') . "</a>";
+        // View YAML button - disabled if no local file yet
+        $viewClass = $isUntracked ? 'pwmcp-action pwmcp-action-disabled' : 'pw-modal pwmcp-action';
+        $viewHref = $isUntracked ? '#' : "{$baseUrl}view-yaml/?id={$page->id}";
+        $viewTooltip = $isUntracked ? 'No local file yet' : 'View YAML';
+        $actions[] = "<a href='{$viewHref}' class='{$viewClass}' uk-tooltip='title: {$viewTooltip}'>" .
+            $this->lucideIcon('file-braces') . "</a>";
         
         return implode(' ', $actions);
     }
 
     /**
-     * Export a single page to YAML file
+     * Pull a single page from PW to YAML file
      */
     public function ___executePull(): string {
         $input = $this->wire('input');
@@ -2018,7 +1954,7 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Exported page "%s" to %s'),
+                    $this->_('Pulled page "%s" to %s'),
                     $page->title,
                     $result['localPath'] ?? ''
                 ));
@@ -2034,7 +1970,7 @@ HTML;
     }
 
     /**
-     * Import a single page from YAML file with dry-run preview
+     * Push a single page from YAML file to PW with dry-run preview
      */
     public function ___executePush(): string {
         $input = $this->wire('input');
@@ -2074,7 +2010,7 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Force imported changes to page "%s"'),
+                    $this->_('Force pushed changes to page "%s"'),
                     $page->title
                 ));
             } else {
@@ -2096,7 +2032,7 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Imported changes to page "%s"'),
+                    $this->_('Pushed changes to page "%s"'),
                     $page->title
                 ));
             } else {
@@ -2110,7 +2046,7 @@ HTML;
         // Dry-run preview
         $result = $syncManager->pushPage($workspacePath, true); // dryRun = true
         
-        $this->headline(sprintf($this->_('Import Preview: %s'), $page->title));
+        $this->headline(sprintf($this->_('Push Preview: %s'), $page->title));
         
         $form = $modules->get('InputfieldForm');
         $form->attr('method', 'post');
@@ -2155,9 +2091,6 @@ HTML;
 .pwmcp-field-actions button { position: relative; background: none; border: none; padding: 0 6px; cursor: pointer; color: #999; line-height: 1; display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; height: 24px; }
 .pwmcp-field-actions button svg { display: block; }
 .pwmcp-field-actions button:hover { color: #354b60; }
-.pwmcp-field-actions button .pwmcp-action-tooltip { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%) translateY(-4px); background: rgba(0, 0, 0, 0.9); color: #fff; padding: 6px 10px; border-radius: 3px; font-size: 12px; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden; transition: opacity 0.15s ease, visibility 0.15s ease; transition-delay: 0.1s; z-index: 10000; margin-bottom: 4px; }
-.pwmcp-field-actions button .pwmcp-action-tooltip::after { content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: rgba(0, 0, 0, 0.9); }
-.pwmcp-field-actions button:hover .pwmcp-action-tooltip { opacity: 1; visibility: visible; }
 .pwmcp-field-actions button.pwmcp-toggle-off svg { color: #c33; }
 .pwmcp-field-actions::after { content: ""; width: 1px; height: 16px; background: #ddd; margin-left: 8px; margin-right: 4px; display: inline-block; vertical-align: middle; align-self: center; }
 .pwmcp-excluded > .InputfieldHeader { text-decoration: line-through; text-decoration-color: #e83561; color: #e83561 !important; opacity: 0.75; font-weight: normal !important; }
@@ -2211,19 +2144,13 @@ fields.forEach(function(wrap) {
     var refreshBtn = document.createElement("button");
     refreshBtn.type = "button";
     refreshBtn.innerHTML = \'<svg class="pwmcp-lucide" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>\';
-    var refreshTooltip = document.createElement("span");
-    refreshTooltip.className = "pwmcp-action-tooltip";
-    refreshTooltip.textContent = "' . addslashes($refreshLabel) . '";
-    refreshBtn.appendChild(refreshTooltip);
+    refreshBtn.setAttribute("uk-tooltip", "title: ' . addslashes($refreshLabel) . '");
     var toggleOnSvg = \'<svg class="pwmcp-lucide" xmlns="http://www.w3.org/2000/svg" width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="12" x="2" y="6" rx="6"/><circle cx="16" cy="12" r="2"/></svg>\';
     var toggleOffSvg = \'<svg class="pwmcp-lucide" xmlns="http://www.w3.org/2000/svg" width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="12" x="2" y="6" rx="6"/><circle cx="8" cy="12" r="2"/></svg>\';
     var excludeBtn = document.createElement("button");
     excludeBtn.type = "button";
     excludeBtn.innerHTML = toggleOnSvg;
-    var excludeTooltip = document.createElement("span");
-    excludeTooltip.className = "pwmcp-action-tooltip";
-    excludeTooltip.textContent = "' . addslashes($excludeLabel) . '";
-    excludeBtn.appendChild(excludeTooltip);
+    excludeBtn.setAttribute("uk-tooltip", "title: ' . addslashes($excludeLabel) . '");
     excludeBtn.setAttribute("data-pwmcp-exclude-key", key);
     refreshBtn.addEventListener("click", function(e) {
         e.preventDefault(); e.stopPropagation();
@@ -2245,19 +2172,18 @@ fields.forEach(function(wrap) {
         e.preventDefault(); e.stopPropagation();
         var arr = getExcluded();
         var idx = arr.indexOf(key);
-        var tooltip = excludeBtn.querySelector(".pwmcp-action-tooltip");
         if (idx >= 0) {
             arr.splice(idx, 1);
             wrap.classList.remove("pwmcp-excluded");
             excludeBtn.classList.remove("pwmcp-toggle-off");
             excludeBtn.innerHTML = toggleOnSvg;
-            if (tooltip) { tooltip.textContent = "' . addslashes($excludeLabel) . '"; excludeBtn.appendChild(tooltip); }
+            excludeBtn.setAttribute("uk-tooltip", "title: ' . addslashes($excludeLabel) . '");
         } else {
             arr.push(key);
             wrap.classList.add("pwmcp-excluded");
             excludeBtn.classList.add("pwmcp-toggle-off");
             excludeBtn.innerHTML = toggleOffSvg;
-            if (tooltip) { tooltip.textContent = "' . addslashes($includeLabel) . '"; excludeBtn.appendChild(tooltip); }
+            excludeBtn.setAttribute("uk-tooltip", "title: ' . addslashes($includeLabel) . '");
         }
         setExcluded(arr);
     });
@@ -2306,7 +2232,7 @@ if (h1 && form) {
             // Conflict warning
             $warning = $modules->get('InputfieldMarkup');
             $warning->value = '<div class="NoticeWarning" style="margin-bottom: 20px;">';
-            $warning->value .= $this->_('This page has been modified in ProcessWire since you exported it.');
+            $warning->value .= $this->_('This page has been modified in ProcessWire since you last pulled it.');
             $warning->value .= '</div>';
             $form->add($warning);
             
@@ -2339,7 +2265,7 @@ if (h1 && form) {
             // Add explanation text field
             $explanation = $modules->get('InputfieldMarkup');
             $explanation->value = '<p style="color: #666;">' . 
-                $this->_('Re-export to get the latest version, or force import to overwrite with your local changes.') . 
+                $this->_('Re-pull to get the latest version, or force push to overwrite with your local changes.') . 
                 '</p>';
             $form->add($explanation);
             
@@ -2351,15 +2277,15 @@ if (h1 && form) {
             
             // Re-export button (link)
             $btn = $modules->get('InputfieldButton');
-            $btn->value = $this->_('Re-export from ProcessWire');
+            $btn->value = $this->_('Re-pull from ProcessWire');
             $btn->href = $this->wire('page')->url . 'pull/?id=' . $pageId;
             $btn->icon = 'download';
             $form->add($btn);
             
-            // Force Import button
+            // Force Push button
             $f = $modules->get('InputfieldSubmit');
             $f->attr('name', 'submit_force');
-            $f->value = $this->_('Force Import (Overwrite)');
+            $f->value = $this->_('Force Push (Overwrite)');
             $f->icon = 'bolt';
             $f->setSecondary(true);
             $form->add($f);
@@ -2389,7 +2315,7 @@ if (h1 && form) {
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'submit_confirm');
-        $f->value = $this->_('Confirm Import');
+        $f->value = $this->_('Confirm Push');
         $f->icon = 'check';
         $form->add($f);
         
@@ -2426,7 +2352,7 @@ if (h1 && form) {
         $yamlPath = $workspacePath . 'page.yaml';
         
         if (!file_exists($yamlPath)) {
-            return '<p>' . $this->_('YAML file not found. Export the page first.') . '</p>';
+            return '<p>' . $this->_('YAML file not found. Pull the page first.') . '</p>';
         }
         
         $yamlContent = file_get_contents($yamlPath);
@@ -2450,14 +2376,14 @@ if (h1 && form) {
     }
 
     /**
-     * Bulk Export All (with confirmation)
+     * Bulk Pull All (with confirmation)
      */
     public function ___executePullAll(): string {
         $input = $this->wire('input');
         $modules = $this->wire('modules');
         $session = $this->wire('session');
         
-        $this->headline($this->_('Bulk Export'));
+        $this->headline($this->_('Bulk Pull'));
         
         // Get filter from session
         $rootPath = $session->get('pwmcp_root_path') ?: '';
@@ -2490,9 +2416,9 @@ if (h1 && form) {
         $form->attr('method', 'post');
         
         $info = $modules->get('InputfieldMarkup');
-        $info->label = $this->_('Bulk Export Preview');
+        $info->label = $this->_('Bulk Pull Preview');
         $info->value = '<p>' . sprintf(
-            $this->_('This will export all pages under: %s'),
+            $this->_('This will pull all pages under: %s'),
             '<strong>' . htmlspecialchars($displayPath ?: $selector) . '</strong>'
         ) . '</p>';
         $info->value .= '<p class="notes">' . 
@@ -2507,7 +2433,7 @@ if (h1 && form) {
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Exported %d pages successfully'),
+                    $this->_('Pulled %d pages successfully'),
                     $result['pulled'] ?? 0
                 ));
             } else {
@@ -2521,7 +2447,7 @@ if (h1 && form) {
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'confirm_pull');
-        $f->value = $this->_('Confirm Export All');
+        $f->value = $this->_('Confirm Pull All');
         $f->icon = 'download';
         $form->add($f);
         
@@ -2536,14 +2462,14 @@ if (h1 && form) {
     }
 
     /**
-     * Bulk Import All (with dry-run preview)
+     * Bulk Push All (with dry-run preview)
      */
     public function ___executePushAll(): string {
         $input = $this->wire('input');
         $modules = $this->wire('modules');
         $session = $this->wire('session');
         
-        $this->headline($this->_('Bulk Import'));
+        $this->headline($this->_('Bulk Push'));
         
         // Get filter from session to scope the push
         $rootPath = $session->get('pwmcp_root_path') ?: '';
@@ -2573,7 +2499,7 @@ if (h1 && form) {
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Imported %d pages successfully'),
+                    $this->_('Pushed %d pages successfully'),
                     $result['pushed'] ?? 0
                 ));
             } else {
@@ -2588,7 +2514,7 @@ if (h1 && form) {
         $result = $syncManager->pushPages($pushDir, true); // dryRun = true
         
         $info = $modules->get('InputfieldMarkup');
-        $info->label = $this->_('Bulk Import Preview');
+        $info->label = $this->_('Bulk Push Preview');
         
         // Show scope
         $info->value = '<p class="notes">' . sprintf(
@@ -2613,7 +2539,7 @@ if (h1 && form) {
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'confirm_push');
-        $f->value = $this->_('Confirm Import All');
+        $f->value = $this->_('Confirm Push All');
         $f->icon = 'upload';
         $form->add($f);
         
@@ -2668,13 +2594,13 @@ if (h1 && form) {
         
         // Explanation
         $info->value = '<p class="notes" style="margin-bottom:1em;">' . 
-            $this->_('Reconcile fixes structural sync issues (moved/deleted pages). To apply content changes, use Import instead.') . 
+            $this->_('Reconcile fixes structural sync issues (moved/deleted pages). To apply content changes, use Push instead.') . 
             '</p>';
         
         $info->value .= '<h4>' . $this->_('Summary') . '</h4>';
         $info->value .= '<table class="AdminDataTable" style="width:auto;">';
         $info->value .= '<tr><td><strong>' . sprintf('%d', $result['summary']['clean'] ?? 0) . '</strong></td>';
-        $info->value .= '<td>' . $this->_('In Sync') . '</td>';
+        $info->value .= '<td>' . $this->_('Clean') . '</td>';
         $info->value .= '<td class="notes">' . $this->_('Local folders correctly match their ProcessWire pages') . '</td></tr>';
         $info->value .= '<tr><td><strong>' . sprintf('%d', $result['summary']['pathDrift'] ?? 0) . '</strong></td>';
         $info->value .= '<td>' . $this->_('Path Drift') . '</td>';
