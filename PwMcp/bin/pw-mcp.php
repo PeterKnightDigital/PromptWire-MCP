@@ -31,11 +31,14 @@
 namespace ProcessWire;
 
 // ============================================================================
-// SUPPRESS DEPRECATION WARNINGS
+// SUPPRESS WARNINGS THAT BREAK JSON OUTPUT
 // ============================================================================
-// ProcessWire's older code triggers PHP 8.2+ deprecation notices which
-// pollute stdout and break JSON parsing. Suppress them here.
-error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
+// ProcessWire's older code triggers PHP 8.x deprecation notices and
+// null-property warnings (Wire.php line 371) which pollute stdout and
+// break JSON parsing. We suppress via error_reporting AND use output
+// buffering during bootstrap to catch any stray output that ProcessWire
+// may emit (it resets error_reporting internally).
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_WARNING);
 
 // ============================================================================
 // BOOTSTRAP PROCESSWIRE
@@ -70,6 +73,11 @@ if (file_exists($composerAutoloader)) {
     require_once($composerAutoloader);
 }
 
+// Buffer output during entire bootstrap to catch stray PHP warnings/notices
+// that ProcessWire emits (e.g. Wire.php null property access on PHP 8.x).
+// These pollute stdout and break JSON parsing by the MCP server.
+ob_start();
+
 // Load ProcessWire core
 require_once("$rootPath/wire/core/ProcessWire.php");
 
@@ -77,6 +85,7 @@ require_once("$rootPath/wire/core/ProcessWire.php");
 $config = ProcessWire::buildConfig($rootPath);
 
 if (!$config->dbName) {
+    ob_end_clean();
     outputError('ProcessWire database not configured');
 }
 
@@ -84,6 +93,12 @@ if (!$config->dbName) {
 // Note: Unlike web requests, we don't execute ProcessPageView - 
 // we just need access to the API ($pages, $templates, $fields, etc.)
 $wire = new ProcessWire($config);
+
+// Discard any stray output from bootstrap (warnings, notices, etc.)
+ob_end_clean();
+
+// Re-assert our error_reporting level after PW bootstrap
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_WARNING);
 
 if (!$wire) {
     outputError('Failed to bootstrap ProcessWire');
