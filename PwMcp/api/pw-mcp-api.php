@@ -230,6 +230,57 @@ if ($command === 'schema:apply' && isset($request['schemaData']) && is_array($re
 $flags = parseRemoteArgs($args);
 
 // ============================================================================
+// PAGE-REF RESOLUTION HELPERS
+// Resolves a _pageRef object { _pageRef, id, path, _comment } to a ProcessWire
+// page ID, using path-first lookup so cross-environment pushes find the correct
+// page even when database IDs differ between local and remote.
+// ============================================================================
+
+function pwMcpResolvePageRef(\ProcessWire\Wire $wire, array $ref): ?int {
+    // Path-first: works across environments that share the same URL structure.
+    $path = $ref['path'] ?? null;
+    if (!$path && isset($ref['_comment'])) {
+        // Parse legacy "Title @ /path/" comment format.
+        $parts = explode(' @ ', $ref['_comment'], 2);
+        $path  = trim($parts[1] ?? '');
+    }
+    if ($path) {
+        $page = $wire->pages->get($path);
+        if ($page && $page->id) return (int) $page->id;
+    }
+    // ID fallback: works when pushing within the same environment.
+    $id = (int) ($ref['id'] ?? 0);
+    if ($id) {
+        $page = $wire->pages->get($id);
+        if ($page && $page->id) return (int) $page->id;
+    }
+    return null;
+}
+
+/**
+ * Resolve a field value before passing to $page->set().
+ * Handles _pageRef objects (single and array) transparently; all other values
+ * are returned unchanged.
+ */
+function pwMcpResolveFieldValue(\ProcessWire\Wire $wire, $value) {
+    if (!is_array($value)) return $value;
+    // Single page reference
+    if (isset($value['_pageRef']) && $value['_pageRef'] === true) {
+        return pwMcpResolvePageRef($wire, $value);
+    }
+    // Array of page references
+    if (!empty($value) && isset($value[0]['_pageRef'])) {
+        $ids = [];
+        foreach ($value as $ref) {
+            $id = pwMcpResolvePageRef($wire, $ref);
+            if ($id) $ids[] = $id;
+        }
+        return $ids ?: null;
+    }
+    return $value;
+}
+
+// ============================================================================
 // SPECIAL CASE: page:create — create a new page on a remote site
 // Accepts { command, args: [template, parentPath, pageName], pageData: { fields, published } }
 // ============================================================================
@@ -298,12 +349,17 @@ if ($command === 'page:create') {
         $page->name      = $pageName;
         $page->title     = $fields['title'] ?? ucwords(str_replace(['-', '_'], ' ', $pageName));
 
-        // Apply field values (skip title — already set above)
+        // Apply field values (skip title — already set above).
+        // Page reference fields (_pageRef objects) are resolved by path first so
+        // the correct remote ID is used even when it differs from the local ID.
         foreach ($fields as $fieldName => $value) {
             if ($fieldName === 'title') continue;
             if (strpos($fieldName, '_') === 0) continue;
             if (!$wire->fields->get($fieldName)) continue;
-            $page->set($fieldName, $value);
+            $resolved = pwMcpResolveFieldValue($wire, $value);
+            if ($resolved !== null) {
+                $page->set($fieldName, $resolved);
+            }
         }
 
         if ($published) {
@@ -360,25 +416,44 @@ if ($command === 'page:update') {
     $fields  = $pageData['fields'] ?? [];
     $changes = [];
 
-    // Collect changes (detect only — do not apply yet)
-    $fieldValues = []; // new values keyed by field name
+    // Collect changes and resolve page references before applying.
+    // _pageRef values are resolved to remote IDs via path-first lookup so
+    // cross-environment pushes don't write the wrong page ID.
+    $fieldValues = []; // resolved values keyed by field name
     foreach ($fields as $fieldName => $newValue) {
         if (strpos($fieldName, '_') === 0) continue;
         if (!$wire->fields->get($fieldName)) continue;
+
+        $resolved = pwMcpResolveFieldValue($wire, $newValue);
+
         $oldValue = (string) $page->get($fieldName);
-        $newStr   = is_array($newValue) ? json_encode($newValue) : (string) $newValue;
+        // For display in the diff, use path(s) if it's a page ref; otherwise raw.
+        if (is_array($newValue) && (isset($newValue['_pageRef']) || isset($newValue[0]['_pageRef']))) {
+            if (is_array($resolved)) {
+                $newStr = implode(', ', $resolved);
+            } elseif ($resolved !== null) {
+                $newStr = (string) $resolved;
+            } else {
+                $newStr = '(unresolved)';
+            }
+        } else {
+            $newStr = is_array($newValue) ? json_encode($newValue) : (string) $newValue;
+        }
+
         if ($oldValue !== $newStr && !(empty($oldValue) && empty($newStr))) {
             $changes[$fieldName] = ['from' => $oldValue, 'to' => $newStr];
-            $fieldValues[$fieldName] = $newValue;
+            if ($resolved !== null) {
+                $fieldValues[$fieldName] = $resolved;
+            }
         }
     }
 
     $publish = !empty($pageData['publish']);
 
     if (!$dryRun) {
-        // Apply field changes
-        foreach ($fieldValues as $fieldName => $newValue) {
-            $page->set($fieldName, $newValue);
+        // Apply resolved field values
+        foreach ($fieldValues as $fieldName => $resolvedValue) {
+            $page->set($fieldName, $resolvedValue);
         }
         // Publish if requested
         if ($publish && $page->isUnpublished()) {

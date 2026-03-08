@@ -228,11 +228,17 @@ async function parsePageYaml(yamlPath: string): Promise<FieldValue> {
       continue;
     }
 
-    // Skip complex non-scalar fields (images, page refs) — send only text/scalar fields
-    // to avoid overwriting image or relationship data accidentally
     if (Array.isArray(value) && value.length === 0) continue;
-    if (Array.isArray(value) && typeof value[0] === 'object') continue;
 
+    if (Array.isArray(value) && typeof value[0] === 'object') {
+      // Pass _pageRef arrays through — the remote API resolves IDs by path.
+      // Skip everything else (image/file arrays) to avoid clobbering media.
+      const isPageRefArray = (value[0] as Record<string, unknown>)?._pageRef === true;
+      if (!isPageRefArray) continue;
+    }
+
+    // Single _pageRef objects are passed through as-is; path-first resolution
+    // happens in the PHP API handler on the target environment.
     resolved[key] = value;
   }
 

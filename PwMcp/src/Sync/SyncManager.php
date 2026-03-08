@@ -16,9 +16,19 @@ namespace PwMcp\Sync;
 use ProcessWire\ProcessWire;
 use ProcessWire\Page;
 
-// Import PHP 8 string functions into namespace
-use function str_ends_with;
-use function str_starts_with;
+// Polyfills for PHP 7 compatibility
+if (!function_exists('str_ends_with')) {
+    function str_ends_with(string $haystack, string $needle): bool {
+        if ($needle === '') return true;
+        return substr($haystack, -strlen($needle)) === $needle;
+    }
+}
+
+if (!function_exists('str_starts_with')) {
+    function str_starts_with(string $haystack, string $needle): bool {
+        return strncmp($haystack, $needle, strlen($needle)) === 0;
+    }
+}
 
 /**
  * Manages page sync operations: pull, plan, push
@@ -1430,6 +1440,33 @@ class SyncManager {
     }
     
     /**
+     * Resolve a _pageRef object to a ProcessWire Page using path-first lookup.
+     *
+     * Path is tried before ID so that cross-environment pushes (local→remote or
+     * local→staging) find the correct page even when IDs differ between databases.
+     */
+    private function resolvePageRef(array $ref): ?\ProcessWire\Page {
+        // Path-first: works across environments that share the same URL structure.
+        $path = $ref['path'] ?? null;
+        if (!$path && isset($ref['_comment'])) {
+            // Parse "Title @ /path/" legacy format.
+            $parts = explode(' @ ', $ref['_comment'], 2);
+            $path  = trim($parts[1] ?? '');
+        }
+        if ($path) {
+            $page = $this->wire->pages->get($path);
+            if ($page && $page->id) return $page;
+        }
+        // ID fallback: works when pushing within the same environment.
+        $id = (int) ($ref['id'] ?? 0);
+        if ($id) {
+            $page = $this->wire->pages->get($id);
+            if ($page && $page->id) return $page;
+        }
+        return null;
+    }
+
+    /**
      * Apply a field value to a page
      * 
      * @param Page $page
@@ -1460,26 +1497,23 @@ class SyncManager {
             }
         }
         
-        // Handle single page reference (new format with _pageRef)
+        // Handle single page reference (new format with _pageRef).
+        // Resolution order: path first (cross-environment safe), then ID fallback.
         if (is_array($value) && isset($value['_pageRef']) && $value['_pageRef'] === true) {
-            $refId = (int) $value['id'];
-            // Validate the referenced page exists
-            $refPage = $this->wire->pages->get($refId);
+            $refPage = $this->resolvePageRef($value);
             if ($refPage && $refPage->id) {
-                $page->set($fieldName, $refId);
+                $page->set($fieldName, $refPage->id);
             }
             return;
         }
         
-        // Handle array of page references (new format)
+        // Handle array of page references (new format).
         if (is_array($value) && !empty($value) && isset($value[0]['_pageRef'])) {
             $pageIds = [];
             foreach ($value as $ref) {
-                $refId = (int) $ref['id'];
-                // Validate each referenced page exists
-                $refPage = $this->wire->pages->get($refId);
+                $refPage = $this->resolvePageRef($ref);
                 if ($refPage && $refPage->id) {
-                    $pageIds[] = $refId;
+                    $pageIds[] = $refPage->id;
                 }
             }
             $page->set($fieldName, $pageIds);
@@ -1745,21 +1779,22 @@ class SyncManager {
             return date('Y-m-d', (int) $value);
         }
         
-        // Single page reference — store as ID with comment info
-        // Format: { _pageRef: true, id: 1816, _comment: "Title @ /path/" }
-        // The _comment is for human readability, ignored on push
+        // Single page reference — store id + path for cross-environment resolution.
+        // path is the authoritative key when pushing to a different environment where IDs differ.
+        // Format: { _pageRef: true, id: 1816, path: "/services/foo/", _comment: "Title @ /path/" }
         if ($value instanceof \ProcessWire\Page) {
             if (!$value->id) {
                 return null;
             }
             return [
                 '_pageRef' => true,
-                'id' => $value->id,
+                'id'       => $value->id,
+                'path'     => (string) $value->path,
                 '_comment' => $value->title . ' @ ' . $value->path,
             ];
         }
         
-        // Page array (multi-page reference) — store as array of IDs with comments
+        // Page array (multi-page reference) — same cross-environment-safe format.
         if ($value instanceof \ProcessWire\PageArray && 
             !($value instanceof \ProcessWire\RepeaterPageArray) &&
             strpos(get_class($value), 'Repeater') === false) {
@@ -1768,7 +1803,8 @@ class SyncManager {
                 if (!$p->id) continue;
                 $refs[] = [
                     '_pageRef' => true,
-                    'id' => $p->id,
+                    'id'       => $p->id,
+                    'path'     => (string) $p->path,
                     '_comment' => $p->title . ' @ ' . $p->path,
                 ];
             }
