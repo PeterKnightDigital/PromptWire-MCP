@@ -2,7 +2,7 @@
 
 ProcessWire ↔ Cursor MCP Bridge — with remote site support and schema-as-code sync.
 
-Query, edit, and scaffold content on any ProcessWire site from Cursor IDE using natural language. Sync fields, templates, and pages between local and remote environments with full diff, collision detection, and dry-run support.
+Use Cursor to create, edit, and publish ProcessWire content without ever opening the CMS admin. Pull live pages from any remote site into local YAML files, edit them in your IDE, and push changes back to production in a single prompt — or go the other way, scaffolding new pages locally and publishing them directly to remote in bulk. Fields, templates, and page relationships sync across environments with full diff previews, collision detection, and dry-run support before anything is written.
 
 ## Requirements
 
