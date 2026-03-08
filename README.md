@@ -380,6 +380,96 @@ Then publish when ready:
 | `pw_matrix_info` | Get matrix field structure and types |
 | `pw_matrix_add` | Add a matrix item directly to a page |
 
+### Page reference tools *(Phase 2)*
+
+| Tool | Description |
+|------|-------------|
+| `pw_validate_refs` | Validate all `_pageRef` fields in synced pages against a target environment |
+
+---
+
+## Phase 2 Roadmap
+
+### Page reference validation (`pw_validate_refs`) — *Priority*
+
+When a page has `FieldtypePage` fields (e.g. `featured_services`, `blog_categories`), the referenced pages must exist on the **target** environment. Because page IDs differ between local and production, the sync layer now stores paths alongside IDs — but it can't guarantee those paths exist on the target before you push.
+
+`pw_validate_refs` solves this by scanning every synced page in `site/assets/pw-mcp/` before a push and checking each `_pageRef` path against the target.
+
+**Planned workflow:**
+
+```
+"Validate my page refs against production"
+"Are there any broken page references before I push?"
+"Check refs for /services/ — dry run push"
+```
+
+**What it reports:**
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | Path resolves on target |
+| `missing` | Path not found on target — push would leave field blank |
+| `unpublished` | Page exists but is unpublished — ref is valid but page won't be visible |
+| `type_mismatch` | Field type changed since last pull — ref may be invalid |
+
+**Implementation notes:**
+- Reads all `page.yaml` files under `site/assets/pw-mcp/`
+- Collects every `_pageRef` object (single and array)
+- Calls `page:exists` on the target environment for each unique path
+- Returns a structured report grouped by page and field
+- Integrates with `pw_pages_push` as an optional pre-push gate (set `validateRefs: true`)
+
+---
+
+### Staging environment
+
+Add a third named site config and MCP server entry for a staging environment. Enables a `local → staging → production` promotion workflow with schema and content diffs at each step.
+
+**Planned `.pw-sync/sites/staging.json`:**
+
+```json
+{
+  "name": "staging",
+  "label": "MySite.com (staging)",
+  "url": "https://staging.mysite.com/pw-mcp-api.php",
+  "key": "your-staging-key"
+}
+```
+
+**Planned prompts:**
+
+```
+"Push /about/ to staging first, then production"
+"Compare staging vs production schema"
+"Promote staging content to production"
+```
+
+---
+
+### Matrix / repeater item sync
+
+Matrix (ProFields FieldtypeRepeaterMatrix) items are pages themselves in ProcessWire. The YAML serialiser already captures matrix data on pull, but `page:push` currently skips it.
+
+**Planned tools:**
+
+- `pw_matrix_add` — add a new matrix item of a given type to a page
+- `pw_matrix_update` — update a specific item by index or type label
+- `pw_matrix_reorder` — reorder matrix items
+
+**Planned prompts:**
+
+```
+"Add a Text + Image matrix item to the /about/ page"
+"Update the second 'CTA' block on /services/"
+"Duplicate the hero block from /about/ to /contact/"
+```
+
+**Implementation notes:**
+- Matrix items are stored as sub-pages in ProcessWire
+- Push requires creating/updating those sub-pages in the correct order
+- ID resolution applies to any `_pageRef` fields inside matrix items
+
 ---
 
 ## CLI Usage
