@@ -1,0 +1,713 @@
+<?php
+/**
+ * PW-MCP Remote API Endpoint
+ *
+ * Deploy this single file to your remote ProcessWire site root.
+ * It provides an authenticated HTTP API that mirrors the local CLI —
+ * all the same commands work identically, just over HTTPS.
+ *
+ * DEPLOYMENT
+ * ----------
+ * 1. Copy this file to your remote PW site root (same level as index.php)
+ * 2. Create site/config-pw-mcp.php with your API key (see below)
+ * 3. Add to your local mcp.json:
+ *
+ *    "ProcessWire MCP: MySite.com (production)": {
+ *      "command": "node",
+ *      "args": ["/path/to/mcp-server/dist/index.js"],
+ *      "env": {
+ *        "PW_REMOTE_URL": "https://www.edenstudios.com/pw-mcp-api.php",
+ *        "PW_REMOTE_KEY": "ABC123!"
+ *      }
+ *    }
+ *
+ * CONFIGURATION (site/config-pw-mcp.php)
+ * ---------------------------------------
+ * <?php
+ * define('PW_MCP_API_KEY', 'your-secret-key-here');
+ * // Optional: restrict to your Mac's IP (curl ifconfig.me to find it)
+ * // define('PW_MCP_ALLOWED_IPS', '1.2.3.4');
+ *
+ * SECURITY
+ * --------
+ * - API key authentication via X-PW-MCP-Key header
+ * - HTTPS strongly recommended (key is sent in header)
+ * - Optional IP allowlist for extra protection
+ * - Error details suppressed in production (no info leakage)
+ * - Read/write operations mirror local CLI permissions
+ *
+ * @package     PwMcp
+ * @author      Peter Knight
+ * @license     MIT
+ */
+
+namespace ProcessWire;
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+// Load API key from config file (recommended — keep out of webroot if possible)
+// Place at: site/config-pw-mcp.php
+$configFile = __DIR__ . '/site/config-pw-mcp.php';
+if (file_exists($configFile)) {
+    require_once $configFile;
+}
+
+// Fallback: check environment variable (useful for Docker/Kubernetes setups)
+if (!defined('PW_MCP_API_KEY')) {
+    $envKey = getenv('PW_MCP_API_KEY');
+    if ($envKey) {
+        define('PW_MCP_API_KEY', $envKey);
+    }
+}
+
+// ============================================================================
+// OUTPUT HEADERS
+// ============================================================================
+
+header('Content-Type: application/json');
+header('X-PW-MCP-Version: 1.0');
+
+// Suppress PHP errors from leaking into JSON output
+error_reporting(0);
+ini_set('display_errors', '0');
+
+// ============================================================================
+// SECURITY: METHOD CHECK
+// ============================================================================
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    echo json_encode(['error' => 'Method not allowed — use POST']);
+    exit;
+}
+
+// ============================================================================
+// SECURITY: API KEY AUTHENTICATION
+// ============================================================================
+
+if (!defined('PW_MCP_API_KEY') || empty(PW_MCP_API_KEY)) {
+    http_response_code(500);
+    echo json_encode([
+        'error' => 'API key not configured on this server — create site/config-pw-mcp.php with: define(\'PW_MCP_API_KEY\', \'your-key\');'
+    ]);
+    exit;
+}
+
+$providedKey = $_SERVER['HTTP_X_PW_MCP_KEY'] ?? '';
+
+// Use hash_equals to prevent timing attacks
+if (!hash_equals(PW_MCP_API_KEY, $providedKey)) {
+    http_response_code(401);
+    echo json_encode(['error' => 'Unauthorized — invalid API key']);
+    exit;
+}
+
+// ============================================================================
+// SECURITY: OPTIONAL IP ALLOWLIST
+// ============================================================================
+
+if (defined('PW_MCP_ALLOWED_IPS') && PW_MCP_ALLOWED_IPS) {
+    $allowedIps = array_map('trim', explode(',', PW_MCP_ALLOWED_IPS));
+    // Support proxied IPs (Cloudflare, load balancers, etc.)
+    $forwardedFor = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+    $clientIp = $forwardedFor
+        ? trim(explode(',', $forwardedFor)[0])
+        : ($_SERVER['REMOTE_ADDR'] ?? '');
+
+    if (!in_array($clientIp, $allowedIps, true)) {
+        http_response_code(403);
+        echo json_encode(['error' => "IP not allowed: $clientIp"]);
+        exit;
+    }
+}
+
+// ============================================================================
+// PARSE REQUEST BODY
+// ============================================================================
+
+$rawBody = file_get_contents('php://input');
+if (!$rawBody) {
+    http_response_code(400);
+    echo json_encode(['error' => 'Empty request body']);
+    exit;
+}
+
+$request = json_decode($rawBody, true);
+if (!is_array($request) || !isset($request['command'])) {
+    http_response_code(400);
+    echo json_encode(['error' => 'Invalid JSON body — expected: {"command": "...", "args": [...]}']);
+    exit;
+}
+
+$command = $request['command'];
+$args = $request['args'] ?? [];
+
+if (!is_string($command) || empty(trim($command))) {
+    http_response_code(400);
+    echo json_encode(['error' => 'command must be a non-empty string']);
+    exit;
+}
+
+if (!is_array($args)) {
+    http_response_code(400);
+    echo json_encode(['error' => 'args must be an array']);
+    exit;
+}
+
+// ============================================================================
+// BOOTSTRAP PROCESSWIRE
+// ============================================================================
+
+$rootPath = __DIR__;
+
+if (!file_exists($rootPath . '/wire/core/ProcessWire.php')) {
+    http_response_code(500);
+    echo json_encode(['error' => 'ProcessWire core not found — ensure this file is in the PW site root']);
+    exit;
+}
+
+// Restore normal error reporting for PW bootstrap, then suppress PHP notices/warnings
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_WARNING);
+
+// Load Composer autoloader if present
+$composerAutoloader = $rootPath . '/vendor/autoload.php';
+if (file_exists($composerAutoloader)) {
+    require_once $composerAutoloader;
+}
+
+// Buffer output during bootstrap — PW may emit stray notices on PHP 8.x
+ob_start();
+
+if (!defined('PROCESSWIRE')) {
+    define('PROCESSWIRE', 300);
+}
+
+require_once "$rootPath/wire/core/ProcessWire.php";
+
+$config = ProcessWire::buildConfig($rootPath);
+if (!$config->dbName) {
+    ob_end_clean();
+    http_response_code(500);
+    echo json_encode(['error' => 'ProcessWire database not configured']);
+    exit;
+}
+
+$wire = new ProcessWire($config);
+ob_end_clean();
+
+// Re-assert error suppression after PW resets it internally
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_WARNING);
+
+if (!$wire) {
+    http_response_code(500);
+    echo json_encode(['error' => 'Failed to bootstrap ProcessWire']);
+    exit;
+}
+
+// ============================================================================
+// HANDLE INLINE SCHEMA DATA (for schema:apply on remote sites)
+// If the request includes a 'schemaData' key, write it to a temp file
+// and inject the path as the first positional argument so CommandRouter
+// can read it via the normal schema:apply file-path mechanism.
+// ============================================================================
+
+if ($command === 'schema:apply' && isset($request['schemaData']) && is_array($request['schemaData'])) {
+    $tmpFile = sys_get_temp_dir() . '/pw-mcp-schema-' . time() . '.json';
+    file_put_contents($tmpFile, json_encode($request['schemaData']));
+    // Prepend the temp file path as the first positional argument
+    array_unshift($args, $tmpFile);
+    // Register shutdown to clean up temp file
+    register_shutdown_function(function() use ($tmpFile) {
+        if (file_exists($tmpFile)) {
+            @unlink($tmpFile);
+        }
+    });
+}
+
+// Parse args early so $flags is available to both the special cases and CommandRouter
+$flags = parseRemoteArgs($args);
+
+// ============================================================================
+// SPECIAL CASE: page:create — create a new page on a remote site
+// Accepts { command, args: [template, parentPath, pageName], pageData: { fields, published } }
+// ============================================================================
+
+if ($command === 'page:create') {
+    $template   = $flags['_positional'][0] ?? null;
+    $parentPath = $flags['_positional'][1] ?? null;
+    $pageName   = $flags['_positional'][2] ?? null;
+    $pageData   = $request['pageData'] ?? [];
+    $fields     = $pageData['fields'] ?? [];
+    $published  = !empty($pageData['published']);
+    $dryRun     = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+
+    if (!$template || !$parentPath || !$pageName) {
+        http_response_code(400);
+        echo json_encode(['error' => 'page:create requires template, parentPath, pageName as positional args']);
+        exit;
+    }
+
+    // Validate template exists
+    $tpl = $wire->templates->get($template);
+    if (!$tpl) {
+        http_response_code(400);
+        echo json_encode(['error' => "Template not found: $template"]);
+        exit;
+    }
+
+    // Validate parent exists
+    $parent = $wire->pages->get($parentPath);
+    if (!$parent || !$parent->id) {
+        http_response_code(400);
+        echo json_encode(['error' => "Parent page not found: $parentPath"]);
+        exit;
+    }
+
+    // Check for name collision
+    $existing = $wire->pages->get("parent=$parent, name=$pageName");
+    if ($existing && $existing->id) {
+        http_response_code(409);
+        echo json_encode([
+            'error'    => "Page already exists at $parentPath$pageName/",
+            'existingId' => $existing->id,
+        ]);
+        exit;
+    }
+
+    if ($dryRun) {
+        echo json_encode([
+            'success'    => true,
+            'dryRun'     => true,
+            'template'   => $template,
+            'parentPath' => $parentPath,
+            'pageName'   => $pageName,
+            'title'      => $fields['title'] ?? ucwords(str_replace(['-', '_'], ' ', $pageName)),
+            'published'  => $published,
+            'fields'     => array_keys($fields),
+            'willCreate' => "$parentPath$pageName/",
+        ], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    try {
+        $page            = new \ProcessWire\Page();
+        $page->template  = $tpl;
+        $page->parent    = $parent;
+        $page->name      = $pageName;
+        $page->title     = $fields['title'] ?? ucwords(str_replace(['-', '_'], ' ', $pageName));
+
+        // Apply field values (skip title — already set above)
+        foreach ($fields as $fieldName => $value) {
+            if ($fieldName === 'title') continue;
+            if (strpos($fieldName, '_') === 0) continue;
+            if (!$wire->fields->get($fieldName)) continue;
+            $page->set($fieldName, $value);
+        }
+
+        if ($published) {
+            $wire->pages->save($page);
+        } else {
+            $page->addStatus(\ProcessWire\Page::statusUnpublished);
+            $wire->pages->save($page);
+        }
+
+        echo json_encode([
+            'success'    => true,
+            'dryRun'     => false,
+            'pageId'     => $page->id,
+            'pagePath'   => $page->path,
+            'title'      => $page->title,
+            'published'  => $published,
+            'status'     => $published ? 'published' : 'unpublished',
+            'createdAt'  => date('c'),
+        ], JSON_UNESCAPED_SLASHES);
+    } catch (\Throwable $e) {
+        http_response_code(500);
+        echo json_encode([
+            'error' => 'Page creation failed: ' . $e->getMessage(),
+            'file'  => basename($e->getFile()),
+            'line'  => $e->getLine(),
+        ]);
+    }
+    exit;
+}
+
+// ============================================================================
+// SPECIAL CASE: page:update — apply field values to a remote page directly
+// Accepts { command, args: ["/path/"], pageData: { fields: { field: value } } }
+// ============================================================================
+
+if ($command === 'page:update') {
+    $pagePath = $flags['_positional'][0] ?? null;
+    $pageData = $request['pageData'] ?? null;
+
+    if (!$pagePath || !is_array($pageData)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'page:update requires a page path arg and pageData object']);
+        exit;
+    }
+
+    $page = $wire->pages->get($pagePath);
+    if (!$page || !$page->id) {
+        http_response_code(404);
+        echo json_encode(['error' => "Page not found: $pagePath"]);
+        exit;
+    }
+
+    $dryRun  = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+    $fields  = $pageData['fields'] ?? [];
+    $changes = [];
+
+    // Collect changes (detect only — do not apply yet)
+    $fieldValues = []; // new values keyed by field name
+    foreach ($fields as $fieldName => $newValue) {
+        if (strpos($fieldName, '_') === 0) continue;
+        if (!$wire->fields->get($fieldName)) continue;
+        $oldValue = (string) $page->get($fieldName);
+        $newStr   = is_array($newValue) ? json_encode($newValue) : (string) $newValue;
+        if ($oldValue !== $newStr && !(empty($oldValue) && empty($newStr))) {
+            $changes[$fieldName] = ['from' => $oldValue, 'to' => $newStr];
+            $fieldValues[$fieldName] = $newValue;
+        }
+    }
+
+    $publish = !empty($pageData['publish']);
+
+    if (!$dryRun) {
+        // Apply field changes
+        foreach ($fieldValues as $fieldName => $newValue) {
+            $page->set($fieldName, $newValue);
+        }
+        // Publish if requested
+        if ($publish && $page->isUnpublished()) {
+            $page->removeStatus(\ProcessWire\Page::statusUnpublished);
+        }
+        if (!empty($fieldValues) || $publish) {
+            $wire->pages->save($page);
+        }
+    }
+
+    echo json_encode([
+        'success'     => true,
+        'dryRun'      => $dryRun,
+        'pageId'      => $page->id,
+        'pagePath'    => $page->path,
+        'changes'     => $changes,
+        'changeCount' => count($changes),
+        'published'   => $publish ? true : !$page->isUnpublished(),
+        'pushedAt'    => $dryRun ? null : date('c'),
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
+// SPECIAL CASE: schema:apply — fully self-contained, no external dependencies
+// ============================================================================
+
+if ($command === 'schema:apply') {
+    // $flags['_positional'][0] is the temp file written above from schemaData
+    $schemaFile = $flags['_positional'][0] ?? ($args[0] ?? null);
+    if (!$schemaFile || !file_exists($schemaFile)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'schema:apply requires schemaData in the request body']);
+        exit;
+    }
+
+    $schema = json_decode(file_get_contents($schemaFile), true);
+    if (!is_array($schema)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Invalid schema JSON']);
+        exit;
+    }
+
+    $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+
+    try {
+        $result = pwMcpApplySchema($wire, $schema, $dryRun);
+    } catch (\Throwable $e) {
+        http_response_code(500);
+        echo json_encode([
+            'error'  => 'Schema apply failed: ' . $e->getMessage(),
+            'file'   => basename($e->getFile()),
+            'line'   => $e->getLine(),
+            'dryRun' => $dryRun,
+        ], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    echo json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
+// LOAD COMMAND ROUTER AND EXECUTE
+// ============================================================================
+
+$routerPath = $rootPath . '/site/modules/PwMcp/src/Cli/CommandRouter.php';
+if (!file_exists($routerPath)) {
+    http_response_code(500);
+    echo json_encode([
+        'error' => 'PwMcp module not found on this site — install the PwMcp module first',
+        'expectedPath' => $routerPath,
+    ]);
+    exit;
+}
+
+require_once $routerPath;
+
+// Also load SyncManager and Schema classes that CommandRouter lazy-loads
+// (their paths are relative to the CLI, so we set a base path flag)
+// CommandRouter uses require_once with __DIR__ paths, which work correctly
+// as long as this file is in the PW root.
+
+$router = new \PwMcp\Cli\CommandRouter($wire);
+
+// Capture any stray output from command execution
+ob_start();
+$result = $router->run($command, $flags);
+ob_end_clean();
+
+// Output result as JSON
+echo json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+// ============================================================================
+// SCHEMA APPLY — self-contained implementation (no SchemaImporter dependency)
+// ============================================================================
+
+function pwMcpApplySchema($wire, array $schema, bool $dryRun): array
+{
+    $fieldResults    = [];
+    $templateResults = [];
+
+    // Fields first — templates reference fields by name
+    foreach ($schema['fields'] ?? [] as $name => $def) {
+        if (strpos($name, '_') === 0) continue;
+        $existing = $wire->fields->get($name);
+        if (!$existing) {
+            $fieldResults[$name] = pwMcpCreateField($wire, $name, $def, $dryRun);
+            $fieldResults[$name]['action'] = 'create';
+        } else {
+            $fieldResults[$name] = pwMcpUpdateField($wire, $existing, $def, $dryRun);
+            $fieldResults[$name]['action'] = $fieldResults[$name]['changed'] ? 'update' : 'unchanged';
+        }
+    }
+
+    // Templates second
+    foreach ($schema['templates'] ?? [] as $name => $def) {
+        if (strpos($name, '_') === 0) continue;
+        $existing = $wire->templates->get($name);
+        if (!$existing) {
+            $templateResults[$name] = pwMcpCreateTemplate($wire, $name, $def, $dryRun);
+            $templateResults[$name]['action'] = 'create';
+        } else {
+            $templateResults[$name] = pwMcpUpdateTemplate($wire, $existing, $def, $dryRun);
+            $templateResults[$name]['action'] = $templateResults[$name]['changed'] ? 'update' : 'unchanged';
+        }
+    }
+
+    // Tally summary
+    $tally = function (array $items): array {
+        $c = ['created' => 0, 'updated' => 0, 'unchanged' => 0, 'errors' => 0];
+        foreach ($items as $item) {
+            if (!empty($item['error'])) $c['errors']++;
+            elseif (($item['action'] ?? '') === 'create') $c['created']++;
+            elseif (($item['action'] ?? '') === 'update')  $c['updated']++;
+            else $c['unchanged']++;
+        }
+        return $c;
+    };
+
+    return [
+        'dryRun'    => $dryRun,
+        'fields'    => $fieldResults,
+        'templates' => $templateResults,
+        'summary'   => ['fields' => $tally($fieldResults), 'templates' => $tally($templateResults)],
+    ];
+}
+
+function pwMcpCreateField($wire, string $name, array $def, bool $dryRun): array
+{
+    $typeName  = $def['type'] ?? null;
+    if (!$typeName) return ['success' => false, 'error' => 'Missing field type'];
+
+    $fieldtype = $wire->fieldtypes->get($typeName);
+    if (!$fieldtype) return ['success' => false, 'error' => "Unknown field type: $typeName"];
+
+    if ($dryRun) return ['success' => true, 'type' => $typeName, 'label' => $def['label'] ?? null];
+
+    $field            = new \ProcessWire\Field();
+    $field->name      = $name;
+    $field->type      = $fieldtype;
+    $field->label     = $def['label'] ?? '';
+    if (!empty($def['description'])) $field->description = $def['description'];
+    if (!empty($def['required']))    $field->required    = (bool) $def['required'];
+    if (!empty($def['inputfield']))  $field->inputfieldClass = $def['inputfield'];
+
+    foreach ($def['settings'] ?? [] as $k => $v) {
+        if ($k !== 'options') $field->set($k, $v);
+    }
+
+    $wire->fields->save($field);
+    return ['success' => true, 'id' => $field->id, 'type' => $typeName, 'label' => $field->label];
+}
+
+function pwMcpUpdateField($wire, $field, array $def, bool $dryRun): array
+{
+    $changes  = [];
+    $typeName = $def['type'] ?? null;
+
+    if ($typeName && $field->type->className() !== $typeName) {
+        return ['success' => false, 'changed' => false,
+            'warning' => "Type change {$field->type->className()} → $typeName must be done manually"];
+    }
+
+    $newLabel = $def['label'] ?? null;
+    if ($newLabel !== null && $field->label !== $newLabel) {
+        $changes['label'] = ['from' => $field->label, 'to' => $newLabel];
+    }
+    $newDesc = $def['description'] ?? null;
+    if ($newDesc !== null && $field->description !== $newDesc) {
+        $changes['description'] = ['from' => $field->description, 'to' => $newDesc];
+    }
+
+    if (empty($changes)) return ['success' => true, 'changed' => false];
+    if ($dryRun)         return ['success' => true, 'changed' => true, 'changes' => $changes];
+
+    foreach ($changes as $key => $change) $field->set($key, $change['to']);
+    $wire->fields->save($field);
+    return ['success' => true, 'changed' => true, 'changes' => $changes];
+}
+
+function pwMcpCreateTemplate($wire, string $name, array $def, bool $dryRun): array
+{
+    $desiredFields = $def['fields'] ?? [];
+    $missing       = array_values(array_filter($desiredFields, fn($f) => !$wire->fields->get($f)));
+
+    if ($dryRun) {
+        $r = ['success' => true, 'label' => $def['label'] ?? null, 'fields' => $desiredFields];
+        if ($missing) { $r['warning'] = 'Some fields do not exist yet'; $r['missingFields'] = $missing; }
+        return $r;
+    }
+
+    // Create fieldgroup first — required by ProcessWire before saving a template
+    $fg       = new \ProcessWire\Fieldgroup();
+    $fg->name = $name;
+    $titleField = $wire->fields->get('title');
+    if ($titleField && !in_array('title', $desiredFields, true)) $fg->add($titleField);
+    $wire->fieldgroups->save($fg);
+
+    $template             = new \ProcessWire\Template();
+    $template->name       = $name;
+    $template->label      = $def['label'] ?? '';
+    $template->fieldgroup = $fg;
+
+    if (!empty($def['family'])) {
+        $fam = $def['family'];
+        if (isset($fam['allowChildren'])) $template->noChildren = $fam['allowChildren'] ? 0 : 1;
+        if (isset($fam['allowParents']))  $template->noParents  = $fam['allowParents']  ? 0 : 1;
+        if (isset($fam['allowPageNum']))  $template->allowPageNum = (int) $fam['allowPageNum'];
+        if (isset($fam['urlSegments']))   $template->urlSegments  = (int) $fam['urlSegments'];
+    }
+
+    $wire->templates->save($template);
+
+    $added = [];
+    foreach ($desiredFields as $fn) {
+        if (in_array($fn, $missing, true)) continue;
+        $f = $wire->fields->get($fn);
+        if ($f) { $template->fieldgroup->add($f); $added[] = $fn; }
+    }
+    $template->fieldgroup->save();
+
+    $r = ['success' => true, 'id' => $template->id, 'label' => $template->label, 'fieldsAdded' => $added];
+    if ($missing) $r['missingFields'] = $missing;
+    return $r;
+}
+
+function pwMcpUpdateTemplate($wire, $template, array $def, bool $dryRun): array
+{
+    $changes = [];
+    $newLabel = $def['label'] ?? null;
+    if ($newLabel !== null && $template->label !== $newLabel) {
+        $changes['label'] = ['from' => $template->label, 'to' => $newLabel];
+    }
+
+    $desiredFields  = $def['fields'] ?? [];
+    $currentFields  = array_map(fn($f) => $f->name, iterator_to_array($template->fields));
+    $toAdd          = array_values(array_diff($desiredFields, $currentFields));
+    $missing        = array_values(array_filter($toAdd, fn($f) => !$wire->fields->get($f)));
+
+    if ($toAdd) $changes['fieldsToAdd'] = $toAdd;
+    if (empty($changes)) return ['success' => true, 'changed' => false];
+    if ($dryRun) {
+        $r = ['success' => true, 'changed' => true, 'changes' => $changes];
+        if ($missing) $r['missingFields'] = $missing;
+        return $r;
+    }
+
+    if (isset($changes['label'])) $template->label = $changes['label']['to'];
+
+    $added = [];
+    foreach ($toAdd as $fn) {
+        if (in_array($fn, $missing, true)) continue;
+        $f = $wire->fields->get($fn);
+        if ($f) { $template->fields->add($f); $added[] = $fn; }
+    }
+    if ($added) { $template->fields->save(); $changes['fieldsAdded'] = $added; }
+
+    $wire->templates->save($template);
+    $r = ['success' => true, 'changed' => true, 'changes' => $changes];
+    if ($missing) $r['missingFields'] = $missing;
+    return $r;
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Parse request args array into the flags format CommandRouter expects.
+ *
+ * The CLI receives args like: ['--pretty', '--include=files', '/about/']
+ * This function converts them to the same associative array the CLI produces.
+ *
+ * @param array $args Array of CLI-style arguments and flags
+ * @return array Parsed flags with _positional key for non-flag args
+ */
+function parseRemoteArgs(array $args): array
+{
+    $flags = [
+        'format'  => 'json',
+        'pretty'  => false,
+        'include' => [],
+    ];
+    $positional = [];
+
+    foreach ($args as $arg) {
+        if (!is_string($arg)) {
+            continue;
+        }
+
+        if (strpos($arg, '--') === 0) {
+            $arg = substr($arg, 2);
+
+            if (strpos($arg, '=') !== false) {
+                [$key, $value] = explode('=', $arg, 2);
+                if ($key === 'include') {
+                    $flags['include'][] = $value;
+                } else {
+                    $flags[$key] = $value;
+                }
+            } else {
+                $flags[$arg] = true;
+            }
+        } else {
+            $positional[] = $arg;
+        }
+    }
+
+    $flags['_positional'] = $positional;
+    return $flags;
+}

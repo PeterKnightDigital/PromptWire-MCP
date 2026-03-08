@@ -1,119 +1,51 @@
 # ProcessWire MCP
 
-ProcessWire ↔ Cursor MCP Bridge
+ProcessWire ↔ Cursor MCP Bridge — with remote site support and schema-as-code sync.
 
-A ProcessWire module that exposes site structure and content to Cursor IDE via the Model Context Protocol (MCP). Query your ProcessWire site using natural language in Cursor.
+Query, edit, and scaffold content on any ProcessWire site from Cursor IDE using natural language. Sync fields, templates, and pages between local and remote environments with full diff, collision detection, and dry-run support.
 
 ## Requirements
 
 | Requirement | Minimum | Recommended |
 |-------------|---------|-------------|
-| ProcessWire | 3.0.210+ | 3.0.244+ or 3.0.255 |
+| ProcessWire | 3.0.210+ | 3.0.244+ |
 | PHP | 8.0+ | 8.2+ |
 | Node.js | 18+ | 20+ |
-| Cursor IDE | With MCP support | Latest version |
+| Cursor IDE | With MCP support | Latest |
 
-**ProcessWire Version Notes:**
-- **3.0.210+** is required for proper PHP 8.2+ compatibility
-- **3.0.244+** (Jan 2025) or **3.0.255** (Jan 2026) recommended for best stability
-- Older versions (3.0.165+) may work but could show deprecation warnings with PHP 8.2+
-
-See [ProcessWire master versions](https://processwire.com/blog/categories/master-versions/) for the latest releases.
-
-## Using in Cursor Chat
-
-Just ask naturally — the AI will use the MCP tools automatically:
-
-**Structure & Schema:**
-- "What templates does this site have?"
-- "Show me the fields on the blog-post template"
-- "Export the full site schema"
-- "What field types are available?"
-
-**Pages & Content:**
-- "Get the homepage"
-- "Get the page at /about/"
-- "Show me page ID 1764"
-- "Query the 5 most recent blog posts"
-
-**Fields & Images:**
-- "What fields does the basic-page template use?"
-- "Show me all image fields"
-- "Get the page at /team/ with file details"
-- "What pages use the sidebar field?"
-
-**Search:**
-- "Search for pages containing 'John Doe'"
-- "Find all PDF files on the site"
-- "Search for images with 'team' in the filename"
-
-**Content Sync (Export/Edit/Import):**
-- "Export the about page for editing" (or "Pull the about page")
-- "Export all pages under /services/" (or "Pull all pages under /services/")
-- "Check sync status"
-- "Import my changes to ProcessWire" (or "Push my changes")
-
-**With Options:**
-- "Get page /about/ with field labels"
-- "Export schema in YAML format"
-
-## Features
-
-- **List templates and fields** — Understand your site structure
-- **Query pages** — Get page data by ID, path, or selector
-- **Export schema** — Full site schema in JSON or YAML
-- **RepeaterMatrix support** — Full content extraction with type labels
-- **File/image metadata** — Filenames, dimensions, URLs
-- **Field labels** — Optional human-readable field descriptions
-- **Content sync** — Pull pages to local YAML, edit, and push back
-- **Bulk operations** — Pull/push entire sections at once
-- **Conflict detection** — Warns if remote page changed since pull
+---
 
 ## Architecture
 
 ```
-Cursor (Chat) → MCP Server (Node.js) → CLI (PHP) → ProcessWire API
+Cursor Chat
+    │
+    ▼
+Node.js MCP Server
+    │                    │
+    ▼ (local)            ▼ (remote)
+PHP CLI          HTTPS POST → pw-mcp-api.php
+    │                         │
+    ▼                         ▼
+Local PW DB            Remote PW DB
 ```
 
-## Components
-
-- **PwMcp/** — ProcessWire module with CLI interface and core sync engine
-- **PwMcpAdmin/** — ProcessWire admin module with hierarchical page tree interface
-- **mcp-server/** — Node.js/TypeScript MCP server for Cursor integration
+---
 
 ## Installation
 
-### 1. Download the Module
+### 1. Copy modules to ProcessWire
 
-Download or clone the repository:
+Copy **both** module folders to `site/modules/`:
 
-```bash
-# Option A: Clone with Git
-git clone https://github.com/PeterKnightDigital/ProcessWire-MCP.git
-
-# Option B: Download ZIP from GitHub and unzip
+```
+site/modules/PwMcp/        ← Core module (required)
+site/modules/PwMcpAdmin/   ← Admin UI (optional)
 ```
 
-### 2. Copy Modules to ProcessWire
+In ProcessWire admin: **Modules → Refresh → Install PwMcp**
 
-Copy **both** module folders into your ProcessWire site's `site/modules/` directory:
-
-```bash
-cp -r ProcessWire-MCP/PwMcp /path/to/your-site/site/modules/
-cp -r ProcessWire-MCP/PwMcpAdmin /path/to/your-site/site/modules/
-```
-
-Your modules folder should now contain:
-```
-site/modules/PwMcp/           ← Core module (required)
-site/modules/PwMcpAdmin/      ← Admin UI (optional, adds visual sync interface)
-```
-
-Then in ProcessWire admin: **Modules → Refresh → Install PwMcp** (and optionally **PwMcpAdmin**)
-
-### 3. Build the MCP Server
-
-The MCP server can remain in the downloaded/cloned location:
+### 2. Build the MCP server
 
 ```bash
 cd /path/to/ProcessWire-MCP/mcp-server
@@ -121,19 +53,19 @@ npm install
 npm run build
 ```
 
-### 4. Configure Cursor
+### 3. Configure Cursor
 
-Create a workspace config file at `your-site/.cursor/mcp.json` (recommended for multi-site setups):
+Create `.cursor/mcp.json` in your site root:
 
 ```json
 {
   "mcpServers": {
-    "ProcessWire MCP": {
+    "ProcessWire MCP: MySite.com (local)": {
       "command": "node",
       "args": ["/path/to/ProcessWire-MCP/mcp-server/dist/index.js"],
       "env": {
-        "PW_PATH": "/path/to/your-processwire-site",
-        "PW_MCP_CLI_PATH": "/path/to/your-processwire-site/site/modules/PwMcp/bin/pw-mcp.php",
+        "PW_PATH": "/path/to/your-site",
+        "PW_MCP_CLI_PATH": "/path/to/your-site/site/modules/PwMcp/bin/pw-mcp.php",
         "PHP_PATH": "/usr/bin/php"
       }
     }
@@ -141,576 +73,390 @@ Create a workspace config file at `your-site/.cursor/mcp.json` (recommended for 
 }
 ```
 
-**Tip:** For multi-site setups, name your server to identify the site (e.g., `"ProcessWire MCP: MySite.com"`).
-
-**Environment Variables:**
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `PW_PATH` | Yes | Path to your ProcessWire installation |
-| `PHP_PATH` | No | Path to PHP binary (defaults to `php`) |
-| `PW_MCP_CLI_PATH` | No | Custom path to CLI script (auto-detected if module is in standard location) |
-
-**Note:** If you're using MAMP, XAMPP, or another local server, you may need to specify `PHP_PATH`:
-
-```json
-"env": {
-  "PW_PATH": "/path/to/your-site",
-  "PHP_PATH": "/Applications/MAMP/bin/php/php8.3.28/bin/php"
-}
+**MAMP users:** set `PHP_PATH` to your MAMP PHP binary, e.g.:
+```
+/Applications/MAMP/bin/php/php8.3.30/bin/php
 ```
 
 ### 4. Reload Cursor
 
-Press `Cmd+Shift+P` → "Reload Window"
+`Cmd+Shift+P` → Reload Window
 
-## Multi-Site Configuration
+---
 
-If you work on multiple ProcessWire sites, you have two options for managing MCP configurations:
+## Remote Site Setup
 
-### Option 1: Workspace-Level Config (Recommended)
+Connect Cursor to any remote ProcessWire site over HTTPS.
 
-Instead of using the global `~/.cursor/mcp.json`, create a project-specific config file in each site's root directory:
+### Step 1 — Deploy the API endpoint
 
+Upload `PwMcp/api/pw-mcp-api.php` to your **remote site root** (same level as `index.php`).
+
+### Step 2 — Create an API key config
+
+On the remote server, create `site/config-pw-mcp.php`:
+
+```php
+<?php
+define('PW_MCP_API_KEY', 'your-secret-key-here');
+
+// Optional: restrict to your Mac's IP (find it with: curl ifconfig.me)
+// define('PW_MCP_ALLOWED_IPS', '1.2.3.4');
 ```
-/path/to/your-site/.cursor/mcp.json
-```
 
-Example for a site at `/Users/me/Sites/my-site`:
+Generate a strong key: `openssl rand -hex 32`
+
+### Step 3 — Upload the PwMcp module
+
+Upload the `PwMcp/` module folder to `site/modules/PwMcp/` on the remote server. Install it in the ProcessWire admin (Modules → Refresh → Install PwMcp).
+
+### Step 4 — Add remote server to mcp.json
 
 ```json
 {
   "mcpServers": {
-    "ProcessWire MCP": {
+    "ProcessWire MCP: MySite.com (local)": {
       "command": "node",
-      "args": ["/Users/me/Sites/my-site/site/modules/ProcessWire-MCP/mcp-server/dist/index.js"],
+      "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
-        "PW_PATH": "/Users/me/Sites/my-site",
-        "PW_MCP_CLI_PATH": "/Users/me/Sites/my-site/site/modules/ProcessWire-MCP/PwMcp/bin/pw-mcp.php",
-        "PHP_PATH": "/Applications/MAMP/bin/php/php8.3.28/bin/php"
-      }
-    }
-  }
-}
-```
-
-**How it works:** When you open a project in Cursor, it automatically uses the `.cursor/mcp.json` from that project's root directory. Each site carries its own configuration—no manual switching needed.
-
-### Option 2: Multiple Named Servers (Global Config)
-
-Alternatively, define multiple servers in your global `~/.cursor/mcp.json` with different names:
-
-```json
-{
-  "mcpServers": {
-    "ProcessWire MCP - Site A": {
-      "command": "node",
-      "args": ["/path/to/site-a/site/modules/ProcessWire-MCP/mcp-server/dist/index.js"],
-      "env": {
-        "PW_PATH": "/path/to/site-a",
-        "PW_MCP_CLI_PATH": "/path/to/site-a/site/modules/ProcessWire-MCP/PwMcp/bin/pw-mcp.php"
+        "PW_PATH": "/path/to/local-site",
+        "PW_MCP_CLI_PATH": "/path/to/local-site/site/modules/PwMcp/bin/pw-mcp.php",
+        "PHP_PATH": "/usr/bin/php"
       }
     },
-    "ProcessWire MCP - Site B": {
+    "ProcessWire MCP: MySite.com (production)": {
       "command": "node",
-      "args": ["/path/to/site-b/site/modules/ProcessWire-MCP/mcp-server/dist/index.js"],
+      "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
-        "PW_PATH": "/path/to/site-b",
-        "PW_MCP_CLI_PATH": "/path/to/site-b/site/modules/ProcessWire-MCP/PwMcp/bin/pw-mcp.php"
+        "PW_REMOTE_URL": "https://mysite.com/pw-mcp-api.php",
+        "PW_REMOTE_KEY": "your-secret-key-here",
+        "PW_SYNC_DIR": "/path/to/local-site/.pw-sync"
       }
     }
   }
 }
 ```
 
-Then toggle the appropriate server on/off in Cursor Settings → Tools & MCP based on which site you're working on.
+`PW_SYNC_DIR` points both servers at the same local `.pw-sync/` folder — this is how schema files and site configs are shared between your local and remote connections.
 
-**Important:** The global config at `~/.cursor/mcp.json` applies to all projects. If you're working on multiple sites simultaneously, use Option 1 to avoid accidentally querying the wrong site.
+### Step 5 — Test the connection
+
+After reloading Cursor, say: **"Check health on production"**
+
+You should see your remote site's PW version, template count, and field count.
+
+---
+
+## Named Site Configs
+
+For cross-site comparison, create named site configs in `.pw-sync/sites/`:
+
+**.pw-sync/sites/production.json**
+```json
+{
+  "name": "production",
+  "label": "MySite.com (production)",
+  "url": "https://mysite.com/pw-mcp-api.php",
+  "key": "your-secret-key-here"
+}
+```
+
+Add as many as you need (`staging.json`, `client-a.json`, etc.). These names are used with `pw_schema_compare`.
+
+---
+
+## Schema Sync Workflow
+
+Sync fields and templates between environments — like Prisma for ProcessWire.
+
+```
+.pw-sync/
+  schema/
+    fields.json     ← all field definitions
+    templates.json  ← all template definitions
+  sites/
+    production.json ← named site configs
+    staging.json
+```
+
+### Pull schema from any site
+
+```
+"Pull the schema from production"
+"Pull my local schema into files"
+```
+
+Exports all fields and templates to `.pw-sync/schema/fields.json` and `templates.json`. Works for both local and remote connections.
+
+### See what's different
+
+```
+"Show me the schema diff"
+"What's different between my local schema files and the connected site?"
+```
+
+### Compare two sites directly
+
+```
+"Compare local vs production"
+"What would change if I pushed my schema to production?"
+```
+
+Every difference is classified by severity:
+
+| Severity | Meaning | Example |
+|----------|---------|---------|
+| `safe` | Additive — new field/template | Field exists locally, not on production |
+| `warning` | Config change — low risk | Label or description changed |
+| `danger` | Risky — review required | Field type changed, maxlength reduced |
+| `info` | Exists on target only | Won't be affected by push |
+
+### Push schema to a site
+
+```
+"Push my schema to production — dry run first"
+"Apply my local schema to production"
+```
+
+Dry-run is always the default. Explicitly confirm to apply:
+
+```
+"Apply to production, skip dry run"
+```
+
+**Safety rules:** schema push never deletes fields or templates — only creates or updates. Type changes are blocked and must be done manually in the PW admin.
+
+---
+
+## Page Content Sync Workflow
+
+Pull pages to local YAML files, edit them, and push changes back.
+
+### Pull pages
+
+```
+"Pull the about page"
+"Pull all pages under /services/"
+"Pull the last 20 blog posts"
+```
+
+Pages are saved to `site/assets/pw-mcp/[path]/`:
+- `page.meta.json` — ID, template, revision hash
+- `page.yaml` — editable field content
+- `fields/*.html` — rich text fields
+- `matrix/*.html` — matrix item rich text
+
+### Check sync status
+
+```
+"Check sync status"
+"Which pages have local changes?"
+```
+
+Status values: `clean`, `localDirty`, `remoteChanged`, `conflict`, `notPulled`
+
+### Push changes
+
+```
+"Preview my changes to /about/"
+"Push my changes to /about/ — apply"
+"Push all local changes — dry run"
+```
+
+### Create new pages
+
+```
+"Create a new blog post called 'Our New Service'"
+"Scaffold a new page under /services/ using the service template"
+```
+
+Then publish when ready:
+
+```
+"Publish my new blog post — dry run first"
+"Publish it"
+```
+
+---
+
+## Cursor Chat Examples
+
+### Read operations (always safe)
+
+```
+"What templates does this site have?"
+"Show me all fields on the blog-post template"
+"Get the homepage"
+"Get page 1042"
+"Get the 10 most recent blog posts"
+"Search for pages containing 'sustainability'"
+"Show me all PDF files on the site"
+"Export the full site schema"
+```
+
+### Schema operations
+
+```
+"Pull the production schema"
+"Compare local vs production — what would change?"
+"List my configured sites"
+"Push my schema to staging — dry run"
+"Apply my schema changes to production"
+```
+
+### Content sync
+
+```
+"Pull the /about/ page for editing"
+"Pull all pages under /services/"
+"Check sync status"
+"Show me my local changes to /about/"
+"Push my changes to /about/"
+"Force push /about/ even though it changed remotely"
+"Reconcile my sync directory — fix any path drift"
+```
+
+### Creating content
+
+```
+"Create a new FAQ page under /support/"
+"Add an FAQ to the about page: Q: What do you do? A: We build websites."
+"Scaffold three new blog posts about AI trends"
+"Publish all my new pages as unpublished drafts"
+```
+
+---
+
+## MCP Tools Reference
+
+### Read tools
+
+| Tool | Description |
+|------|-------------|
+| `pw_health` | Check connection and get site info |
+| `pw_list_templates` | List all templates |
+| `pw_get_template` | Get template details and fields |
+| `pw_list_fields` | List all fields |
+| `pw_get_field` | Get field details and settings |
+| `pw_get_page` | Get page by ID or path |
+| `pw_query_pages` | Query pages by PW selector |
+| `pw_search` | Search page content |
+| `pw_search_files` | Search files by name or extension |
+| `pw_export_schema` | Export full site schema as JSON |
+
+### Schema sync tools
+
+| Tool | Description |
+|------|-------------|
+| `pw_schema_pull` | Pull schema from connected site to local files |
+| `pw_schema_push` | Push local schema files to connected site |
+| `pw_schema_diff` | Diff local schema files vs connected site |
+| `pw_schema_compare` | Compare two sites directly with collision classification |
+| `pw_list_sites` | List configured named sites |
+
+### Page sync tools
+
+| Tool | Description |
+|------|-------------|
+| `pw_page_pull` | Pull a single page to local YAML |
+| `pw_page_push` | Push local changes to a page |
+| `pw_pages_pull` | Pull multiple pages by selector or parent |
+| `pw_pages_push` | Push all local changes in a directory |
+| `pw_sync_status` | Check sync status of pulled pages |
+| `pw_sync_reconcile` | Fix path drift and detect orphans |
+
+### Create & publish tools
+
+| Tool | Description |
+|------|-------------|
+| `pw_page_new` | Scaffold a new page locally |
+| `pw_page_publish` | Publish a new page to ProcessWire |
+| `pw_pages_publish` | Bulk publish new pages |
+
+### Matrix / repeater tools
+
+| Tool | Description |
+|------|-------------|
+| `pw_matrix_info` | Get matrix field structure and types |
+| `pw_matrix_add` | Add a matrix item directly to a page |
+
+---
 
 ## CLI Usage
 
-You can also use the CLI directly for testing:
+All tools are also available directly via CLI for scripting and testing:
 
 ```bash
-# Set the ProcessWire path
 export PW_PATH=/path/to/your-site
 
 # Health check
 php site/modules/PwMcp/bin/pw-mcp.php health --pretty
 
-# List all templates
-php site/modules/PwMcp/bin/pw-mcp.php list-templates --pretty
-
-# Get a specific page
-php site/modules/PwMcp/bin/pw-mcp.php get-page /about/ --pretty
-
-# Get page with file metadata
-php site/modules/PwMcp/bin/pw-mcp.php get-page /about/ --pretty --include=files
-
-# Get page with field labels
-php site/modules/PwMcp/bin/pw-mcp.php get-page /about/ --pretty --include=labels
-
-# Query pages by selector
-php site/modules/PwMcp/bin/pw-mcp.php query-pages "template=blog-post, limit=10" --pretty
-
-# Export full schema
+# Schema
 php site/modules/PwMcp/bin/pw-mcp.php export-schema --pretty
-```
+php site/modules/PwMcp/bin/pw-mcp.php schema:apply .pw-sync/schema/combined.json --pretty
+php site/modules/PwMcp/bin/pw-mcp.php schema:apply .pw-sync/schema/combined.json --dry-run=0 --pretty
 
-## Available Commands
-
-| Command | Description |
-|---------|-------------|
-| `health` | Check connection and get site info |
-| `list-templates` | List all non-system templates |
-| `get-template [name]` | Get template details and fields |
-| `list-fields` | List all non-system fields |
-| `get-field [name]` | Get field details and usage |
-| `get-page [id\|path]` | Get page by ID or path with field values |
-| `query-pages [selector]` | Query pages using ProcessWire selectors |
-| `search [query]` | Search page content across text fields |
-| `search-files [query]` | Search files by name, extension, or description |
-| `export-schema` | Export complete site schema |
-| `page:pull [id\|path]` | Pull a page into local sync directory |
-| `page:push [path]` | Push local changes back to ProcessWire |
-| `pages:pull [selector]` | Bulk pull pages by selector, parent, or template |
-| `pages:push [directory]` | Bulk push all changes in a directory |
-| `sync:status [directory]` | Check sync status of pulled pages |
-| `sync:reconcile [directory]` | Fix path drift and detect orphans |
-| `page:new [template] [parent] [name]` | Create new page scaffold locally |
-| `page:publish [path]` | Publish new page to ProcessWire |
-| `pages:publish [directory]` | Bulk publish new pages |
-| `matrix:info [page] [field]` | Get matrix/repeater field structure |
-| `matrix:add [page] [field] [type]` | Add a new matrix item to a page |
-| `help` | Show available commands |
-
-## CLI Flags
-
-| Flag | Description |
-|------|-------------|
-| `--format=json\|yaml` | Output format (default: json) |
-| `--pretty` | Pretty-print JSON output |
-| `--include=usage` | Include which templates use each field |
-| `--include=files` | Include full file/image metadata (URL, size, dimensions) |
-| `--include=labels` | Include field labels and descriptions |
-| `--truncate=N` | Truncate text fields to N characters (get-page) |
-| `--summary` | Return field structure only, no content (get-page) |
-| `--dry-run=0` | Apply changes instead of preview (push/publish commands) |
-| `--force` | Force push even if remote has changed |
-| `--no-parent` | Exclude parent page when pulling by path |
-| `--limit=N` | Limit number of pages to pull |
-| `--title="Title"` | Page title (page:new) |
-| `--published` | Create page as published instead of unpublished |
-| `--content='{"field":"value"}'` | JSON content for matrix item (matrix:add) |
-
-## Example Output
-
-### Health Check
-
-```json
-{
-  "status": "ok",
-  "pwVersion": "3.0.229",
-  "siteName": "example.com",
-  "moduleLoaded": true,
-  "counts": {
-    "templates": 45,
-    "fields": 72,
-    "pages": 960
-  },
-  "writesEnabled": false
-}
-```
-
-### Page with RepeaterMatrix
-
-```json
-{
-  "id": 1042,
-  "path": "/blog/getting-started-with-processwire/",
-  "template": "blog-post",
-  "fields": {
-    "matrix": {
-      "_count": 5,
-      "_items": [
-        {
-          "_typeId": 1,
-          "_typeLabel": "Body",
-          "Body": "<h2>Content here...</h2>",
-          "Images": null
-        }
-      ]
-    }
-  }
-}
-```
-
-## Content Sync Workflow
-
-Pull pages to local YAML files, edit them, and push changes back to ProcessWire.
-
-### 1. Pull a Page
-
-```bash
-# Pull a single page
+# Pages
+php site/modules/PwMcp/bin/pw-mcp.php get-page /about/ --pretty
 php site/modules/PwMcp/bin/pw-mcp.php page:pull /about/ --pretty
+php site/modules/PwMcp/bin/pw-mcp.php page:push site/assets/pw-mcp/about --pretty
+php site/modules/PwMcp/bin/pw-mcp.php page:push site/assets/pw-mcp/about --dry-run=0 --pretty
 
-# Pull an entire section
-php site/modules/PwMcp/bin/pw-mcp.php pages:pull /services/ --pretty
-
-# Pull by template
-php site/modules/PwMcp/bin/pw-mcp.php pages:pull "template=blog-post" --limit=20 --pretty
-```
-
-Pages are saved to `site/assets/pw-mcp/[page-path]/`:
-- `page.meta.json` — ID, template, revision hash, content hash (includes `_readme` warning not to edit)
-- `page.yaml` — Editable field content with field label comments
-- `fields/*.html` — Page-level rich text fields (CKEditor/TinyMCE content)
-- `matrix/*.html` — Matrix item rich text fields
-
-**Field Labels:** The YAML includes comments with human-readable field labels:
-
-```yaml
-fields:
-  # Page Title
-  title: About Us
-  # SEO Title
-  seo_title: About Our Company
-  # Body Content
-  Body:
-    _file: fields/body.html
-```
-
-**Option Fields:** Select/radio fields show both the ID and label:
-
-```yaml
-  # Breakout Theme
-  breakouttheme:
-    id: 1
-    _label: Light Blue
-```
-
-Only the `id` is used on import — the `_label` is for readability.
-
-**Rich Text Extraction:** CKEditor and TinyMCE fields are automatically saved as separate HTML files to prevent YAML parsing issues. The YAML contains `_file` references pointing to these files:
-
-```yaml
-Body:
-  _file: fields/body.html
-
-matrix:
-  - _itemId: 1933
-    Body:
-      _file: "matrix/[1933]-matrix-body-body.html"
-```
-
-**Matrix HTML file naming:** `[itemId]-typename-fieldname.html`
-- `[1933]-matrix-body-body.html` — Body field in matrix item 1933 (type: matrix-body)
-- `[1936]-breakoutbox-body.html` — Body field in matrix item 1936 (type: breakoutbox)
-- `[1972]-faq-faq_a.html` — FAQ answer in nested repeater item 1972
-
-**Note:** The `page.meta.json` file includes a `contentHash` field that stores a combined MD5 hash of the YAML and all HTML files. This enables accurate detection of local changes.
-
-### 2. Edit Locally
-
-Edit the files in your editor or ask the AI to make changes:
-
-- **Rich text fields** — Edit the `.html` files directly in `fields/` or `matrix/`
-- **Simple fields** — Edit values in `page.yaml` (titles, options, page references, etc.)
-- **Don't edit** — `_file` references in YAML, `_itemId`, `_matrixType`, or `page.meta.json`
-
-### 3. Check Status
-
-```bash
+# Sync status
 php site/modules/PwMcp/bin/pw-mcp.php sync:status --pretty
-```
-
-Shows which pages have:
-- **clean** (In Sync) — No changes
-- **localDirty** (Local Changes) — Local edits pending
-- **remoteChanged** (Remote Changes) — ProcessWire page modified since export
-- **conflict** (Conflict) — Both local and remote changed
-- **notPulled** (Never Exported) — Page not yet synced
-
-### 4. Push Changes
-
-```bash
-# Preview changes (dry-run, default)
-php site/modules/PwMcp/bin/pw-mcp.php pages:push site/assets/pw-mcp/services --pretty
-
-# Apply changes
-php site/modules/PwMcp/bin/pw-mcp.php pages:push site/assets/pw-mcp/services --dry-run=0 --pretty
-```
-
-### Sync Notes
-
-- **Page references** in YAML show `id` (editable) and `_comment` (read-only display info)
-- **Repeater items** use `_itemId` for stable matching — don't change these
-- **Files/images** are read-only (file uploads planned for Phase 4)
-- **page.meta.json** includes a `_readme` field warning not to edit it manually
-
-### 5. Resolving Conflicts
-
-When a page has been modified both locally (your edits) and remotely (in ProcessWire), a **Conflict** status appears.
-
-**Via CLI:**
-```bash
-# Force push to overwrite ProcessWire with local changes
-php site/modules/PwMcp/bin/pw-mcp.php page:push site/assets/pw-mcp/services/web-design --dry-run=0 --force
-```
-
-**Via Admin UI:**
-1. Click **Import** on the conflicted page
-2. Review both sets of changes:
-   - **Changed in ProcessWire** — What will be overwritten
-   - **Your Local Changes** — What you want to import
-3. Choose:
-   - **Re-export from ProcessWire** — Discards local changes, gets latest remote version
-   - **Force Import (Overwrite)** — Applies local changes, discards remote changes
-
-**Best Practice:** If both changes are important, re-export first, manually reapply your edits, then import.
-
-### 6. Reconcile (Fix Drift)
-
-If pages are moved or deleted in ProcessWire, local folders can become stale:
-
-```bash
-# Preview what needs fixing
 php site/modules/PwMcp/bin/pw-mcp.php sync:reconcile --pretty
-
-# Apply fixes
-php site/modules/PwMcp/bin/pw-mcp.php sync:reconcile --dry-run=0 --pretty
 ```
 
-Detects:
-- **Path drift** — Page moved/renamed in ProcessWire, local folder needs updating
-- **Orphans** — Page deleted in ProcessWire, local folder is stale
+---
 
-## Creating New Pages
+## Environment Variables
 
-Create pages locally, edit them, then publish to ProcessWire.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PW_PATH` | For local | Path to ProcessWire installation root |
+| `PHP_PATH` | No | Path to PHP binary (default: `php`) |
+| `PW_MCP_CLI_PATH` | No | Custom path to CLI script (auto-detected) |
+| `PW_REMOTE_URL` | For remote | HTTPS URL to `pw-mcp-api.php` on remote site |
+| `PW_REMOTE_KEY` | For remote | API key matching `PW_MCP_API_KEY` on remote site |
+| `PW_SYNC_DIR` | Recommended | Path to `.pw-sync/` directory (shared between local + remote server configs) |
 
-### 1. Scaffold a New Page
+---
 
-```bash
-# Create a new page scaffold
-php site/modules/PwMcp/bin/pw-mcp.php page:new blog-post /news/posts/ my-new-article --title="My New Article" --pretty
-```
-
-This creates:
-- `site/assets/pw-mcp/news/posts/my-new-article/page.meta.json` (with `new: true`)
-- `site/assets/pw-mcp/news/posts/my-new-article/page.yaml` (with template fields)
-
-### 2. Edit the Content
-
-Edit the `page.yaml` file to fill in your content.
-
-### 3. Publish to ProcessWire
-
-```bash
-# Preview what will be created (dry-run, default)
-php site/modules/PwMcp/bin/pw-mcp.php page:publish site/assets/pw-mcp/news/posts/my-new-article --pretty
-
-# Actually create the page
-php site/modules/PwMcp/bin/pw-mcp.php page:publish site/assets/pw-mcp/news/posts/my-new-article --dry-run=0 --pretty
-
-# Create as published (default is unpublished)
-php site/modules/PwMcp/bin/pw-mcp.php page:publish site/assets/pw-mcp/news/posts/my-new-article --dry-run=0 --published --pretty
-```
-
-### 4. Bulk Publish
-
-```bash
-# Preview all new pages in a directory
-php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/assets/pw-mcp/news --pretty
-
-# Create all new pages
-php site/modules/PwMcp/bin/pw-mcp.php pages:publish site/assets/pw-mcp/news --dry-run=0 --pretty
-```
-
-## ProcessWire Admin Interface
-
-The module includes **PwMcpAdmin** — a full-featured admin interface in ProcessWire:
-
-- **Hierarchical page tree** with expand/collapse navigation
-- **Unpublished/hidden page support** — Pages styled like ProcessWire's native tree:
-  - Unpublished pages shown with strikethrough text
-  - Hidden pages shown with reduced opacity
-- **Status badges** color-coded by sync state:
-  - **In Sync** — No changes (green)
-  - **Local Changes** — Edits pending locally (yellow)
-  - **Remote Changes** — Page modified in ProcessWire since export (blue)
-  - **Conflict** — Both local and remote changed (red)
-  - **Never Exported** — Not yet synced (grey)
-- **Smart tree selection** — Checkbox-based selection with branch awareness
-- **Selection toolbar** — Shows count, hidden selections, and modified pages
-- **Filter dropdowns** — UIkit-styled filters with live counts per option
-- **Action icons** — Quick access to Export, Import, and View YAML
-- **Custom tooltips** — Helpful descriptions on hover
-- **Import preview controls** — Per-field refresh and exclude/include toggles
-
-### Tree Selection Behavior
-
-The checkbox system is context-aware based on expand/collapse state:
-
-| Scenario | What Happens |
-|----------|--------------|
-| **Check a collapsed parent** | Selects the parent and ALL descendants at every depth |
-| **Check an expanded parent** | Selects only that page (granular mode) |
-| **Uncheck one child** | Parent shows indeterminate (dash) state |
-| **Collapse with selections** | Chevron shows blue dot indicating hidden selections |
-
-**Header checkbox** mirrors tree state: unchecked (none), indeterminate (some), or checked (all).
-
-### Selection Toolbar
-
-Always visible above the table:
-
-- **Selection summary** — "12 pages selected (3 hidden), 5 modified"
-- **Export button** — Active when pages selected, fires immediately
-- **Import button** — Active only when modified pages selected, shows confirmation modal
-
-### Import Preview
-
-When importing changes, a preview lists which fields changed:
+## .pw-sync Directory Layout
 
 ```
-Body
-
-matrix→Body[1]
-
-matrix→breakouttheme[2]
-1 → 2
-
-matrix→faq[3]
-added
+.pw-sync/
+  schema/
+    fields.json      ← field definitions (written by schema:pull)
+    templates.json   ← template definitions (written by schema:pull)
+  sites/
+    example.json     ← template — copy and rename
+    production.json  ← named site config for pw_schema_compare
+    staging.json
 ```
 
-**Features:**
-- Fields are listed in page order with breadcrumb notation: `matrix→fieldname[item#]`
-- Option/number changes show: `1 → 2`
-- New values show: `added` or `added: 1, 2`
-- Cleared fields show: `cleared`
-- Complex content (HTML) shows just the field name — check the file for details
+---
 
-**Per-field controls** — Each field in the preview has action icons:
+## Security
 
-| Icon | Action | Description |
-|------|--------|-------------|
-| Refresh (↻) | Refresh contents | Re-reads the local file and updates the preview for that field |
-| Toggle (on/off) | Exclude/include | Toggles whether a field is included in the import |
+- The remote API (`pw-mcp-api.php`) uses `hash_equals()` for constant-time key comparison
+- All API keys are sent via HTTPS header (`X-PW-MCP-Key`)
+- `site/config-pw-mcp.php` is protected by ProcessWire's default `.htaccess` (blocks direct browser access to `site/`)
+- Optional IP allowlist via `PW_MCP_ALLOWED_IPS` in the config file
+- Schema push never deletes — only creates or updates
+- Field type changes are blocked to prevent data loss
 
-- **Excluded fields** are styled with a pink strikethrough, reduced opacity, and normal font weight — matching ProcessWire's uninstalled module appearance
-- A vertical divider separates the action icons from the expand/collapse chevron
-- Custom tooltips appear on hover, styled consistently with the sync screen
+---
 
-**Header actions** — The **Confirm Import** and **Cancel** buttons are cloned to the top-right of the page title for quick access, matching ProcessWire's native button placement on other admin screens.
+## Components
 
-### Import Confirmation Modal
+- **`PwMcp/`** — ProcessWire module with CLI interface, schema importer, and sync engine
+- **`PwMcpAdmin/`** — ProcessWire admin UI with hierarchical page tree and sync interface
+- **`PwMcp/api/pw-mcp-api.php`** — Remote API endpoint (deploy to remote site root)
+- **`mcp-server/`** — Node.js/TypeScript MCP server for Cursor integration
 
-Bulk imports show a confirmation dialog because they overwrite live CMS pages:
-- States exact count of pages to import
-- Notes any clean pages that will be skipped
-- Confirm button shows the action: "Import 5 pages"
-
-### UI Terminology
-
-**For clarity, the admin interface uses different terms than the CLI:**
-
-| CLI Command | UI Label | Description |
-|-------------|----------|-------------|
-| `page:pull` | **Export to File** | Download page content to local YAML |
-| `page:push` | **Import from File** | Upload local YAML changes to ProcessWire |
-| `pages:pull` | **Export** (bulk) | Download multiple pages |
-| `pages:push` | **Import** (bulk) | Upload multiple pages |
-
-This makes the direction of data flow clearer in the visual interface.
-
-## Direct Write Tools (Phase 4)
-
-Add content directly to pages from chat without the YAML sync workflow:
-
-### Add Matrix Items
-
-Add FAQs, body blocks, CTAs, and other matrix items directly:
-
-```bash
-# Preview what would be created (dry-run)
-php site/modules/PwMcp/bin/pw-mcp.php matrix:add /about/ matrix faq \
-  --content='{"question":"What services do you offer?","answer":"We offer web design, development..."}' \
-  --pretty
-
-# Create the item
-php site/modules/PwMcp/bin/pw-mcp.php matrix:add /about/ matrix faq \
-  --content='{"question":"What services do you offer?","answer":"We offer web design, development..."}' \
-  --dry-run=0 --pretty
-```
-
-**Via Cursor Chat:**
-
-> "Add these FAQs to the about page:
-> - Q: What services do you offer? A: We offer web design, development, and consulting...
-> - Q: How long does a typical project take? A: Project timelines vary based on scope..."
-
-The AI will use `pw_matrix_add` to create each FAQ item.
-
-### Available Matrix Tools
-
-| Tool | Description |
-|------|-------------|
-| `pw_matrix_info` | Discover matrix field structure (types, fields, nested repeaters) |
-| `pw_matrix_add` | Add a new matrix item with content |
-
-### Discovering Field Structure
-
-Before adding content, use `matrix:info` to understand a field's structure:
-
-```bash
-php site/modules/PwMcp/bin/pw-mcp.php matrix:info /about/ matrix --pretty
-```
-
-Returns:
-```json
-{
-  "field": { "name": "matrix", "type": "RepeaterMatrix" },
-  "matrixTypes": [
-    {
-      "id": 1,
-      "name": "body_block",
-      "label": "Body",
-      "fields": [{ "name": "Body", "type": "FieldtypeTextarea" }]
-    },
-    {
-      "id": 2,
-      "name": "faq_block",
-      "label": "FAQs",
-      "fields": [{ "name": "faq", "type": "FieldtypeRepeater" }],
-      "nestedRepeaters": {
-        "faq": {
-          "fields": [
-            { "name": "question", "type": "FieldtypeText" },
-            { "name": "answer", "type": "FieldtypeTextarea" }
-          ]
-        }
-      }
-    }
-  ]
-}
-```
-
-This tells you:
-- What matrix types are available
-- What fields each type has
-- Whether there are nested repeaters and their field structure
-
-More write tools coming soon: `pw_matrix_update`, `pw_matrix_delete`, `pw_matrix_reorder`
-
-## Coming Soon
-
-- File and image uploads
-- Page deletion with safety checks
-- Real-time sync notifications
-- Bulk matrix operations
+---
 
 ## License
 

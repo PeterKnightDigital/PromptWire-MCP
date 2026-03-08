@@ -29,6 +29,9 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { runPwCommand, formatToolResponse } from './cli/runner.js';
+import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
+import { compareSites, listSiteConfigs } from './schema/compare.js';
+import { pushPage, publishPage } from './pages/pusher.js';
 
 // ============================================================================
 // TOOL DEFINITIONS
@@ -210,13 +213,13 @@ const tools = [
   },
   {
     name: 'pw_page_push',
-    description: 'Push local changes from sync directory back to ProcessWire. Shows preview by default (dry-run). Set dryRun=false to apply changes.',
+    description: 'Push local changes from sync directory back to ProcessWire. Shows preview by default (dry-run). Set dryRun=false to apply. Use targets to control where changes are pushed: "local" (MAMP/dev), "remote" (production), or "both".',
     inputSchema: {
       type: 'object' as const,
       properties: {
         localPath: {
           type: 'string',
-          description: 'Path to local sync directory or page.yaml file (e.g., "site/syncs/about/why-choose-us")',
+          description: 'Path to local sync directory or page.yaml file (e.g., "site/assets/pw-mcp/services/mobile-website-design")',
         },
         dryRun: {
           type: 'boolean',
@@ -225,7 +228,18 @@ const tools = [
         },
         force: {
           type: 'boolean',
-          description: 'Force push even if remote page has changed since last pull (dangerous)',
+          description: 'Force push even if remote page has changed since last pull',
+          default: false,
+        },
+        targets: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Where to push: "local" (MAMP dev site), "remote" (production via HTTP API), or "both". Defaults to "local".',
+          default: 'local',
+        },
+        publish: {
+          type: 'boolean',
+          description: 'Also publish the page (remove unpublished status) when pushing. Useful for making a draft live.',
           default: false,
         },
       },
@@ -342,23 +356,29 @@ const tools = [
   },
   {
     name: 'pw_page_publish',
-    description: 'Publish a new page to ProcessWire. Only works for pages created with page:new (marked new: true).',
+    description: 'Publish a new page scaffold (created with pw_page_new) to ProcessWire. Use targets to control where: "local" (MAMP), "remote" (production), or "both".',
     inputSchema: {
       type: 'object' as const,
       properties: {
         localPath: {
           type: 'string',
-          description: 'Path to local page directory (e.g., "site/syncs/services/new-service")',
+          description: 'Path to local page directory or page.yaml file',
         },
         dryRun: {
           type: 'boolean',
-          description: 'If true (default), preview what would be created. Set to false to create.',
+          description: 'If true (default), preview what would be created without actually creating. Set to false to create.',
           default: true,
         },
         published: {
           type: 'boolean',
-          description: 'Create as published (default: false, creates as unpublished)',
+          description: 'Create as published (default: false, creates as unpublished draft)',
           default: false,
+        },
+        targets: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Where to create the page: "local" (MAMP dev), "remote" (production), or "both". Defaults to "local".',
+          default: 'local',
         },
       },
       required: ['localPath'],
@@ -385,6 +405,66 @@ const tools = [
           default: false,
         },
       },
+    },
+  },
+  // ========================================================================
+  // SCHEMA SYNC TOOLS (Phase 2)
+  // ========================================================================
+  {
+    name: 'pw_schema_pull',
+    description: 'Pull the full field and template schema from a ProcessWire site into local .pw-sync/schema/ files. Works for both local and remote sites. Run this first before schema:diff or schema:push.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'pw_schema_push',
+    description: 'Push local .pw-sync/schema/ files to a ProcessWire site — creating or updating fields and templates. Dry-run by default. Set dryRun=false to apply. Never deletes existing fields or templates.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), preview what would change without applying. Set to false to apply.',
+          default: true,
+        },
+      },
+    },
+  },
+  {
+    name: 'pw_schema_diff',
+    description: 'Compare local .pw-sync/schema/ files against the live ProcessWire site. Shows which fields/templates are local-only (would be added), live-only, changed, or in sync.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'pw_schema_compare',
+    description: 'Directly compare schemas between two sites with full collision classification. Each difference is marked safe/warning/danger. Use this to understand exactly what would change before pushing. Source defaults to current site, target defaults to "production".',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        source: {
+          type: 'string',
+          description: 'Source site: "current" (this connection), "local", or a named site from .pw-sync/sites/ (e.g. "production", "staging")',
+          default: 'current',
+        },
+        target: {
+          type: 'string',
+          description: 'Target site to compare against: "current", "local", or a named site (e.g. "production", "staging")',
+          default: 'production',
+        },
+      },
+    },
+  },
+  {
+    name: 'pw_list_sites',
+    description: 'List all configured remote sites from .pw-sync/sites/. These are the site names you can use with pw_schema_compare.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
     },
   },
   // ========================================================================
@@ -592,22 +672,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return formatToolResponse(result);
     }
 
-    // Push local changes to ProcessWire
+    // Push local changes to ProcessWire (local, remote, or both)
     case 'pw_page_push': {
-      const { localPath, dryRun, force } = args as {
+      const { localPath, dryRun, force, targets, publish } = args as {
         localPath: string;
         dryRun?: boolean;
         force?: boolean;
+        targets?: 'local' | 'remote' | 'both';
+        publish?: boolean;
       };
-      const cmdArgs = [localPath];
-      // dry-run is ON by default, only add flag when explicitly false
-      if (dryRun === false) {
-        cmdArgs.push('--dry-run=0');
-      }
-      if (force) {
-        cmdArgs.push('--force');
-      }
-      const result = await runPwCommand('page:push', cmdArgs);
+
+      const resolvedTargets = targets ?? (process.env.PW_REMOTE_URL ? 'remote' : 'local');
+
+      const result = await pushPage({
+        localPath,
+        dryRun:  dryRun !== false,
+        force:   force ?? false,
+        targets: resolvedTargets,
+        publish: publish ?? false,
+      });
       return formatToolResponse(result);
     }
 
@@ -686,21 +769,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return formatToolResponse(result);
     }
 
-    // Publish a new page to ProcessWire
+    // Publish a new page scaffold to local, remote, or both
     case 'pw_page_publish': {
-      const { localPath, dryRun, published } = args as {
+      const { localPath, dryRun, published, targets } = args as {
         localPath: string;
         dryRun?: boolean;
         published?: boolean;
+        targets?: 'local' | 'remote' | 'both';
       };
-      const cmdArgs = [localPath];
-      if (dryRun === false) {
-        cmdArgs.push('--dry-run=0');
-      }
-      if (published) {
-        cmdArgs.push('--published');
-      }
-      const result = await runPwCommand('page:publish', cmdArgs);
+      const resolvedTargets = targets ?? (process.env.PW_REMOTE_URL && !process.env.PW_PATH ? 'remote' : 'local');
+      const result = await publishPage({
+        localPath,
+        dryRun:    dryRun !== false,
+        published: published ?? false,
+        targets:   resolvedTargets,
+      });
       return formatToolResponse(result);
     }
 
@@ -720,6 +803,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const result = await runPwCommand('pages:publish', cmdArgs);
       return formatToolResponse(result);
+    }
+
+    // ========================================================================
+    // SCHEMA SYNC TOOLS (Phase 2)
+    // ========================================================================
+
+    case 'pw_schema_pull': {
+      const result = await schemaPull();
+      return formatToolResponse(result);
+    }
+
+    case 'pw_schema_push': {
+      const { dryRun } = args as { dryRun?: boolean };
+      const result = await schemaPush(dryRun !== false);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_schema_diff': {
+      const result = await schemaDiff();
+      return formatToolResponse(result);
+    }
+
+    case 'pw_schema_compare': {
+      const { source, target } = args as { source?: string; target?: string };
+      const result = await compareSites(source ?? 'current', target ?? 'production');
+      return formatToolResponse(result);
+    }
+
+    case 'pw_list_sites': {
+      const sites = await listSiteConfigs();
+      return formatToolResponse({
+        success: true,
+        data: {
+          sites,
+          configDir: process.env.PW_SYNC_DIR
+            ? `${process.env.PW_SYNC_DIR}/sites`
+            : `${process.env.PW_PATH}/.pw-sync/sites`,
+          hint: sites.length === 0
+            ? 'No sites configured yet. Create .pw-sync/sites/production.json from the example file.'
+            : `Use these names with pw_schema_compare: ${sites.join(', ')}`,
+        },
+      });
     }
 
     // ========================================================================

@@ -15,6 +15,7 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { runRemoteCommand } from '../remote/client.js';
 
 // Promisify execFile for async/await usage
 const execFileAsync = promisify(execFile);
@@ -80,6 +81,12 @@ export async function runPwCommand(
   command: string,
   args: string[] = []
 ): Promise<PwCommandResult> {
+  // If PW_REMOTE_URL is configured, route to the remote HTTP client instead of local PHP CLI.
+  // This allows the same MCP server binary to talk to remote PW sites over HTTPS.
+  if (process.env.PW_REMOTE_URL) {
+    return runRemoteCommand(command, args);
+  }
+
   // Get configuration from environment
   const phpPath = process.env.PHP_PATH || 'php';
   const pwPath = process.env.PW_PATH;
