@@ -359,7 +359,7 @@ Then publish when ready:
 | Tool | Description |
 |------|-------------|
 | `pw_page_pull` | Pull a single page to local YAML |
-| `pw_page_push` | Push local changes to a page |
+| `pw_page_push` | Push local changes — supports `targets` (local/remote/both) and `publish` flag |
 | `pw_pages_pull` | Pull multiple pages by selector or parent |
 | `pw_pages_push` | Push all local changes in a directory |
 | `pw_sync_status` | Check sync status of pulled pages |
@@ -370,7 +370,7 @@ Then publish when ready:
 | Tool | Description |
 |------|-------------|
 | `pw_page_new` | Scaffold a new page locally |
-| `pw_page_publish` | Publish a new page to ProcessWire |
+| `pw_page_publish` | Publish a scaffold — supports `targets` (local/remote/both) and `published` flag |
 | `pw_pages_publish` | Bulk publish new pages |
 
 ### Matrix / repeater tools
