@@ -32,6 +32,7 @@ import { runPwCommand, formatToolResponse } from './cli/runner.js';
 import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
 import { compareSites, listSiteConfigs } from './schema/compare.js';
 import { pushPage, publishPage } from './pages/pusher.js';
+import { validateRefs } from './pages/validator.js';
 
 // ============================================================================
 // TOOL DEFINITIONS
@@ -321,6 +322,27 @@ const tools = [
           type: 'boolean',
           description: 'If true (default), preview changes without applying. Set to false to fix issues.',
           default: true,
+        },
+      },
+    },
+  },
+  // ========================================================================
+  // PAGE REFERENCE VALIDATION
+  // ========================================================================
+  {
+    name: 'pw_validate_refs',
+    description: 'Scan all locally synced pages for page reference fields (_pageRef) and verify the referenced pages exist on the target environment. Catches broken links before a push. Returns ok/unpublished/missing status per reference.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        target: {
+          type: 'string',
+          enum: ['local', 'remote'],
+          description: 'Which environment to validate against: "local" (MAMP/dev) or "remote" (production). Defaults to "remote" if PW_REMOTE_URL is set, otherwise "local".',
+        },
+        syncRoot: {
+          type: 'string',
+          description: 'Path to the sync directory to scan. Defaults to site/assets/pw-mcp under PW_PATH.',
         },
       },
     },
@@ -747,6 +769,61 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       const result = await runPwCommand('sync:reconcile', cmdArgs);
       return formatToolResponse(result);
+    }
+
+    // ========================================================================
+    // PAGE REFERENCE VALIDATION
+    // ========================================================================
+
+    case 'pw_validate_refs': {
+      const { target, syncRoot } = args as { target?: 'local' | 'remote'; syncRoot?: string };
+      const result = await validateRefs({ target, syncRoot });
+      if (!result.success) return formatToolResponse(result);
+
+      const report = result.data as {
+        target: string;
+        scannedPages: number;
+        totalRefs: number;
+        ok: number;
+        unpublished: number;
+        missing: number;
+        issues: Array<{ sourcePage: string; fieldName: string; refPath: string; status: string; title?: string }>;
+        message?: string;
+      };
+
+      const lines: string[] = [
+        `## Page Reference Validation — ${report.target}`,
+        ``,
+        `Scanned **${report.scannedPages}** pages · **${report.totalRefs}** total refs`,
+        `✅ OK: ${report.ok}  ⚠️ Unpublished: ${report.unpublished}  ❌ Missing: ${report.missing}`,
+      ];
+
+      if (report.message) {
+        lines.push(``, report.message);
+      }
+
+      if (report.missing > 0) {
+        lines.push(``, `### ❌ Missing (push would blank these fields)`);
+        for (const i of report.issues.filter(x => x.status === 'missing')) {
+          lines.push(`- **${i.sourcePage}** → \`${i.fieldName}\` → \`${i.refPath}\``);
+        }
+      }
+
+      if (report.unpublished > 0) {
+        lines.push(``, `### ⚠️ Unpublished (ref valid but page is hidden)`);
+        for (const i of report.issues.filter(x => x.status === 'unpublished')) {
+          lines.push(`- **${i.sourcePage}** → \`${i.fieldName}\` → \`${i.refPath}\` (${i.title ?? ''})`);
+        }
+      }
+
+      if (report.missing === 0 && report.unpublished === 0) {
+        lines.push(``, `All page references are valid on **${report.target}**. Safe to push.`);
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: lines.join('\n') }],
+        isError: false,
+      };
     }
 
     // ========================================================================

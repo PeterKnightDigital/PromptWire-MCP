@@ -391,6 +391,43 @@ if ($command === 'page:create') {
 }
 
 // ============================================================================
+// SPECIAL CASE: page:exists — batch check whether page paths exist
+// Accepts { command, args: [], pageData: { paths: ["/path/", ...] } }
+// Returns { results: { "/path/": { exists, id, published } } }
+// ============================================================================
+
+if ($command === 'page:exists') {
+    $pageData = $request['pageData'] ?? null;
+    $paths    = is_array($pageData['paths'] ?? null) ? $pageData['paths'] : [];
+
+    if (empty($paths)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'page:exists requires pageData.paths array']);
+        exit;
+    }
+
+    $results = [];
+    foreach ($paths as $path) {
+        $path = (string) $path;
+        $page = $wire->pages->get($path);
+        if ($page && $page->id) {
+            $results[$path] = [
+                'exists'      => true,
+                'id'          => $page->id,
+                'title'       => (string) $page->title,
+                'published'   => !$page->isUnpublished(),
+                'template'    => (string) $page->template,
+            ];
+        } else {
+            $results[$path] = ['exists' => false];
+        }
+    }
+
+    echo json_encode(['results' => $results], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
 // SPECIAL CASE: page:update — apply field values to a remote page directly
 // Accepts { command, args: ["/path/"], pageData: { fields: { field: value } } }
 // ============================================================================

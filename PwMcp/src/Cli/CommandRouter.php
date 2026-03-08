@@ -232,6 +232,31 @@ class CommandRouter {
                 $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
                 return $this->matrixAdd($pageIdOrPath, $fieldName, $matrixType, $content, $dryRun);
             
+            // ================================================================
+            // SCHEMA IMPORT (Phase 2)
+            // ================================================================
+
+            case 'schema:apply':
+                $schemaFile = $positional[0] ?? null;
+                if (!$schemaFile) {
+                    return ['error' => 'Usage: schema:apply [path-to-schema.json] [--dry-run=0]'];
+                }
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                return $this->schemaApply($schemaFile, $dryRun);
+
+            // ================================================================
+            // PAGE REFERENCE VALIDATION
+            // ================================================================
+
+            case 'page:exists':
+                // Accepts a JSON-encoded paths array: --paths='["/foo/","/bar/"]'
+                $pathsJson = $flags['paths'] ?? null;
+                $paths = $pathsJson ? json_decode($pathsJson, true) : $positional;
+                if (empty($paths)) {
+                    return ['error' => 'Usage: page:exists --paths=\'["/path/",...]\''];
+                }
+                return $this->pageExists($paths);
+
             case 'help':
             default:
                 return $this->help();
@@ -1101,6 +1126,34 @@ class CommandRouter {
      * @param string|null $directory Directory to scan (default: site/syncs)
      * @return array Status report for all synced pages
      */
+
+    /**
+     * Check whether a list of page paths exist on this site.
+     * Used by pw_validate_refs to confirm page references are resolvable.
+     *
+     * @param array $paths Absolute PW page paths e.g. ["/services/foo/", "/about/"]
+     * @return array { results: { "/path/": { exists, id, title, published, template } } }
+     */
+    private function pageExists(array $paths): array {
+        $results = [];
+        foreach ($paths as $path) {
+            $path = (string) $path;
+            $page = $this->wire->pages->get($path);
+            if ($page && $page->id) {
+                $results[$path] = [
+                    'exists'    => true,
+                    'id'        => $page->id,
+                    'title'     => (string) $page->title,
+                    'published' => !$page->isUnpublished(),
+                    'template'  => (string) $page->template,
+                ];
+            } else {
+                $results[$path] = ['exists' => false];
+            }
+        }
+        return ['results' => $results];
+    }
+
     private function syncStatus(?string $directory = null): array {
         // Load sync manager
         require_once(__DIR__ . '/../Sync/SyncManager.php');
@@ -1580,6 +1633,44 @@ class CommandRouter {
     }
     
     /**
+     * Apply a schema JSON file to this ProcessWire installation
+     *
+     * Reads the schema from a JSON file (written by the Node.js MCP tool)
+     * and applies it — creating or updating fields and templates.
+     *
+     * @param string $schemaFile Absolute or relative path to schema JSON file
+     * @param bool   $dryRun     Preview without applying (default: true)
+     * @return array Import results per field and template
+     */
+    private function schemaApply(string $schemaFile, bool $dryRun = true): array
+    {
+        // Resolve relative paths against PW root
+        if (!file_exists($schemaFile)) {
+            $pwPath = rtrim($this->wire->config->paths->root, '/');
+            $resolved = $pwPath . '/' . ltrim($schemaFile, '/');
+            if (file_exists($resolved)) {
+                $schemaFile = $resolved;
+            } else {
+                return ['error' => "Schema file not found: $schemaFile"];
+            }
+        }
+
+        $json = file_get_contents($schemaFile);
+        if (!$json) {
+            return ['error' => "Could not read schema file: $schemaFile"];
+        }
+
+        $schema = json_decode($json, true);
+        if (!is_array($schema)) {
+            return ['error' => 'Invalid JSON in schema file'];
+        }
+
+        require_once(__DIR__ . '/../Schema/SchemaImporter.php');
+        $importer = new \PwMcp\Schema\SchemaImporter($this->wire);
+        return $importer->apply($schema, $dryRun);
+    }
+
+    /**
      * Export complete site schema
      * 
      * Exports all fields and templates as a structured schema.
@@ -1631,6 +1722,7 @@ class CommandRouter {
                 'pages:publish [directory]' => 'Bulk publish new pages (--dry-run=0 to create)',
                 'matrix:info [page] [field]' => 'Get matrix/repeater field structure and types',
                 'matrix:add [page] [field] [type]' => 'Add a new matrix item (--dry-run=0 to create)',
+                'schema:apply [file.json]' => 'Apply a schema JSON file to ProcessWire (--dry-run=0 to apply)',
                 'help' => 'Show this help',
             ],
             'flags' => [
