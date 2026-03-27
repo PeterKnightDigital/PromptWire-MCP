@@ -67,6 +67,8 @@ if (!defined('PW_MCP_API_KEY')) {
 // ============================================================================
 
 header('Content-Type: application/json');
+header('Cache-Control: no-store, no-cache, must-revalidate');
+header('Pragma: no-cache');
 header('X-PW-MCP-Version: 1.0');
 
 // Suppress PHP errors from leaking into JSON output

@@ -17,7 +17,7 @@
  * @package     PwMcp
  * @author      Peter Knight
  * @license     MIT
- * @version     1.3.0
+ * @version     1.3.1
  * @link        https://github.com/peterknight/pw-mcp
  * 
  * @see         /bin/pw-mcp.php          CLI entrypoint
@@ -43,7 +43,7 @@ class PwMcp extends WireData implements Module {
         return [
             'title' => 'PW-MCP',
             'summary' => 'ProcessWire ↔ Cursor MCP Bridge for AI-assisted development',
-            'version' => '1.3.0',
+            'version' => '1.3.1',
             'author' => 'Peter Knight',
             'href' => 'https://github.com/peterknight/pw-mcp',
             'singular' => true,

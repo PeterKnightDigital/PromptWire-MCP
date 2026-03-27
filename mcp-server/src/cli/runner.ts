@@ -81,15 +81,18 @@ export async function runPwCommand(
   command: string,
   args: string[] = []
 ): Promise<PwCommandResult> {
-  // If PW_REMOTE_URL is configured, route to the remote HTTP client instead of local PHP CLI.
-  // This allows the same MCP server binary to talk to remote PW sites over HTTPS.
-  if (process.env.PW_REMOTE_URL) {
-    return runRemoteCommand(command, args);
-  }
-
   // Get configuration from environment
   const phpPath = process.env.PHP_PATH || 'php';
   const pwPath = process.env.PW_PATH;
+
+  // Routing logic:
+  // - If PW_PATH is set, always use local PHP CLI (even if PW_REMOTE_URL is also set).
+  //   This prevents the remote URL from silently hijacking local page queries.
+  //   Tools that need the remote endpoint (e.g. file-sync) call runRemoteCommand() directly.
+  // - If only PW_REMOTE_URL is set (no PW_PATH), route everything to the remote API.
+  if (!pwPath && process.env.PW_REMOTE_URL) {
+    return runRemoteCommand(command, args);
+  }
 
   // Validate required environment variables
   if (!pwPath) {
