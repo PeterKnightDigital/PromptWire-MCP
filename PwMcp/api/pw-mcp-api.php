@@ -73,6 +73,10 @@ header('X-PW-MCP-Version: 1.0');
 error_reporting(0);
 ini_set('display_errors', '0');
 
+// Increase limits for file upload operations (base64 payloads can be large)
+ini_set('post_max_size', '64M');
+ini_set('memory_limit', '256M');
+
 // ============================================================================
 // SECURITY: METHOD CHECK
 // ============================================================================
@@ -510,6 +514,271 @@ if ($command === 'page:update') {
         'changeCount' => count($changes),
         'published'   => $publish ? true : !$page->isUnpublished(),
         'pushedAt'    => $dryRun ? null : date('c'),
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
+// SPECIAL CASE: file:inventory — list files on a page's file/image fields
+// Returns { fields: { fieldName: { type, files: [{ filename, size, md5, ... }] } } }
+// ============================================================================
+
+if ($command === 'file:inventory') {
+    $pagePath = $flags['_positional'][0] ?? null;
+    if (!$pagePath) {
+        http_response_code(400);
+        echo json_encode(['error' => 'file:inventory requires a page path']);
+        exit;
+    }
+
+    try {
+        $page = $wire->pages->get($pagePath);
+        if (!$page || !$page->id) {
+            http_response_code(404);
+            echo json_encode(['error' => "Page not found: $pagePath"]);
+            exit;
+        }
+
+        $inventory = [];
+        foreach ($page->template->fieldgroup as $field) {
+            $typeName = $field->type->className();
+            $isFile  = strpos($typeName, 'FieldtypeFile') !== false;
+            $isImage = strpos($typeName, 'FieldtypeImage') !== false || strpos($typeName, 'FieldtypeCroppable') !== false;
+            if (!$isFile && !$isImage) continue;
+
+            $fieldName = $field->name;
+            $value = $page->getUnformatted($fieldName);
+            if (!$value || !($value instanceof \ProcessWire\Pagefiles)) continue;
+
+            $files = [];
+            foreach ($value as $f) {
+                $filePath = $f->filename;
+                if (!is_file($filePath)) continue;
+
+                // PW only returns originals when iterating Pageimages/Pagefiles;
+                // variations are internal and not yielded by the iterator.
+                $entry = [
+                    'filename'    => $f->name,
+                    'size'        => (int) filesize($filePath),
+                    'md5'         => md5_file($filePath),
+                    'description' => $f->description ?: null,
+                ];
+                if ($f instanceof \ProcessWire\Pageimage) {
+                    $entry['width']  = (int) $f->width;
+                    $entry['height'] = (int) $f->height;
+                }
+                $files[] = $entry;
+            }
+
+            $inventory[$fieldName] = [
+                'type'  => $isImage ? 'image' : 'file',
+                'count' => count($files),
+                'files' => $files,
+            ];
+        }
+
+        echo json_encode([
+            'success'   => true,
+            'pageId'    => $page->id,
+            'pagePath'  => $page->path,
+            'fields'    => $inventory,
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        http_response_code(500);
+        echo json_encode([
+            'error' => 'file:inventory failed: ' . $e->getMessage(),
+            'file'  => basename($e->getFile()),
+            'line'  => $e->getLine(),
+        ]);
+    }
+    exit;
+}
+
+// ============================================================================
+// SPECIAL CASE: file:upload — add a file to a page's file/image field
+// Accepts { command, args: ["/path/"], fileData: { fieldName, filename, data (base64), description? } }
+// ============================================================================
+
+if ($command === 'file:upload') {
+    $pagePath = $flags['_positional'][0] ?? null;
+    $fileData = $request['fileData'] ?? null;
+
+    if (!$pagePath || !is_array($fileData)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'file:upload requires a page path and fileData object']);
+        exit;
+    }
+
+    $fieldName = $fileData['fieldName'] ?? null;
+    $filename  = $fileData['filename']  ?? null;
+    $base64    = $fileData['data']       ?? null;
+    $desc      = $fileData['description'] ?? null;
+    $dryRun    = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+
+    if (!$fieldName || !$filename || !$base64) {
+        http_response_code(400);
+        echo json_encode(['error' => 'fileData requires fieldName, filename, and data (base64)']);
+        exit;
+    }
+
+    $page = $wire->pages->get($pagePath);
+    if (!$page || !$page->id) {
+        http_response_code(404);
+        echo json_encode(['error' => "Page not found: $pagePath"]);
+        exit;
+    }
+
+    $field = $wire->fields->get($fieldName);
+    if (!$field) {
+        http_response_code(400);
+        echo json_encode(['error' => "Field not found: $fieldName"]);
+        exit;
+    }
+
+    if ($dryRun) {
+        $decoded = base64_decode($base64, true);
+        echo json_encode([
+            'success'   => true,
+            'dryRun'    => true,
+            'pagePath'  => $page->path,
+            'fieldName' => $fieldName,
+            'filename'  => $filename,
+            'size'      => $decoded !== false ? strlen($decoded) : 0,
+            'action'    => 'would_upload',
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $decoded = base64_decode($base64, true);
+    if ($decoded === false) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Invalid base64 data']);
+        exit;
+    }
+
+    $tmpDir  = sys_get_temp_dir() . '/pw-mcp-uploads';
+    if (!is_dir($tmpDir)) mkdir($tmpDir, 0755, true);
+    $tmpFile = $tmpDir . '/' . $filename;
+    file_put_contents($tmpFile, $decoded);
+
+    register_shutdown_function(function() use ($tmpFile) {
+        if (file_exists($tmpFile)) @unlink($tmpFile);
+    });
+
+    try {
+        $page->of(false);
+        $fieldValue = $page->get($fieldName);
+
+        if (!($fieldValue instanceof \ProcessWire\Pagefiles)) {
+            http_response_code(400);
+            echo json_encode(['error' => "Field $fieldName is not a file/image field"]);
+            exit;
+        }
+
+        // Remove existing file with same name to allow replacement
+        $existing = $fieldValue->get("name=$filename");
+        if ($existing) $fieldValue->delete($existing);
+
+        $fieldValue->add($tmpFile);
+        if ($desc !== null) {
+            $added = $fieldValue->get("name=$filename");
+            if ($added) $added->description = $desc;
+        }
+        $page->save($fieldName);
+
+        echo json_encode([
+            'success'   => true,
+            'dryRun'    => false,
+            'pagePath'  => $page->path,
+            'fieldName' => $fieldName,
+            'filename'  => $filename,
+            'size'      => strlen($decoded),
+            'action'    => 'uploaded',
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        http_response_code(500);
+        echo json_encode([
+            'error' => 'file:upload failed: ' . $e->getMessage(),
+            'file'  => basename($e->getFile()),
+            'line'  => $e->getLine(),
+        ]);
+    }
+    exit;
+}
+
+// ============================================================================
+// SPECIAL CASE: file:delete — remove a file from a page's file/image field
+// Accepts { command, args: ["/path/"], fileData: { fieldName, filename } }
+// ============================================================================
+
+if ($command === 'file:delete') {
+    $pagePath = $flags['_positional'][0] ?? null;
+    $fileData = $request['fileData'] ?? null;
+
+    if (!$pagePath || !is_array($fileData)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'file:delete requires a page path and fileData object']);
+        exit;
+    }
+
+    $fieldName = $fileData['fieldName'] ?? null;
+    $filename  = $fileData['filename']  ?? null;
+    $dryRun    = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+
+    if (!$fieldName || !$filename) {
+        http_response_code(400);
+        echo json_encode(['error' => 'fileData requires fieldName and filename']);
+        exit;
+    }
+
+    $page = $wire->pages->get($pagePath);
+    if (!$page || !$page->id) {
+        http_response_code(404);
+        echo json_encode(['error' => "Page not found: $pagePath"]);
+        exit;
+    }
+
+    $fieldValue = $page->getUnformatted($fieldName);
+    if (!$fieldValue || !($fieldValue instanceof \ProcessWire\Pagefiles)) {
+        http_response_code(400);
+        echo json_encode(['error' => "Field $fieldName is not a file/image field"]);
+        exit;
+    }
+
+    $existing = $fieldValue->get("name=$filename");
+    if (!$existing) {
+        echo json_encode([
+            'success'  => true,
+            'dryRun'   => $dryRun,
+            'action'   => 'not_found',
+            'message'  => "File $filename does not exist on remote — nothing to delete",
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    if ($dryRun) {
+        echo json_encode([
+            'success'   => true,
+            'dryRun'    => true,
+            'pagePath'  => $page->path,
+            'fieldName' => $fieldName,
+            'filename'  => $filename,
+            'action'    => 'would_delete',
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $page->of(false);
+    $fieldValue->delete($existing);
+    $page->save($fieldName);
+
+    echo json_encode([
+        'success'   => true,
+        'dryRun'    => false,
+        'pagePath'  => $page->path,
+        'fieldName' => $fieldName,
+        'filename'  => $filename,
+        'action'    => 'deleted',
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
 }

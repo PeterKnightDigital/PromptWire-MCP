@@ -27,6 +27,7 @@ interface RemoteRequest {
   args: string[];
   schemaData?: Record<string, unknown>;
   pageData?: Record<string, unknown>;
+  fileData?: Record<string, unknown>;
 }
 
 interface RemoteResponse {
@@ -59,7 +60,8 @@ export async function runRemoteCommand(
   schemaData?: Record<string, unknown>,
   overrideUrl?: string,
   overrideKey?: string,
-  pageData?: Record<string, unknown>
+  pageData?: Record<string, unknown>,
+  fileData?: Record<string, unknown>
 ): Promise<PwCommandResult> {
   const remoteUrl = overrideUrl ?? process.env.PW_REMOTE_URL!;
   const remoteKey = overrideKey ?? process.env.PW_REMOTE_KEY ?? '';
@@ -75,6 +77,7 @@ export async function runRemoteCommand(
   const payload: RemoteRequest = { command, args };
   if (schemaData) payload.schemaData = schemaData;
   if (pageData)   payload.pageData   = pageData;
+  if (fileData)   payload.fileData   = fileData;
 
   try {
     const response = await fetch(remoteUrl, {
@@ -85,7 +88,7 @@ export async function runRemoteCommand(
         'X-PW-MCP-Client': 'cursor-mcp/1.0',
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60_000), // 60s — remote sites can be slower than local
+      signal: AbortSignal.timeout(command.startsWith('file:') ? 120_000 : 60_000),
     });
 
     // Handle HTTP error codes with helpful messages
