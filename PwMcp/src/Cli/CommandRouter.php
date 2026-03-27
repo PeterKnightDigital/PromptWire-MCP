@@ -194,6 +194,14 @@ class CommandRouter {
                 $title = $flags['title'] ?? null;
                 return $this->pageNew($template, $parentPath, $pageName, $title);
             
+            case 'page:init':
+                $localPath = $positional[0] ?? null;
+                if (!$localPath) {
+                    return ['error' => 'Local path to page sync directory required'];
+                }
+                $template = $flags['template'] ?? null;
+                return $this->pageInit($localPath, $template);
+            
             case 'page:publish':
                 $localPath = $positional[0] ?? null;
                 if (!$localPath) {
@@ -1200,6 +1208,16 @@ class CommandRouter {
         
         $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
         return $syncManager->createPageScaffold($template, $parentPath, $pageName, $title);
+    }
+    
+    /**
+     * Initialise or repair page.meta.json for a sync directory
+     */
+    private function pageInit(string $localPath, ?string $template = null): array {
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+        
+        $syncManager = new \PwMcp\Sync\SyncManager($this->wire);
+        return $syncManager->initPageMeta($localPath, $template);
     }
     
     /**

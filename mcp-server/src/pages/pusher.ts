@@ -269,20 +269,53 @@ export async function publishPage(opts: PublishPageOptions): Promise<PwCommandRe
   const metaPath = yamlPath.replace('page.yaml', 'page.meta.json');
 
   if (!existsSync(yamlPath)) return { success: false, error: `page.yaml not found: ${yamlPath}` };
-  if (!existsSync(metaPath)) return { success: false, error: `page.meta.json not found: ${metaPath}` };
 
   let meta: PageMeta & { new?: boolean; template?: string; parentPath?: string; pageName?: string; parentId?: number };
-  try {
-    meta = JSON.parse(await readFile(metaPath, 'utf-8'));
-  } catch {
-    return { success: false, error: 'Failed to read page.meta.json' };
-  }
 
-  if (!meta.new) {
-    return {
-      success: false,
-      error: 'This page already exists in ProcessWire. Use pw_page_push to update it instead.',
-    };
+  if (existsSync(metaPath)) {
+    try {
+      meta = JSON.parse(await readFile(metaPath, 'utf-8'));
+    } catch {
+      return { success: false, error: 'Failed to read page.meta.json' };
+    }
+
+    if (!meta.new) {
+      return {
+        success: false,
+        error: 'This page already exists in ProcessWire. Use pw_page_push to update it instead.',
+      };
+    }
+  } else {
+    // Auto-generate meta from page.yaml + directory structure
+    let parsed: { fields?: Record<string, unknown> };
+    try {
+      parsed = yamlLoad(await readFile(yamlPath, 'utf-8')) as { fields?: Record<string, unknown> };
+    } catch {
+      return { success: false, error: 'Failed to parse page.yaml for auto-generated meta' };
+    }
+
+    // Derive parentPath and pageName from directory structure relative to pw-mcp sync root
+    const dirPath = path.dirname(yamlPath);
+    const pageName = path.basename(dirPath);
+    const parentDir = path.dirname(dirPath);
+
+    // Walk up to find the pw-mcp sync root marker (e.g. site/assets/pw-mcp)
+    const syncMarker = 'site/assets/pw-mcp';
+    const idx = dirPath.indexOf(syncMarker);
+    let parentPath = '/';
+    if (idx !== -1) {
+      const relPath = parentDir.substring(idx + syncMarker.length);
+      parentPath = relPath ? relPath + '/' : '/';
+    }
+
+    meta = {
+      new: true,
+      canonicalPath: parentPath + pageName + '/',
+      pageId: 0,
+      template: '',
+      parentPath,
+      pageName,
+    } as PageMeta & { new: boolean; template: string; parentPath: string; pageName: string };
   }
 
   const shouldPushLocal  = targets === 'local'  || targets === 'both';

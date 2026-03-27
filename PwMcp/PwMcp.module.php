@@ -7,17 +7,17 @@
  * exposing ProcessWire's structure and content to Cursor IDE via the
  * Model Context Protocol (MCP).
  * 
- * Phase 1 provides read-only operations for querying and understanding
- * the site structure, templates, fields, and content.
+ * Provides full read/write access: site inspection, content sync (pull/push),
+ * file sync, schema sync, page management, and cross-environment deployment.
  * 
- * The module itself is minimal - most functionality is provided via
+ * The module itself is minimal — most functionality is provided via
  * the CLI interface (bin/pw-mcp.php) which can be invoked by the
  * MCP server running in Node.js.
  * 
  * @package     PwMcp
  * @author      Peter Knight
  * @license     MIT
- * @version     0.1.0
+ * @version     1.3.0
  * @link        https://github.com/peterknight/pw-mcp
  * 
  * @see         /bin/pw-mcp.php          CLI entrypoint
@@ -43,7 +43,7 @@ class PwMcp extends WireData implements Module {
         return [
             'title' => 'PW-MCP',
             'summary' => 'ProcessWire ↔ Cursor MCP Bridge for AI-assisted development',
-            'version' => '1.1.0',
+            'version' => '1.3.0',
             'author' => 'Peter Knight',
             'href' => 'https://github.com/peterknight/pw-mcp',
             'singular' => true,

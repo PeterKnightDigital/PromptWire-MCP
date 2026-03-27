@@ -341,19 +341,22 @@ class SyncManager {
         $jsonPath = $localDir . '/page.json';
         
         if (!file_exists($metaPath)) {
-            return ['error' => "Meta file not found: $metaPath"];
+            $relMeta = $this->getRelativePath($metaPath);
+            return ['error' => "page.meta.json not found at: $relMeta — pull the page first, or use pw_page_init to generate it"];
         }
         
         // Determine content file
         $contentPath = file_exists($yamlPath) ? $yamlPath : $jsonPath;
         if (!file_exists($contentPath)) {
-            return ['error' => "Content file not found (page.yaml or page.json)"];
+            $relDir = $this->getRelativePath($localDir);
+            return ['error' => "No content file (page.yaml or page.json) found in: $relDir"];
         }
         
         // Read meta file
         $meta = json_decode(file_get_contents($metaPath), true);
         if (!$meta || !isset($meta['pageId'])) {
-            return ['error' => "Invalid meta file"];
+            $relMeta = $this->getRelativePath($metaPath);
+            return ['error' => "Invalid meta file at: $relMeta — missing pageId. Use pw_page_init to regenerate it."];
         }
         
         // Read content file
@@ -2288,13 +2291,20 @@ class SyncManager {
             return ['error' => "Page already exists: $existingPath"];
         }
         
-        // Create local directory
+        // Create local directory (or reuse existing)
         $localPath = $this->syncRoot . rtrim($parentPath, '/') . '/' . $pageName;
-        if (is_dir($localPath)) {
-            return ['error' => "Local directory already exists: $localPath"];
-        }
+        $dirExisted = is_dir($localPath);
         
-        mkdir($localPath, 0755, true);
+        if ($dirExisted) {
+            // Directory exists — check if meta already present
+            $metaPath = $localPath . '/page.meta.json';
+            if (file_exists($metaPath)) {
+                return ['error' => "Page scaffold already exists (directory and page.meta.json both present). Use pw_page_publish to create the page, or pw_page_push to update it."];
+            }
+            // Directory exists but meta is missing — create only the missing scaffold files
+        } else {
+            mkdir($localPath, 0755, true);
+        }
         
         // Generate title if not provided
         $title = $title ?: ucwords(str_replace('-', ' ', $pageName));
@@ -2316,16 +2326,23 @@ class SyncManager {
         $metaPath = $localPath . '/page.meta.json';
         file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         
-        // Create content file with empty fields based on template
-        $fields = $this->getTemplateFieldDefaults($templateObj);
-        $fields['title'] = $title;
-        
-        $content = ['fields' => $fields];
-        $fieldLabels = $this->getFieldLabelsForTemplate($templateObj);
+        // Create content file only if it doesn't already exist
         $contentPath = $localPath . '/page.yaml';
-        file_put_contents($contentPath, $this->arrayToYamlWithLabels($content, $fieldLabels));
+        $contentExisted = file_exists($contentPath);
+        if (!$contentExisted) {
+            $fields = $this->getTemplateFieldDefaults($templateObj);
+            $fields['title'] = $title;
+            
+            $content = ['fields' => $fields];
+            $fieldLabels = $this->getFieldLabelsForTemplate($templateObj);
+            file_put_contents($contentPath, $this->arrayToYamlWithLabels($content, $fieldLabels));
+        } else {
+            // Read existing content to count fields
+            $existingContent = $this->readContentFile($contentPath);
+            $fields = $existingContent['fields'] ?? [];
+        }
         
-        return [
+        $result = [
             'success' => true,
             'new' => true,
             'template' => $template,
@@ -2338,6 +2355,157 @@ class SyncManager {
                 'content' => $this->getRelativePath($contentPath),
             ],
             'fieldCount' => count($fields),
+        ];
+        
+        if ($dirExisted) {
+            $result['note'] = 'Directory already existed — created missing page.meta.json without overwriting existing content files.';
+            $result['contentPreserved'] = $contentExisted;
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Initialise (or repair) page.meta.json for a sync directory.
+     *
+     * If the page already exists in ProcessWire (matched by path), a full
+     * "pulled" meta is written so pw_page_push works immediately.
+     * If the page doesn't exist yet, a "new" scaffold meta is written so
+     * pw_page_publish can create it.
+     *
+     * @param string $localPath Path to local sync directory
+     * @param string|null $template Template name (required only for new pages when parent allows multiple child templates)
+     * @return array Result
+     */
+    public function initPageMeta(string $localPath, ?string $template = null): array {
+        if (str_ends_with($localPath, '.yaml') || str_ends_with($localPath, '.json')) {
+            $localPath = dirname($localPath);
+        } else {
+            $localPath = rtrim($localPath, '/');
+        }
+        
+        if (strpos($localPath, '/') !== 0) {
+            $localPath = $this->wire->config->paths->root . $localPath;
+        }
+        
+        if (!is_dir($localPath)) {
+            return ['error' => "Directory not found: $localPath"];
+        }
+        
+        $metaPath = $localPath . '/page.meta.json';
+        $yamlPath = $localPath . '/page.yaml';
+        
+        if (file_exists($metaPath)) {
+            $existingMeta = json_decode(file_get_contents($metaPath), true);
+            if ($existingMeta && !empty($existingMeta['pageId'])) {
+                return ['error' => "page.meta.json already exists and references page ID {$existingMeta['pageId']}. Delete it first to re-initialise."];
+            }
+        }
+        
+        // Derive page path from sync root
+        $pageName = basename($localPath);
+        $parentDir = dirname($localPath);
+        $syncRootResolved = realpath($this->syncRoot) ?: $this->syncRoot;
+        $parentDirResolved = realpath($parentDir) ?: $parentDir;
+        
+        if (str_starts_with($parentDirResolved, $syncRootResolved)) {
+            $parentPath = substr($parentDirResolved, strlen($syncRootResolved));
+            $parentPath = $parentPath ? $parentPath . '/' : '/';
+        } else {
+            return ['error' => "Directory is not inside the sync root ($syncRootResolved)"];
+        }
+        
+        $fullPagePath = rtrim($parentPath, '/') . '/' . $pageName . '/';
+        
+        // Check if page already exists in PW
+        $existingPage = $this->wire->pages->get($fullPagePath);
+        
+        if ($existingPage && $existingPage->id) {
+            // Page exists — write a "pulled" meta so push works
+            $currentFields = $this->extractPageFields($existingPage);
+            $revisionHash = $this->generateRevisionHash($currentFields);
+            
+            $meta = [
+                '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
+                'pageId' => $existingPage->id,
+                'new' => false,
+                'canonicalPath' => $existingPage->path,
+                'template' => $existingPage->template->name,
+                'parentId' => $existingPage->parent->id,
+                'parentPath' => $existingPage->parent->path,
+                'title' => $existingPage->title,
+                'createdAt' => date('c'),
+                'status' => 'clean',
+                'revisionHash' => $revisionHash,
+                'lastPushedAt' => date('c'),
+            ];
+            
+            file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            
+            return [
+                'success' => true,
+                'action' => 'linked',
+                'pageId' => $existingPage->id,
+                'path' => $existingPage->path,
+                'template' => $existingPage->template->name,
+                'localPath' => $this->getRelativePath($localPath),
+                'note' => 'Existing page found — meta written for pw_page_push.',
+            ];
+        }
+        
+        // Page does not exist — write a "new" scaffold meta
+        $parent = $this->wire->pages->get($parentPath);
+        if (!$parent || !$parent->id) {
+            return ['error' => "Parent page not found: $parentPath"];
+        }
+        
+        // Determine template
+        $templateName = $template;
+        if (!$templateName) {
+            $allowed = $parent->template->childTemplates;
+            if (count($allowed) === 1) {
+                $templateName = $this->wire->templates->get($allowed[0])->name;
+            } else {
+                return ['error' => "Parent allows multiple child templates (" . count($allowed) . "). Specify template name with the template parameter."];
+            }
+        }
+        
+        $templateObj = $this->wire->templates->get($templateName);
+        if (!$templateObj) {
+            return ['error' => "Template not found: $templateName"];
+        }
+        
+        // Read title from existing YAML if present
+        $title = ucwords(str_replace('-', ' ', $pageName));
+        if (file_exists($yamlPath)) {
+            $content = $this->readContentFile($yamlPath);
+            if (!empty($content['fields']['title'])) {
+                $title = $content['fields']['title'];
+            }
+        }
+        
+        $meta = [
+            '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
+            'pageId' => null,
+            'new' => true,
+            'canonicalPath' => $fullPagePath,
+            'template' => $templateName,
+            'parentId' => $parent->id,
+            'parentPath' => $parent->path,
+            'title' => $title,
+            'createdAt' => date('c'),
+            'status' => 'new',
+        ];
+        
+        file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        
+        return [
+            'success' => true,
+            'action' => 'scaffolded',
+            'path' => $fullPagePath,
+            'template' => $templateName,
+            'localPath' => $this->getRelativePath($localPath),
+            'note' => 'Page does not exist yet — meta written for pw_page_publish.',
         ];
     }
     
@@ -2420,32 +2588,88 @@ class SyncManager {
      * @return array Result with created page info
      */
     public function publishPage(string $localPath, bool $dryRun = true, bool $unpublished = true): array {
-        // Normalize path
+        // Normalize path - accept either directory or yaml file path
+        if (str_ends_with($localPath, '.yaml') || str_ends_with($localPath, '.json')) {
+            $localPath = dirname($localPath);
+        } else {
+            $localPath = rtrim($localPath, '/');
+        }
+        
         if (strpos($localPath, '/') !== 0) {
             $localPath = $this->wire->config->paths->root . $localPath;
         }
-        $localPath = rtrim($localPath, '/');
         
         // Check for required files
         $metaPath = $localPath . '/page.meta.json';
         $yamlPath = $localPath . '/page.yaml';
+        $metaAutoGenerated = false;
+        
+        if (!file_exists($yamlPath)) {
+            $relYaml = $this->getRelativePath($yamlPath);
+            return ['error' => "Content file not found: $relYaml"];
+        }
         
         if (!file_exists($metaPath)) {
-            return ['error' => "Meta file not found: $metaPath"];
-        }
-        if (!file_exists($yamlPath)) {
-            return ['error' => "Content file not found: $yamlPath"];
-        }
-        
-        // Read meta file
-        $meta = json_decode(file_get_contents($metaPath), true);
-        if (!$meta) {
-            return ['error' => "Invalid meta file"];
-        }
-        
-        // Verify this is a new page
-        if (empty($meta['new'])) {
-            return ['error' => "Page is not marked as new. Use page:push to update existing pages."];
+            // Auto-generate meta from page.yaml + directory structure
+            $pageName = basename($localPath);
+            $parentDir = dirname($localPath);
+            
+            // Derive parent path from sync root
+            $syncRootResolved = realpath($this->syncRoot) ?: $this->syncRoot;
+            $parentDirResolved = realpath($parentDir) ?: $parentDir;
+            
+            if (str_starts_with($parentDirResolved, $syncRootResolved)) {
+                $parentPath = substr($parentDirResolved, strlen($syncRootResolved));
+                $parentPath = $parentPath ? $parentPath . '/' : '/';
+            } else {
+                $parentPath = '/';
+            }
+            
+            // Try to find the parent page
+            $parent = $this->wire->pages->get($parentPath);
+            if (!$parent || !$parent->id) {
+                return ['error' => "Cannot auto-generate meta: parent page not found at $parentPath. Create page.meta.json manually or use pw_page_new."];
+            }
+            
+            // Determine template from parent's allowed child templates
+            $allowedTemplates = $parent->template->childTemplates;
+            if (count($allowedTemplates) === 1) {
+                $templateName = $this->wire->templates->get($allowedTemplates[0])->name;
+            } else {
+                return ['error' => "Cannot auto-generate meta: parent allows multiple child templates. Use pw_page_new to specify the template, or create page.meta.json manually."];
+            }
+            
+            // Read content for title
+            $content = $this->readContentFile($yamlPath);
+            $title = $content['fields']['title'] ?? ucwords(str_replace('-', ' ', $pageName));
+            
+            $meta = [
+                '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
+                'pageId' => null,
+                'new' => true,
+                'canonicalPath' => rtrim($parentPath, '/') . '/' . $pageName . '/',
+                'template' => $templateName,
+                'parentId' => $parent->id,
+                'parentPath' => $parent->path,
+                'title' => $title,
+                'createdAt' => date('c'),
+                'status' => 'new',
+            ];
+            
+            file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            $metaAutoGenerated = true;
+        } else {
+            // Read existing meta file
+            $meta = json_decode(file_get_contents($metaPath), true);
+            if (!$meta) {
+                $relMeta = $this->getRelativePath($metaPath);
+                return ['error' => "Invalid meta file: $relMeta"];
+            }
+            
+            // Verify this is a new page
+            if (empty($meta['new'])) {
+                return ['error' => "Page is not marked as new. Use page:push to update existing pages."];
+            }
         }
         
         // Verify parent exists
@@ -2537,7 +2761,7 @@ class SyncManager {
         $fieldLabels = $this->getFieldLabelsForTemplate($page->template);
         file_put_contents($yamlPath, $this->arrayToYamlWithLabels($newContent, $fieldLabels));
         
-        return [
+        $result = [
             'success' => true,
             'action' => 'created',
             'pageId' => $page->id,
@@ -2547,6 +2771,12 @@ class SyncManager {
             'unpublished' => $unpublished,
             'localPath' => $this->getRelativePath($localPath),
         ];
+        
+        if ($metaAutoGenerated) {
+            $result['metaAutoGenerated'] = true;
+        }
+        
+        return $result;
     }
     
     /**

@@ -32,6 +32,7 @@ import { runPwCommand, formatToolResponse } from './cli/runner.js';
 import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
 import { compareSites, listSiteConfigs } from './schema/compare.js';
 import { pushPage, publishPage } from './pages/pusher.js';
+import { syncFiles } from './pages/file-sync.js';
 import { validateRefs } from './pages/validator.js';
 
 // ============================================================================
@@ -248,6 +249,36 @@ const tools = [
     },
   },
   {
+    name: 'pw_file_sync',
+    description: 'Sync file/image field content from local to remote. Compares file inventories by MD5 hash and transfers only new or changed files. Dry-run by default.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        localPath: {
+          type: 'string',
+          description: 'Path to local sync directory or page.yaml file',
+        },
+        targets: {
+          type: 'string',
+          enum: ['remote'],
+          description: 'Where to sync files to. Currently only "remote" is supported.',
+          default: 'remote',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), show what would be transferred without uploading. Set to false to apply.',
+          default: true,
+        },
+        deleteRemoteOrphans: {
+          type: 'boolean',
+          description: 'If true, delete files on remote that no longer exist locally. Default: false (safe).',
+          default: false,
+        },
+      },
+      required: ['localPath'],
+    },
+  },
+  {
     name: 'pw_pages_pull',
     description: 'Bulk pull multiple pages by selector, parent path, or template. Creates sync files for each matched page.',
     inputSchema: {
@@ -377,8 +408,26 @@ const tools = [
     },
   },
   {
+    name: 'pw_page_init',
+    description: 'Initialise or repair page.meta.json for a sync directory. If the page exists in ProcessWire, links to it (for pw_page_push). If not, creates a new-page scaffold (for pw_page_publish). Useful when content files were created manually without using pw_page_new.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        localPath: {
+          type: 'string',
+          description: 'Path to local sync directory (e.g., "site/assets/pw-mcp/downloads/mediahub/v1-8-1")',
+        },
+        template: {
+          type: 'string',
+          description: 'Template name (required only for new pages when the parent allows multiple child templates)',
+        },
+      },
+      required: ['localPath'],
+    },
+  },
+  {
     name: 'pw_page_publish',
-    description: 'Publish a new page scaffold (created with pw_page_new) to ProcessWire. Use targets to control where: "local" (MAMP), "remote" (production), or "both".',
+    description: 'Publish a new page scaffold (created with pw_page_new) to ProcessWire. Automatically generates page.meta.json from page.yaml if missing (when the parent allows only one child template). Use targets to control where: "local" (MAMP), "remote" (production), or "both".',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -716,6 +765,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return formatToolResponse(result);
     }
 
+    // Sync file/image fields from local to remote
+    case 'pw_file_sync': {
+      const { localPath, targets, dryRun, deleteRemoteOrphans } = args as {
+        localPath: string;
+        targets?: 'remote';
+        dryRun?: boolean;
+        deleteRemoteOrphans?: boolean;
+      };
+      const result = await syncFiles({
+        localPath,
+        targets: targets ?? 'remote',
+        dryRun: dryRun !== false,
+        deleteRemoteOrphans: deleteRemoteOrphans ?? false,
+      });
+      return formatToolResponse(result);
+    }
+
     // Bulk pull pages by selector, parent, or template
     case 'pw_pages_pull': {
       const { selector, limit, noParent } = args as {
@@ -843,6 +909,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         cmdArgs.push(`--title=${title}`);
       }
       const result = await runPwCommand('page:new', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // Initialise or repair page.meta.json
+    case 'pw_page_init': {
+      const { localPath, template } = args as { localPath: string; template?: string };
+      const cmdArgs = [localPath];
+      if (template) cmdArgs.push(`--template=${template}`);
+      const result = await runPwCommand('page:init', cmdArgs);
       return formatToolResponse(result);
     }
 
