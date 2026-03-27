@@ -591,8 +591,9 @@ class ProcessPwMcpAdmin extends Process {
                 ];
             }
             
-            // Add Home's children at depth 1
-            $homeChildren = $pages->find("parent=1, include=all, sort=sort");
+            // Add Home's children at depth 1, sorted by the template's configured sort order
+            $homeSortfield = $homePage->template->sortfield ?: 'sort';
+            $homeChildren = $pages->find("parent=1, include=all, sort=$homeSortfield");
             foreach ($homeChildren as $page) {
                 if ($page->template->flags & Template::flagSystem) continue;
                 
@@ -658,7 +659,7 @@ class ProcessPwMcpAdmin extends Process {
         $out .= '<div class="pwmcp-modal-backdrop"></div>';
         $out .= '<div class="pwmcp-modal-dialog">';
         $out .= '<div class="pwmcp-modal-header">';
-        $out .= '<h3>Confirm Push</h3>';
+        $out .= '<h3>Confirm File to Wire</h3>';
         $out .= '<button type="button" class="pwmcp-modal-close">&times;</button>';
         $out .= '</div>';
         $out .= '<div class="pwmcp-modal-body">';
@@ -828,8 +829,10 @@ class ProcessPwMcpAdmin extends Process {
             return '';
         }
         
-        // Get children (fast - single DB query on pages table)
-        $children = $pages->find("parent=$parentId, include=all, sort=sort");
+        // Get children sorted by the parent template's configured sort order
+        $parent = $pages->get($parentId);
+        $sortfield = $parent->template->sortfield ?: 'sort';
+        $children = $pages->find("parent=$parentId, include=all, sort=$sortfield");
         
         // No getSyncStatus() call here - badges are applied client-side
         // from the pwmcpPageStatuses JS variable (already computed on initial page load).
@@ -1104,21 +1107,21 @@ a.pwmcp-action * { cursor: pointer !important; }
 }
 .pwmcp-tree-table td, .pwmcp-tree-table th { padding-top: 7px; padding-bottom: 7px; }
 .pwmcp-col-secondary { font-size: 0.875rem; color: var(--pw-text-color, #354b60); }
-/* Status badge overrides - each status has consistent intensity with lighter fill than border */
-.pwmcp-tree-table .uk-label { font-size: 11px !important; font-weight: normal !important; padding: 2px 6px !important; border-radius: 4px !important; border: 1px solid !important; display: inline-block !important; line-height: 1.3 !important; text-transform: none !important; }
-.pwmcp-tree-table .uk-label-success { color: rgba(35, 120, 60, 1) !important; border-color: rgba(60, 150, 85, 1) !important; background-color: rgba(40, 167, 69, 0.15) !important; }
-.pwmcp-tree-table .uk-label-warning { color: rgba(150, 110, 0, 1) !important; border-color: rgba(200, 155, 30, 1) !important; background-color: rgba(255, 193, 7, 0.15) !important; }
-.pwmcp-tree-table .uk-label-primary { color: rgba(25, 95, 160, 1) !important; border-color: rgba(65, 145, 210, 1) !important; background-color: rgba(30, 135, 240, 0.15) !important; }
-.pwmcp-tree-table .uk-label-danger { color: rgba(165, 40, 50, 1) !important; border-color: rgba(200, 75, 85, 1) !important; background-color: rgba(220, 53, 69, 0.15) !important; }
-.pwmcp-tree-table .uk-label-muted { color: rgba(120, 120, 120, 1) !important; border-color: rgba(180, 180, 180, 1) !important; background-color: rgba(200, 200, 200, 0.1) !important; }
+/* Status badge overrides - consistent across tree table and preview pages */
+.pwmcp-badge { font-size: 11px !important; font-weight: normal !important; padding: 2px 6px !important; border-radius: 4px !important; border: 1px solid !important; display: inline-block !important; line-height: 1.3 !important; text-transform: none !important; }
+.pwmcp-badge.uk-label-success { color: rgba(35, 120, 60, 1) !important; border-color: rgba(60, 150, 85, 1) !important; background-color: rgba(40, 167, 69, 0.15) !important; }
+.pwmcp-badge.uk-label-warning { color: rgba(150, 110, 0, 1) !important; border-color: rgba(200, 155, 30, 1) !important; background-color: rgba(255, 193, 7, 0.15) !important; }
+.pwmcp-badge.uk-label-primary { color: rgba(25, 95, 160, 1) !important; border-color: rgba(65, 145, 210, 1) !important; background-color: rgba(30, 135, 240, 0.15) !important; }
+.pwmcp-badge.uk-label-danger { color: rgba(165, 40, 50, 1) !important; border-color: rgba(200, 75, 85, 1) !important; background-color: rgba(220, 53, 69, 0.15) !important; }
+.pwmcp-badge.uk-label-muted { color: rgba(120, 120, 120, 1) !important; border-color: rgba(180, 180, 180, 1) !important; background-color: rgba(200, 200, 200, 0.1) !important; }
 .pwmcp-toggle-spacer { display: inline-block; width: 14px; }
 .pwmcp-title-cell { white-space: nowrap; line-height: 1.4; max-width: 350px; overflow: hidden; text-overflow: ellipsis; }
 .pwmcp-title-cell a { display: inline; }
 .pwmcp-title-cell small { font-size: 13px; color: #999; }
-/* Page publish status styling - matches ProcessWire's official tree */
+/* Page publish status styling - only affects the title, not action icons/badges/columns */
 tr.pwmcp-unpublished .pwmcp-title-cell a { text-decoration: line-through; color: #999; }
-tr.pwmcp-hidden { opacity: 0.6; }
-tr.pwmcp-unpublished.pwmcp-hidden .pwmcp-title-cell a { text-decoration: line-through; color: #999; }
+tr.pwmcp-hidden .pwmcp-title-cell a { opacity: 0.6; }
+tr.pwmcp-unpublished.pwmcp-hidden .pwmcp-title-cell a { text-decoration: line-through; color: #999; opacity: 0.6; }
 .pwmcp-spinner { 
     display: inline-block; 
     width: 12px; 
@@ -1136,7 +1139,7 @@ tr[data-depth="2"] { background-color: #f9f9f9; }
 tr[data-depth="3"] { background-color: #f6f6f6; }
 tr[data-depth="4"] { background-color: #f3f3f3; }
 
-/* Push preview - disabled input/textarea styles (match PW page editor) */
+/* Preview - disabled input/textarea styles (match PW page editor) */
 .pwmcp-preview-input,
 .pwmcp-preview-textarea {
     width: 100%;
@@ -1176,11 +1179,11 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Badge renderer - applies status badges to AJAX-loaded rows using pre-loaded lookup
     var badgeHtml = {
-        'clean':         '<span class="uk-label uk-label-success">Clean</span>',
-        'localDirty':    '<span class="uk-label uk-label-warning">File Newer</span>',
-        'remoteChanged': '<span class="uk-label uk-label-primary">Wire Newer</span>',
-        'conflict':      '<span class="uk-label uk-label-danger">Conflict</span>',
-        'notPulled':     '<span class="uk-label uk-label-muted">Untracked</span>'
+        'clean':         '<span class="uk-label pwmcp-badge uk-label-success">Clean</span>',
+        'localDirty':    '<span class="uk-label pwmcp-badge uk-label-warning">File Newer</span>',
+        'remoteChanged': '<span class="uk-label pwmcp-badge uk-label-primary">Wire Newer</span>',
+        'conflict':      '<span class="uk-label pwmcp-badge uk-label-danger">Conflict</span>',
+        'notPulled':     '<span class="uk-label pwmcp-badge uk-label-muted">Untracked</span>'
     };
     
     function applyBadgesToNewRows(startAfterRow) {
@@ -1611,7 +1614,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             
             message.textContent = messageText;
-            confirmBtn.textContent = 'Push ' + modifiedCount + ' page' + (modifiedCount === 1 ? '' : 's');
+            confirmBtn.textContent = 'Apply ' + modifiedCount + ' page' + (modifiedCount === 1 ? '' : 's');
             
             modal.style.display = 'block';
         });
@@ -1850,7 +1853,7 @@ HTML;
                     $pulled++;
                 }
             }
-            $this->message(sprintf($this->_('Pulled %d pages to YAML'), $pulled));
+            $this->message(sprintf($this->_('Exported %d pages to file'), $pulled));
         } elseif ($action === 'push') {
             $pushed = 0;
             foreach ($pageIds as $pageId) {
@@ -1862,7 +1865,7 @@ HTML;
                     $pushed++;
                 }
             }
-            $this->message(sprintf($this->_('Pushed %d pages to PW'), $pushed));
+            $this->message(sprintf($this->_('Applied %d pages to Wire'), $pushed));
         }
         
         $this->wire('session')->redirect($this->wire('page')->url);
@@ -1886,7 +1889,7 @@ HTML;
         ];
         
         $label = $labels[$status] ?? ['Unknown', ''];
-        $class = $label[1] ? "class='uk-label {$label[1]}'" : "class='uk-label'";
+        $class = $label[1] ? "class='uk-label pwmcp-badge {$label[1]}'" : "class='uk-label pwmcp-badge'";
         
         return "<span {$class}>{$label[0]}</span>";
     }
@@ -1954,12 +1957,12 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Pulled page "%s" to %s'),
+                    $this->_('Exported "%s" to %s'),
                     $page->title,
                     $result['localPath'] ?? ''
                 ));
             } else {
-                $this->error($result['error'] ?? $this->_('Failed to pull page'));
+                $this->error($result['error'] ?? $this->_('Failed to export page'));
             }
         } catch (\Exception $e) {
             $this->error($this->_('Error: ') . $e->getMessage());
@@ -2010,11 +2013,11 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Force pushed changes to page "%s"'),
+                    $this->_('Force applied changes to "%s"'),
                     $page->title
                 ));
             } else {
-                $this->error($result['error'] ?? $this->_('Failed to push page'));
+                $this->error($result['error'] ?? $this->_('Failed to apply changes'));
             }
             
             $this->wire('session')->redirect($this->wire('page')->url);
@@ -2032,11 +2035,11 @@ HTML;
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Pushed changes to page "%s"'),
+                    $this->_('Applied changes to "%s"'),
                     $page->title
                 ));
             } else {
-                $this->error($result['error'] ?? $this->_('Failed to push page'));
+                $this->error($result['error'] ?? $this->_('Failed to apply changes'));
             }
             
             $this->wire('session')->redirect($this->wire('page')->url);
@@ -2046,7 +2049,7 @@ HTML;
         // Dry-run preview
         $result = $syncManager->pushPage($workspacePath, true); // dryRun = true
         
-        $this->headline(sprintf($this->_('Push Preview: %s'), $page->title));
+        $this->headline(sprintf($this->_('Preview: %s'), $page->title));
         
         $form = $modules->get('InputfieldForm');
         $form->attr('method', 'post');
@@ -2099,6 +2102,23 @@ HTML;
 .InputfieldHeaderHidden { display: none !important; }
 </style>';
         $form->add($cssField);
+        
+        // Clean — no changes to apply
+        if (isset($result['success']) && $result['success'] && empty($result['changes']) && !isset($result['dryRun'])) {
+            $preview = $modules->get('InputfieldMarkup');
+            $preview->label = $this->_('Status');
+            $preview->value = '<p>' . $this->_('Clean — no changes to apply.') . '</p>';
+            $form->add($preview);
+            
+            // Back button only — nothing to apply
+            $btn = $modules->get('InputfieldButton');
+            $btn->value = $this->_('Back');
+            $btn->href = $this->wire('page')->url;
+            $btn->icon = 'arrow-left';
+            $form->add($btn);
+            
+            return $form->render();
+        }
         
         // Show preview using ProcessWire's native Inputfield structure
         if (isset($result['dryRun']) && $result['dryRun']) {
@@ -2222,11 +2242,6 @@ if (h1 && form) {
 });
 </script>';
                 $form->add($pushActionsJs);
-            } else {
-                $preview = $modules->get('InputfieldMarkup');
-                $preview->label = $this->_('Changes to Apply');
-                $preview->value = '<p>' . $this->_('No changes detected.') . '</p>';
-                $form->add($preview);
             }
         } elseif (isset($result['conflict']) && $result['conflict']) {
             // Conflict warning
@@ -2265,7 +2280,7 @@ if (h1 && form) {
             // Add explanation text field
             $explanation = $modules->get('InputfieldMarkup');
             $explanation->value = '<p style="color: #666;">' . 
-                $this->_('Re-pull to get the latest version, or force push to overwrite with your local changes.') . 
+                $this->_('Re-export to get the latest version, or force apply to overwrite with your local changes.') . 
                 '</p>';
             $form->add($explanation);
             
@@ -2277,15 +2292,15 @@ if (h1 && form) {
             
             // Re-export button (link)
             $btn = $modules->get('InputfieldButton');
-            $btn->value = $this->_('Re-pull from ProcessWire');
+            $btn->value = $this->_('Re-export from Wire');
             $btn->href = $this->wire('page')->url . 'pull/?id=' . $pageId;
-            $btn->icon = 'download';
+            $btn->icon = 'refresh';
             $form->add($btn);
             
             // Force Push button
             $f = $modules->get('InputfieldSubmit');
             $f->attr('name', 'submit_force');
-            $f->value = $this->_('Force Push (Overwrite)');
+            $f->value = $this->_('Force Apply (Overwrite)');
             $f->icon = 'bolt';
             $f->setSecondary(true);
             $form->add($f);
@@ -2315,7 +2330,7 @@ if (h1 && form) {
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'submit_confirm');
-        $f->value = $this->_('Confirm Push');
+        $f->value = $this->_('Apply Changes');
         $f->icon = 'check';
         $form->add($f);
         
@@ -2383,7 +2398,7 @@ if (h1 && form) {
         $modules = $this->wire('modules');
         $session = $this->wire('session');
         
-        $this->headline($this->_('Bulk Pull'));
+        $this->headline($this->_('Bulk Wire to File'));
         
         // Get filter from session
         $rootPath = $session->get('pwmcp_root_path') ?: '';
@@ -2416,7 +2431,7 @@ if (h1 && form) {
         $form->attr('method', 'post');
         
         $info = $modules->get('InputfieldMarkup');
-        $info->label = $this->_('Bulk Pull Preview');
+        $info->label = $this->_('Bulk Preview');
         $info->value = '<p>' . sprintf(
             $this->_('This will pull all pages under: %s'),
             '<strong>' . htmlspecialchars($displayPath ?: $selector) . '</strong>'
@@ -2433,7 +2448,7 @@ if (h1 && form) {
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Pulled %d pages successfully'),
+                    $this->_('Exported %d pages to file'),
                     $result['pulled'] ?? 0
                 ));
             } else {
@@ -2469,7 +2484,7 @@ if (h1 && form) {
         $modules = $this->wire('modules');
         $session = $this->wire('session');
         
-        $this->headline($this->_('Bulk Push'));
+        $this->headline($this->_('Bulk File to Wire'));
         
         // Get filter from session to scope the push
         $rootPath = $session->get('pwmcp_root_path') ?: '';
@@ -2499,7 +2514,7 @@ if (h1 && form) {
             
             if (isset($result['success']) && $result['success']) {
                 $this->message(sprintf(
-                    $this->_('Pushed %d pages successfully'),
+                    $this->_('Applied %d pages to Wire'),
                     $result['pushed'] ?? 0
                 ));
             } else {
@@ -2514,7 +2529,7 @@ if (h1 && form) {
         $result = $syncManager->pushPages($pushDir, true); // dryRun = true
         
         $info = $modules->get('InputfieldMarkup');
-        $info->label = $this->_('Bulk Push Preview');
+        $info->label = $this->_('Bulk Preview');
         
         // Show scope
         $info->value = '<p class="notes">' . sprintf(
@@ -2539,8 +2554,8 @@ if (h1 && form) {
         // Confirm button
         $f = $modules->get('InputfieldSubmit');
         $f->attr('name', 'confirm_push');
-        $f->value = $this->_('Confirm Push All');
-        $f->icon = 'upload';
+        $f->value = $this->_('Apply All Changes');
+        $f->icon = 'check';
         $form->add($f);
         
         // Cancel
