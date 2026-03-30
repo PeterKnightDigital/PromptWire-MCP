@@ -753,7 +753,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         publish?: boolean;
       };
 
-      const resolvedTargets = targets ?? (process.env.PW_REMOTE_URL ? 'remote' : 'local');
+      const resolvedTargets = targets ?? 'local';
 
       const result = await pushPage({
         localPath,
