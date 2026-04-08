@@ -8,7 +8,7 @@
  * 
  * @package     PwMcp
  * @subpackage  Admin
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  * @version     1.0.0
  */

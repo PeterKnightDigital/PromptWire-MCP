@@ -12,12 +12,12 @@
  * 2. Create site/config-pw-mcp.php with your API key (see below)
  * 3. Add to your local mcp.json:
  *
- *    "ProcessWire MCP: MySite.com (production)": {
+ *    "ProcessWire MCP: example.com (production)": {
  *      "command": "node",
  *      "args": ["/path/to/mcp-server/dist/index.js"],
  *      "env": {
- *        "PW_REMOTE_URL": "https://www.edenstudios.com/pw-mcp-api.php",
- *        "PW_REMOTE_KEY": "ABC123!"
+ *        "PW_REMOTE_URL": "https://www.example.com/pw-mcp-api.php",
+ *        "PW_REMOTE_KEY": "your-api-key-here"
  *      }
  *    }
  *
@@ -37,7 +37,7 @@
  * - Read/write operations mirror local CLI permissions
  *
  * @package     PwMcp
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  */
 
@@ -69,6 +69,7 @@ if (!defined('PW_MCP_API_KEY')) {
 header('Content-Type: application/json');
 header('Cache-Control: no-store, no-cache, must-revalidate');
 header('Pragma: no-cache');
+header('X-Robots-Tag: noindex, nofollow');
 header('X-PW-MCP-Version: 1.0');
 
 // Suppress PHP errors from leaking into JSON output

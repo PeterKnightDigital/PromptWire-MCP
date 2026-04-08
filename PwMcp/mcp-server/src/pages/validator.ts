@@ -12,7 +12,7 @@
  *
  * @package     PwMcp
  * @subpackage  MCP Server
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  */
 
@@ -234,7 +234,7 @@ export interface ValidateRefsOptions {
 }
 
 export async function validateRefs(opts: ValidateRefsOptions = {}): Promise<PwCommandResult> {
-  const target: ValidateTarget = opts.target ?? (process.env.PW_REMOTE_URL ? 'remote' : 'local');
+  const target: ValidateTarget = opts.target ?? (process.env.PW_REMOTE_URL && !process.env.PW_PATH ? 'remote' : 'local');
 
   // Determine sync root
   const syncRoot =

@@ -18,7 +18,7 @@
  *   - PHP_PATH: Path to PHP binary (optional, defaults to 'php')
  * 
  * @package     PwMcp
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  */
 
@@ -369,7 +369,7 @@ const tools = [
         target: {
           type: 'string',
           enum: ['local', 'remote'],
-          description: 'Which environment to validate against: "local" (MAMP/dev) or "remote" (production). Defaults to "remote" if PW_REMOTE_URL is set, otherwise "local".',
+          description: 'Which environment to validate against: "local" (MAMP/dev) or "remote" (production). Defaults to "local" when PW_PATH is set, otherwise "remote" if PW_REMOTE_URL is set.',
         },
         syncRoot: {
           type: 'string',

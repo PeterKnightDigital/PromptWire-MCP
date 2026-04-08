@@ -13,7 +13,7 @@
  *
  * @package     PwMcp
  * @subpackage  MCP Server
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  */
 
@@ -115,6 +115,10 @@ export async function schemaPull(): Promise<PwCommandResult> {
   const fieldsFile    = path.join(syncDir, 'fields.json');
   const templatesFile = path.join(syncDir, 'templates.json');
 
+  // Back up existing files before overwriting so a mistaken pull is recoverable
+  await backupIfExists(fieldsFile);
+  await backupIfExists(templatesFile);
+
   await fs.writeFile(
     fieldsFile,
     JSON.stringify({ ...metaHeader, ...fields }, null, 2),
@@ -184,7 +188,7 @@ export async function schemaPush(dryRun: boolean): Promise<PwCommandResult> {
     schema.templates = stripMeta(data);
   }
 
-  if (process.env.PW_REMOTE_URL) {
+  if (!process.env.PW_PATH && process.env.PW_REMOTE_URL) {
     // Remote: pass schema inline in the HTTP body (no temp file needed)
     const cmdArgs: string[] = [];
     if (!dryRun) cmdArgs.push('--dry-run=0');
@@ -337,5 +341,15 @@ async function fileExists(filePath: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Copy an existing file to a .bak alongside it (single rotating backup) */
+async function backupIfExists(filePath: string): Promise<void> {
+  try {
+    await fs.access(filePath);
+    await fs.copyFile(filePath, filePath + '.bak');
+  } catch {
+    // File doesn't exist yet — nothing to back up
   }
 }

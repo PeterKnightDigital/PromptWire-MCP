@@ -3,7 +3,7 @@ node_modules/
 vendor/
 
 # Build output
-mcp-server/dist/
+PwMcp/mcp-server/dist/
 
 # Environment
 .env
@@ -20,9 +20,8 @@ mcp-server/dist/
 *.log
 npm-debug.log*
 
-# Generated schemas (keep examples only)
+# Generated schemas
 /schemas/
-!/examples/
 
 # PHP
 *.cache

@@ -11,22 +11,34 @@ Cursor Chat → MCP Server (Node.js) → PHP CLI → ProcessWire
                                    → HTTP API → Remote ProcessWire
 ```
 
-Three components work together:
+Everything lives inside the `PwMcp/` directory:
 
-- **PwMcp module** (`PwMcp/`) — ProcessWire module with CLI entrypoint and command router
-- **MCP server** (`mcp-server/`) — Node.js server that speaks the MCP protocol to Cursor
-- **Remote API** (`PwMcp/api/pw-mcp-api.php`) — Optional HTTP endpoint for remote site access
+- **ProcessWire module** — `PwMcp.module.php` + PHP source in `src/`, `bin/`, `api/`
+- **Admin UI** — `PwMcpAdmin/ProcessPwMcpAdmin.module.php` (auto-discovered by ProcessWire)
+- **MCP server** — `mcp-server/` (Node.js, speaks MCP protocol to Cursor)
+- **Remote API** — `api/pw-mcp-api.php` (optional, for remote site access)
+- **Examples** — `examples/` (reference schemas and configs)
 
 ## Setup
 
 ### 1. Install the ProcessWire module
 
-Copy or symlink the `PwMcp/` directory into your ProcessWire `site/modules/` folder. Install via **Modules → Refresh → Install**.
+Copy the `PwMcp/` directory into your ProcessWire `site/modules/` folder:
+
+```bash
+cp -r PwMcp/ /path/to/your/pw-site/site/modules/PwMcp/
+```
+
+Then in ProcessWire admin: **Modules → Refresh → Install PwMcp**.
+
+ProcessWire will auto-discover the admin module (`ProcessPwMcpAdmin`) inside the same directory.
+
+> **Upgrading from pre-1.4.0?** The old `site/modules/PwMcpAdmin/` directory is no longer needed — everything is now inside `PwMcp/`. On install or upgrade, the module will automatically detect and remove the old directory.
 
 ### 2. Build the MCP server
 
 ```bash
-cd mcp-server
+cd site/modules/PwMcp/mcp-server
 npm install
 npm run build
 ```
@@ -40,7 +52,7 @@ Add to `.cursor/mcp.json` in your project root:
   "mcpServers": {
     "PW-MCP: My Site (Local)": {
       "command": "node",
-      "args": ["/path/to/pw-mcp/mcp-server/dist/index.js"],
+      "args": ["/path/to/pw-site/site/modules/PwMcp/mcp-server/dist/index.js"],
       "env": {
         "PW_PATH": "/path/to/your/processwire/site",
         "PHP_PATH": "/path/to/php"
@@ -52,7 +64,7 @@ Add to `.cursor/mcp.json` in your project root:
 
 ### 4. (Optional) Remote site access
 
-Deploy `PwMcp/api/pw-mcp-api.php` to your remote site root. Create `site/config-pw-mcp.php` with your API key:
+Copy `PwMcp/api/pw-mcp-api.php` to your remote site root (same level as `index.php`). Create `site/config-pw-mcp.php` with your API key:
 
 ```php
 <?php
@@ -67,7 +79,7 @@ Add a second MCP server entry for the remote site:
 {
   "PW-MCP: My Site (Prod)": {
     "command": "node",
-    "args": ["/path/to/pw-mcp/mcp-server/dist/index.js"],
+    "args": ["/path/to/pw-site/site/modules/PwMcp/mcp-server/dist/index.js"],
     "env": {
       "PW_REMOTE_URL": "https://example.com/pw-mcp-api.php",
       "PW_REMOTE_KEY": "your-strong-random-key-here"
@@ -76,77 +88,112 @@ Add a second MCP server entry for the remote site:
 }
 ```
 
+## How it works
+
+PW-MCP turns Cursor into a fully aware ProcessWire development environment. Because the AI agent has direct access to your site's schema, content, and files, you can describe what you want in plain language and let it build it.
+
+**Describe entire sections of your site in a prompt.** Instead of manually creating templates, fields, and pages one by one in the admin, tell Cursor what you need:
+
+> "Create a News section with a news-index template and a news-article template. Articles should have a headline, summary, body, featured image, publish date, and category page reference. Pull the schema when done."
+
+The agent will use `pw_schema_push` to create the templates and fields, scaffold pages with `pw_page_new`, populate content via `pw_page_push`, and sync everything to your site — all from a single conversation.
+
+**Edit content as YAML.** Pull any page with `pw_page_pull` and it arrives as a readable YAML file. Edit it directly or ask the agent to rewrite, translate, or restructure the content, then push it back. The agent sees the full field schema, so it knows what's valid.
+
+**Sync between environments.** Pull from local, compare against production with `pw_schema_compare`, push changes to remote — the agent handles path-to-ID resolution across databases automatically.
+
+**Typical workflow:**
+
+1. Describe what you want to build (templates, fields, pages, content)
+2. The agent creates or modifies schema and content via MCP tools
+3. Review the changes (dry-run by default on all write operations)
+4. Apply when ready
+
 ## Environment variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `PW_PATH` | For local | Absolute path to ProcessWire installation root |
-| `PHP_PATH` | No | Path to PHP binary (defaults to `php`) |
-| `PW_MCP_CLI_PATH` | No | Override path to `pw-mcp.php` CLI script |
-| `PW_REMOTE_URL` | For remote | Full URL to `pw-mcp-api.php` on the remote site |
-| `PW_REMOTE_KEY` | For remote | API key matching the key configured on the remote site |
-| `PW_SYNC_DIR` | No | Override path for `.pw-sync` schema directory |
+
+| Variable          | Required   | Description                                            |
+| ----------------- | ---------- | ------------------------------------------------------ |
+| `PW_PATH`         | For local  | Absolute path to ProcessWire installation root         |
+| `PHP_PATH`        | No         | Path to PHP binary (defaults to `php`)                 |
+| `PW_MCP_CLI_PATH` | No         | Override path to `pw-mcp.php` CLI script               |
+| `PW_REMOTE_URL`   | For remote | Full URL to `pw-mcp-api.php` on the remote site        |
+| `PW_REMOTE_KEY`   | For remote | API key matching the key configured on the remote site |
+| `PW_SYNC_DIR`     | No         | Override path for `.pw-sync` schema directory          |
+
 
 ## Tools
 
 ### Site inspection
 
-| Tool | Description |
-|---|---|
-| `pw_health` | Check ProcessWire connection, version, and counts |
-| `pw_list_templates` | List all templates |
-| `pw_get_template` | Get template details (fields, settings) |
-| `pw_list_fields` | List all fields |
-| `pw_get_field` | Get field details (type, settings) |
-| `pw_get_page` | Get a page by ID or path with full field content |
-| `pw_query_pages` | Query pages with ProcessWire selectors |
-| `pw_search` | Search page content by keyword |
-| `pw_search_files` | Search PHP/template files in the site directory |
-| `pw_export_schema` | Export the full site schema (templates + fields) as JSON |
+
+| Tool                | Description                                              |
+| ------------------- | -------------------------------------------------------- |
+| `pw_health`         | Check ProcessWire connection, version, and counts        |
+| `pw_list_templates` | List all templates                                       |
+| `pw_get_template`   | Get template details (fields, settings)                  |
+| `pw_list_fields`    | List all fields                                          |
+| `pw_get_field`      | Get field details (type, settings)                       |
+| `pw_get_page`       | Get a page by ID or path with full field content         |
+| `pw_query_pages`    | Query pages with ProcessWire selectors                   |
+| `pw_search`         | Search page content by keyword                           |
+| `pw_search_files`   | Search PHP/template files in the site directory          |
+| `pw_export_schema`  | Export the full site schema (templates + fields) as JSON |
+
 
 ### Content sync
 
-| Tool | Description |
-|---|---|
-| `pw_page_pull` | Pull a page into a local sync directory as editable YAML |
-| `pw_page_push` | Push local YAML changes back to ProcessWire (local, remote, or both) |
-| `pw_pages_pull` | Bulk pull pages by selector, parent, or template |
-| `pw_pages_push` | Bulk push all changes in a sync directory tree |
-| `pw_sync_status` | Check sync status of all pulled pages (clean, dirty, conflict) |
-| `pw_sync_reconcile` | Fix path drift, detect orphans, reconcile sync directories |
-| `pw_validate_refs` | Validate page references across synced content |
+
+| Tool                | Description                                                          |
+| ------------------- | -------------------------------------------------------------------- |
+| `pw_page_pull`      | Pull a page into a local sync directory as editable YAML             |
+| `pw_page_push`      | Push local YAML changes back to ProcessWire (local, remote, or both) |
+| `pw_pages_pull`     | Bulk pull pages by selector, parent, or template                     |
+| `pw_pages_push`     | Bulk push all changes in a sync directory tree                       |
+| `pw_sync_status`    | Check sync status of all pulled pages (clean, dirty, conflict)       |
+| `pw_sync_reconcile` | Fix path drift, detect orphans, reconcile sync directories           |
+| `pw_validate_refs`  | Validate page references across synced content                       |
+
 
 ### Page management
 
-| Tool | Description |
-|---|---|
-| `pw_page_new` | Scaffold a new page locally (creates `page.yaml` + `page.meta.json`). Idempotent — if the directory exists but `page.meta.json` is missing, creates only the missing scaffold files without overwriting existing content. |
-| `pw_page_init` | Initialise or repair `page.meta.json` for a sync directory. If the page exists in ProcessWire, links to it (for `pw_page_push`). If not, creates a new-page scaffold (for `pw_page_publish`). |
-| `pw_page_publish` | Publish a scaffolded page to ProcessWire (local, remote, or both). Auto-generates `page.meta.json` from `page.yaml` if missing (when the parent allows only one child template). |
-| `pw_pages_publish` | Bulk publish all new page scaffolds in a directory |
+
+| Tool               | Description                                                                                                                                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pw_page_new`      | Scaffold a new page locally (creates `page.yaml` + `page.meta.json`). Idempotent — if the directory exists but `page.meta.json` is missing, creates only the missing scaffold files without overwriting existing content. |
+| `pw_page_init`     | Initialise or repair `page.meta.json` for a sync directory. If the page exists in ProcessWire, links to it (for `pw_page_push`). If not, creates a new-page scaffold (for `pw_page_publish`).                             |
+| `pw_page_publish`  | Publish a scaffolded page to ProcessWire (local, remote, or both). Auto-generates `page.meta.json` from `page.yaml` if missing (when the parent allows only one child template).                                          |
+| `pw_pages_publish` | Bulk publish all new page scaffolds in a directory                                                                                                                                                                        |
+
 
 ### File sync
 
-| Tool | Description |
-|---|---|
+
+| Tool           | Description                                                                                                                                       |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pw_file_sync` | Sync file/image field content from local to remote. Compares inventories by MD5 hash and transfers only new or changed files. Dry-run by default. |
+
 
 ### Schema sync
 
-| Tool | Description |
-|---|---|
-| `pw_schema_pull` | Pull field and template schema from a PW site into local files |
-| `pw_schema_push` | Push local schema files to a PW site (creates/updates fields and templates) |
-| `pw_schema_diff` | Diff local schema files against the live site |
-| `pw_schema_compare` | Compare schemas between two sites (e.g. local vs production) |
-| `pw_list_sites` | List configured remote sites from `.pw-sync/sites/` |
+
+| Tool                | Description                                                                 |
+| ------------------- | --------------------------------------------------------------------------- |
+| `pw_schema_pull`    | Pull field and template schema from a PW site into local files              |
+| `pw_schema_push`    | Push local schema files to a PW site (creates/updates fields and templates) |
+| `pw_schema_diff`    | Diff local schema files against the live site                               |
+| `pw_schema_compare` | Compare schemas between two sites (e.g. local vs production)                |
+| `pw_list_sites`     | List configured remote sites from `.pw-sync/sites/`                         |
+
 
 ### Repeater Matrix
 
-| Tool | Description |
-|---|---|
+
+| Tool             | Description                                        |
+| ---------------- | -------------------------------------------------- |
 | `pw_matrix_info` | Get matrix field structure (types, fields, labels) |
-| `pw_matrix_add` | Add a new item to a repeater matrix field |
+| `pw_matrix_add`  | Add a new item to a repeater matrix field          |
+
 
 ## Content sync workflow
 
@@ -214,6 +261,8 @@ pw_schema_push dryRun=true
 pw_schema_push dryRun=false
 ```
 
+Each `pw_schema_pull` backs up the previous `fields.json` and `templates.json` as `.bak` files in the same directory, so a mistaken pull is recoverable.
+
 ## Security
 
 The remote API endpoint (`pw-mcp-api.php`) provides:
@@ -232,6 +281,17 @@ The remote API endpoint (`pw-mcp-api.php`) provides:
 - Cursor IDE with MCP support
 
 ## Changelog
+
+### 1.4.0 (8 April 2026)
+
+- **Changed:** Module restructured into a single `PwMcp/` directory. `PwMcpAdmin`, `mcp-server`, and `examples` now live inside `PwMcp/` — copy one folder to `site/modules/` and everything is in place.
+- **Changed:** On install or upgrade, the module automatically detects and removes the old `site/modules/PwMcpAdmin/` directory from pre-1.4.0 installs.
+- **Fixed:** `schemaPush()` routed to the remote API when both `PW_PATH` and `PW_REMOTE_URL` were set, so schema pushes silently went to production while reads used the local site. Now applies the same `PW_PATH`-first guard used elsewhere.
+- **Fixed:** `validateRefs()` defaulted to validating against the remote site when both env vars were set, inconsistent with the "local wins" rule. Now defaults to local when `PW_PATH` is present.
+- **Fixed:** `pushPage()` and `publishPage()` always returned `success: true` even when local or remote sub-operations failed. Failures were only visible in nested results. Top-level `success` now reflects actual outcome.
+- **Fixed:** `publishPage()` silently swallowed YAML parse errors and created remote pages with empty fields. Now reports the parse failure instead.
+- **Improved:** `schemaPull()` backs up existing `fields.json` and `templates.json` as `.bak` files before overwriting, so a mistaken pull is recoverable.
+- **Improved:** Remote API endpoint now sends `X-Robots-Tag: noindex, nofollow` header.
 
 ### 1.3.1 (27 March 2026)
 

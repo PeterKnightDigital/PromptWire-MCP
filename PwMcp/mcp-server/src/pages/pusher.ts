@@ -11,7 +11,7 @@
  *
  * @package     PwMcp
  * @subpackage  MCP Server
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  */
 
@@ -109,21 +109,25 @@ export async function pushPage(opts: PushPageOptions): Promise<PwCommandResult> 
   }
 
   const results: Record<string, unknown> = {};
+  let hasFailure = false;
 
   // ── LOCAL PUSH ─────────────────────────────────────────────────────────────
   if (shouldPushLocal) {
     const localResult = await pushToLocal(yamlPath, dryRun, force);
+    if (!localResult.success) hasFailure = true;
     results['local'] = localResult.success ? localResult.data : { error: localResult.error };
   }
 
   // ── REMOTE PUSH ────────────────────────────────────────────────────────────
   if (shouldPushRemote) {
     const remoteResult = await pushToRemote(yamlPath, pagePath, dryRun, publish);
+    if (!remoteResult.success) hasFailure = true;
     results['remote'] = remoteResult.success ? remoteResult.data : { error: remoteResult.error };
   }
 
   return {
-    success: true,
+    success: !hasFailure,
+    ...(hasFailure ? { error: 'One or more push targets failed — check results for details' } : {}),
     data: {
       pagePath,
       dryRun,
@@ -329,35 +333,41 @@ export async function publishPage(opts: PublishPageOptions): Promise<PwCommandRe
   }
 
   const results: Record<string, unknown> = {};
+  let hasFailure = false;
 
   // ── LOCAL PUBLISH ──────────────────────────────────────────────────────────
   if (shouldPushLocal) {
     const localResult = await publishToLocal(yamlPath, dryRun, published);
+    if (!localResult.success) hasFailure = true;
     results['local'] = localResult.success ? localResult.data : { error: localResult.error };
   }
 
   // ── REMOTE PUBLISH ─────────────────────────────────────────────────────────
   if (shouldPushRemote) {
-    let fields: FieldValue = {};
-    try { fields = await parsePageYaml(yamlPath); } catch { /* use empty */ }
+    const parsedFields = await parsePageYaml(yamlPath).catch(() => null);
+    if (!parsedFields) {
+      hasFailure = true;
+      results['remote'] = { error: `Failed to parse YAML at ${yamlPath} — cannot publish with empty fields` };
+    } else {
+      const template   = meta.template   ?? '';
+      const parentPath = meta.parentPath ?? '/';
+      const pathParts  = (meta.canonicalPath ?? '').split('/').filter(Boolean);
+      const pageName   = meta.pageName ?? pathParts[pathParts.length - 1] ?? '';
 
-    const template   = meta.template   ?? '';
-    const parentPath = meta.parentPath ?? '/';
-    // Derive pageName from canonicalPath if not stored explicitly
-    const pathParts  = (meta.canonicalPath ?? '').split('/').filter(Boolean);
-    const pageName   = meta.pageName ?? pathParts[pathParts.length - 1] ?? '';
-
-    const remoteResult = await runRemoteCommand(
-      'page:create',
-      [template, parentPath, pageName, ...(dryRun ? [] : ['--dry-run=0'])],
-      undefined, undefined, undefined,
-      { fields, published },
-    );
-    results['remote'] = remoteResult.success ? remoteResult.data : { error: remoteResult.error };
+      const remoteResult = await runRemoteCommand(
+        'page:create',
+        [template, parentPath, pageName, ...(dryRun ? [] : ['--dry-run=0'])],
+        undefined, undefined, undefined,
+        { fields: parsedFields, published },
+      );
+      if (!remoteResult.success) hasFailure = true;
+      results['remote'] = remoteResult.success ? remoteResult.data : { error: remoteResult.error };
+    }
   }
 
   return {
-    success: true,
+    success: !hasFailure,
+    ...(hasFailure ? { error: 'One or more publish targets failed — check results for details' } : {}),
     data: { dryRun, published, targets, results },
   };
 }

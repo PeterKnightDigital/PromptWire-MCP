@@ -13,7 +13,7 @@
  *
  * @package     PwMcp
  * @subpackage  MCP Server
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  */
 
@@ -141,7 +141,7 @@ async function exportSchemaFromSite(
     const cliPath = process.env.PW_MCP_CLI_PATH ?? (pwPath ? `${pwPath}/site/modules/PwMcp/bin/pw-mcp.php` : null);
     if (!pwPath || !cliPath) return null;
 
-    // Temporarily bypass remote routing by calling the runner directly
+    // PW_PATH is set so runPwCommand will use local PHP CLI (not remote)
     const result = await runPwCommand('export-schema');
     if (!result.success) return null;
     const data = result.data as { meta?: { siteName?: string }; fields?: Record<string, unknown>; templates?: Record<string, unknown> };

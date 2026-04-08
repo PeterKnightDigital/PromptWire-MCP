@@ -15,9 +15,9 @@
  * MCP server running in Node.js.
  * 
  * @package     PwMcp
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
- * @version     1.3.1
+ * @version     1.4.0
  * @link        https://github.com/peterknight/pw-mcp
  * 
  * @see         /bin/pw-mcp.php          CLI entrypoint
@@ -43,7 +43,7 @@ class PwMcp extends WireData implements Module {
         return [
             'title' => 'PW-MCP',
             'summary' => 'ProcessWire ↔ Cursor MCP Bridge for AI-assisted development',
-            'version' => '1.3.1',
+            'version' => '1.4.0',
             'author' => 'Peter Knight',
             'href' => 'https://github.com/peterknight/pw-mcp',
             'singular' => true,
@@ -51,6 +51,59 @@ class PwMcp extends WireData implements Module {
             'icon' => 'plug',
             'requires' => 'ProcessWire>=3.0.0',
         ];
+    }
+
+    /**
+     * Module install hook — clean up legacy file structure
+     */
+    public function ___install() {
+        $this->cleanupLegacyStructure();
+    }
+
+    /**
+     * Module upgrade hook — clean up legacy file structure on version bump
+     */
+    public function ___upgrade($fromVersion, $toVersion) {
+        $this->cleanupLegacyStructure();
+    }
+
+    /**
+     * Detect and remove the old PwMcpAdmin directory from pre-1.4.0 installs.
+     *
+     * Before 1.4.0, PwMcpAdmin was a separate module at site/modules/PwMcpAdmin/.
+     * It now lives inside PwMcp/PwMcpAdmin/. If both exist, PHP will see a
+     * duplicate class name and fail, so we need to remove the old one.
+     */
+    private function cleanupLegacyStructure(): void {
+        $modulesPath = $this->wire('config')->paths->siteModules;
+        $oldAdminPath = $modulesPath . 'PwMcpAdmin/';
+
+        if (!is_dir($oldAdminPath)) return;
+        if (!file_exists($oldAdminPath . 'ProcessPwMcpAdmin.module.php')) return;
+
+        $modules = $this->wire('modules');
+        if ($modules->isInstalled('ProcessPwMcpAdmin')) {
+            try {
+                $modules->uninstall('ProcessPwMcpAdmin');
+            } catch (\Exception $e) {
+                // Continue — the directory removal is what matters
+            }
+        }
+
+        $this->removeDirectoryRecursive($oldAdminPath);
+        $this->message('Removed legacy site/modules/PwMcpAdmin/ directory — it is now included inside PwMcp.');
+    }
+
+    private function removeDirectoryRecursive(string $dir): void {
+        if (!is_dir($dir)) return;
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($items as $item) {
+            $item->isDir() ? rmdir($item->getRealPath()) : unlink($item->getRealPath());
+        }
+        rmdir($dir);
     }
 
     /**

@@ -24,7 +24,7 @@
  *   (only supported for export-schema). Use --pretty for formatted JSON.
  * 
  * @package     PwMcp
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  */
 

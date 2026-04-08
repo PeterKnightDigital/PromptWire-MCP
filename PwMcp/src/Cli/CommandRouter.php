@@ -8,7 +8,7 @@
  * 
  * @package     PwMcp
  * @subpackage  Cli
- * @author      Peter Knight
+ * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
  */
 
