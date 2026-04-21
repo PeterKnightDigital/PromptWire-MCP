@@ -16,7 +16,7 @@
  *      "command": "node",
  *      "args": ["/path/to/mcp-server/dist/index.js"],
  *      "env": {
- *        "PW_REMOTE_URL": "https://www.example.com/promptwire-api.php",
+ *        "PW_REMOTE_URL": "https://www.example.com/your-endpoint.php",
  *        "PW_REMOTE_KEY": "your-api-key-here"
  *      }
  *    }
@@ -30,6 +30,10 @@
  *
  * SECURITY
  * --------
+ * - Rename this file to something unique (e.g. pw-xyz8k3m.php) so the
+ *   endpoint URL is not guessable from the public documentation. Update
+ *   PW_REMOTE_URL in your mcp.json to match. The MCP server uses that
+ *   env var as-is — it does not assume any specific filename.
  * - API key authentication via X-PromptWire-Key header
  * - HTTPS strongly recommended (key is sent in header)
  * - Optional IP allowlist for extra protection

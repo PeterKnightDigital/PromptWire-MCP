@@ -85,7 +85,9 @@ If `which php` returns the correct version (8.0+), you can omit `PHP_PATH` entir
 
 ### 4. (Optional) Remote site access
 
-For pushing content to a production site, see the [Remote setup guide](https://www.peterknight.digital/docs/promptwire/v1/remote-setup/).
+To push content to a production site, deploy the API endpoint file (`api/promptwire-api.php`) to your remote site root. **Rename it** to something non-obvious (e.g. `pw-xyz8k3m.php`) so the URL isn't guessable from the public documentation, then set `PW_REMOTE_URL` to match.
+
+See the [Remote setup guide](https://www.peterknight.digital/docs/promptwire/v1/remote-setup/) for full instructions.
 
 ## Available tools
 

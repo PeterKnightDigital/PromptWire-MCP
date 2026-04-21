@@ -6,7 +6,7 @@
  *
  * Configure in mcp.json:
  *   "env": {
- *     "PW_REMOTE_URL": "https://example.com/promptwire-api.php",
+ *     "PW_REMOTE_URL": "https://example.com/your-endpoint.php",
  *     "PW_REMOTE_KEY": "your-secret-api-key"
  *   }
  *
@@ -47,7 +47,7 @@ interface RemoteResponse {
  * CommandRouter that the local CLI uses — zero logic duplication.
  *
  * Required env vars:
- *   PW_REMOTE_URL - Full URL to promptwire-api.php on the remote site
+ *   PW_REMOTE_URL - Full URL to your API endpoint file on the remote site
  *   PW_REMOTE_KEY - API key (must match key configured on remote site)
  *
  * @param command - CLI command to run (e.g., 'health', 'get-page')
@@ -107,7 +107,7 @@ export async function runRemoteCommand(
         case 404:
           return {
             success: false,
-            error: `Remote API not found at ${remoteUrl} — ensure promptwire-api.php is deployed and accessible`,
+            error: `Remote API not found at ${remoteUrl} — ensure your endpoint file is deployed and the URL is correct`,
           };
         case 500:
           return {

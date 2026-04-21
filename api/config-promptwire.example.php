@@ -12,7 +12,7 @@
  * 3. Optionally restrict access to your Mac's IP address
  *    (find it with: curl ifconfig.me)
  *
- * This file is loaded by promptwire-api.php at runtime.
+ * This file is loaded by your API endpoint file at runtime.
  * Keep it outside your webroot if possible, or ensure your web server
  * denies direct access to site/ directory (ProcessWire's default .htaccess does this).
  */
