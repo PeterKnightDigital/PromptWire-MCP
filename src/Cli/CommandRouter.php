@@ -305,6 +305,17 @@ class CommandRouter {
                 $target = $positional[0] ?? 'all';
                 return $this->clearCache($target);
 
+            case 'site:inventory':
+                $excludeTemplates = $flags['exclude-templates'] ?? '';
+                $includeSystem = isset($flags['include-system']) && $flags['include-system'];
+                return $this->siteInventory($excludeTemplates, $includeSystem);
+
+            case 'files:inventory':
+                $dirs = $flags['directories'] ?? 'site/templates,site/modules';
+                $extensions = $flags['extensions'] ?? 'php,js,css,json,latte,twig';
+                $excludePatterns = $flags['exclude-patterns'] ?? '';
+                return $this->filesInventory($dirs, $extensions, $excludePatterns);
+
             case 'help':
             default:
                 return $this->help();
@@ -2204,6 +2215,182 @@ class CommandRouter {
         return round($bytes / pow(1024, $i), 1) . ' ' . $units[$i];
     }
 
+    // ========================================================================
+    // SITE SYNC — INVENTORY & COMPARISON
+    // ========================================================================
+
+    /**
+     * Build a compact inventory of every page on the site.
+     *
+     * Returns path, template, modified timestamp, and a content hash for
+     * each page.  The hash is an MD5 of the page's serialised field values
+     * so two sites can be compared without transferring full content.
+     *
+     * @param string $excludeTemplates  Comma-separated template names or
+     *                                  wildcards (e.g. "user,license_*")
+     * @param bool   $includeSystem     Include system pages (admin, trash)
+     * @return array Page inventory manifest
+     */
+    private function siteInventory(string $excludeTemplates = '', bool $includeSystem = false): array {
+        $excludeList = array_filter(array_map('trim', explode(',', $excludeTemplates)));
+
+        $systemTemplates = ['admin', 'user', 'role', 'permission'];
+        $selector = 'include=all';
+        if (!$includeSystem) {
+            foreach ($systemTemplates as $st) {
+                $selector .= ", template!=$st";
+            }
+            $selector .= ', has_parent!=2'; // exclude admin branch
+        }
+
+        $allPages = $this->wire->pages->find($selector);
+        $pages = [];
+
+        foreach ($allPages as $page) {
+            $templateName = $page->template->name;
+
+            if ($this->matchesExcludeList($templateName, $excludeList)) {
+                continue;
+            }
+
+            // Build a content hash from all custom field values
+            $fieldData = [];
+            foreach ($page->template->fieldgroup as $field) {
+                if ($field->name === 'title') {
+                    $fieldData['title'] = (string) $page->title;
+                    continue;
+                }
+                $value = $page->get($field->name);
+                if ($value instanceof \ProcessWire\PageArray) {
+                    $fieldData[$field->name] = $value->explode('path');
+                } elseif ($value instanceof \ProcessWire\Pagefiles || $value instanceof \ProcessWire\Pageimages) {
+                    $fileArr = [];
+                    foreach ($value as $f) {
+                        $fileArr[] = $f->basename . ':' . $f->filesize();
+                    }
+                    $fieldData[$field->name] = $fileArr;
+                } elseif (is_object($value)) {
+                    $fieldData[$field->name] = (string) $value;
+                } else {
+                    $fieldData[$field->name] = $value;
+                }
+            }
+
+            $contentHash = md5(json_encode($fieldData, JSON_UNESCAPED_UNICODE));
+
+            $pages[] = [
+                'id'          => $page->id,
+                'path'        => $page->path,
+                'template'    => $templateName,
+                'status'      => $page->status,
+                'modified'    => date('c', $page->modified),
+                'created'     => date('c', $page->created),
+                'contentHash' => $contentHash,
+            ];
+        }
+
+        return [
+            'siteName'    => $this->wire->config->httpHost ?: basename($this->wire->config->paths->root),
+            'generatedAt' => date('c'),
+            'pageCount'   => count($pages),
+            'excluded'    => $excludeList,
+            'pages'       => $pages,
+        ];
+    }
+
+    /**
+     * Build a manifest of files in specified site directories.
+     *
+     * Scans directories (relative to PW root) and returns each file's
+     * relative path, size, MD5 hash, and modification time so two sites
+     * can be compared without transferring file contents.
+     *
+     * @param string $directories      Comma-separated directory paths
+     * @param string $extensions       Comma-separated file extensions to include
+     * @param string $excludePatterns  Comma-separated glob patterns to skip
+     * @return array File inventory manifest
+     */
+    private function filesInventory(
+        string $directories = 'site/templates,site/modules',
+        string $extensions = 'php,js,css,json,latte,twig',
+        string $excludePatterns = ''
+    ): array {
+        $rootPath = $this->wire->config->paths->root;
+        $dirList = array_filter(array_map('trim', explode(',', $directories)));
+        $extList = array_filter(array_map('trim', explode(',', $extensions)));
+        $excludes = array_filter(array_map('trim', explode(',', $excludePatterns)));
+
+        $files = [];
+
+        foreach ($dirList as $dir) {
+            $absDir = $rootPath . ltrim($dir, '/');
+            if (!is_dir($absDir)) {
+                continue;
+            }
+
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($absDir, \RecursiveDirectoryIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::SELF_FIRST
+            );
+
+            foreach ($iterator as $fileInfo) {
+                if ($fileInfo->isDir()) continue;
+
+                $ext = strtolower($fileInfo->getExtension());
+                if (!empty($extList) && !in_array($ext, $extList)) continue;
+
+                $relativePath = $dir . '/' . ltrim(
+                    str_replace($absDir, '', $fileInfo->getPathname()),
+                    '/'
+                );
+
+                if ($this->matchesExcludePatterns($relativePath, $excludes)) continue;
+
+                $files[] = [
+                    'relativePath' => $relativePath,
+                    'size'         => $fileInfo->getSize(),
+                    'md5'          => md5_file($fileInfo->getPathname()),
+                    'modified'     => date('c', $fileInfo->getMTime()),
+                ];
+            }
+        }
+
+        usort($files, fn($a, $b) => strcmp($a['relativePath'], $b['relativePath']));
+
+        return [
+            'siteName'    => $this->wire->config->httpHost ?: basename($this->wire->config->paths->root),
+            'generatedAt' => date('c'),
+            'directories' => $dirList,
+            'extensions'  => $extList,
+            'fileCount'   => count($files),
+            'files'       => $files,
+        ];
+    }
+
+    /**
+     * Check if a template name matches an exclusion list (supports wildcards).
+     */
+    private function matchesExcludeList(string $templateName, array $excludeList): bool {
+        foreach ($excludeList as $pattern) {
+            if (str_contains($pattern, '*')) {
+                if (fnmatch($pattern, $templateName)) return true;
+            } elseif ($templateName === $pattern) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Check if a file path matches any exclusion glob pattern.
+     */
+    private function matchesExcludePatterns(string $path, array $patterns): bool {
+        foreach ($patterns as $pattern) {
+            if (fnmatch($pattern, $path)) return true;
+        }
+        return false;
+    }
+
     /**
      * Show help information
      * 
@@ -2246,6 +2433,8 @@ class CommandRouter {
                 'logs [name?]' => 'Read log entries (--level=error --text=pattern --limit=N)',
                 'last-error' => 'Get the most recent error from log files',
                 'clear-cache [target?]' => 'Clear caches (all, modules, templates, compiled, wire-cache)',
+                'site:inventory' => 'Page inventory with content hashes (--exclude-templates=user,role --include-system)',
+                'files:inventory' => 'File inventory with MD5 hashes (--directories=site/templates,site/modules --extensions=php,js)',
                 'help' => 'Show this help',
             ],
             'flags' => [

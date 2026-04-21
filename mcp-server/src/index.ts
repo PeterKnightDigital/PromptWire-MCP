@@ -30,10 +30,11 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { runPwCommand, formatToolResponse } from './cli/runner.js';
 import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
-import { compareSites, listSiteConfigs } from './schema/compare.js';
+import { compareSites as compareSchemas, listSiteConfigs } from './schema/compare.js';
 import { pushPage, publishPage } from './pages/pusher.js';
 import { syncFiles } from './pages/file-sync.js';
 import { validateRefs } from './pages/validator.js';
+import { compareSites as compareSiteFull } from './sync/site-compare.js';
 
 // ============================================================================
 // TOOL DEFINITIONS
@@ -699,6 +700,38 @@ const tools = [
       required: ['pageIdOrPath', 'fieldName', 'matrixType', 'content'],
     },
   },
+  // ========================================================================
+  // PHASE 5: SITE SYNC
+  // ========================================================================
+  {
+    name: 'pw_site_compare',
+    description: 'Compare local and remote ProcessWire sites across pages, schema, and files. Pages are matched by path (not ID). Returns a structured report of what differs, what exists only on one side, and what is identical. Requires both PW_PATH (local) and PW_REMOTE_URL (remote).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        excludeTemplates: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Template names to exclude from comparison (supports wildcards e.g. "license_*"). Defaults to ["user", "role", "permission", "admin"].',
+        },
+        excludePages: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Specific page paths to exclude from comparison (e.g. ["/trash/"]).',
+        },
+        includeDirs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Directories to compare for file sync, relative to PW root. Defaults to ["site/templates", "site/modules"].',
+        },
+        excludeFilePatterns: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Glob patterns to skip in file comparison (e.g. ["site/modules/PromptWire/*"]). Defaults to ["site/modules/PromptWire/*"].',
+        },
+      },
+    },
+  },
 ];
 
 // ============================================================================
@@ -1088,7 +1121,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'pw_schema_compare': {
       const { source, target } = args as { source?: string; target?: string };
-      const result = await compareSites(source ?? 'current', target ?? 'production');
+      const result = await compareSchemas(source ?? 'current', target ?? 'production');
       return formatToolResponse(result);
     }
 
@@ -1196,6 +1229,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         cmdArgs.push('--dry-run=0');
       }
       const result = await runPwCommand('matrix:add', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    // ========================================================================
+    // PHASE 5: SITE SYNC
+    // ========================================================================
+
+    case 'pw_site_compare': {
+      const {
+        excludeTemplates,
+        excludePages,
+        includeDirs,
+        excludeFilePatterns,
+      } = args as {
+        excludeTemplates?: string[];
+        excludePages?: string[];
+        includeDirs?: string[];
+        excludeFilePatterns?: string[];
+      };
+      const result = await compareSiteFull({
+        excludeTemplates,
+        excludePages,
+        includeDirs,
+        excludeFilePatterns,
+      });
       return formatToolResponse(result);
     }
 
