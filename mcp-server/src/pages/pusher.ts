@@ -120,7 +120,7 @@ export async function pushPage(opts: PushPageOptions): Promise<PwCommandResult> 
 
   // ── REMOTE PUSH ────────────────────────────────────────────────────────────
   if (shouldPushRemote) {
-    const remoteResult = await pushToRemote(yamlPath, pagePath, dryRun, publish);
+    const remoteResult = await pushToRemote(yamlPath, pagePath, dryRun, publish, meta as PageMeta & { parentPath?: string });
     if (!remoteResult.success) hasFailure = true;
     results['remote'] = remoteResult.success ? remoteResult.data : { error: remoteResult.error };
   }
@@ -174,8 +174,10 @@ async function pushToLocal(yamlPath: string, dryRun: boolean, force: boolean): P
 // REMOTE PUSH (HTTP API via page:update)
 // ============================================================================
 
-async function pushToRemote(yamlPath: string, pagePath: string, dryRun: boolean, publish = false): Promise<PwCommandResult> {
-  // Parse the local YAML to extract field values
+async function pushToRemote(
+  yamlPath: string, pagePath: string, dryRun: boolean,
+  publish = false, meta?: PageMeta & { parentPath?: string },
+): Promise<PwCommandResult> {
   let fields: FieldValue;
   try {
     fields = await parsePageYaml(yamlPath);
@@ -186,7 +188,7 @@ async function pushToRemote(yamlPath: string, pagePath: string, dryRun: boolean,
   const args = [pagePath];
   if (!dryRun) args.push('--dry-run=0');
 
-  return runRemoteCommand(
+  const result = await runRemoteCommand(
     'page:update',
     args,
     undefined,
@@ -194,6 +196,24 @@ async function pushToRemote(yamlPath: string, pagePath: string, dryRun: boolean,
     undefined,
     { fields, publish },
   );
+
+  // If the page doesn't exist on remote yet, fall back to creating it.
+  // This handles the case where a page was created on the local target
+  // first and now needs to be pushed to remote for the first time.
+  if (!result.success && result.error?.includes('Page not found') && meta?.template) {
+    const pathParts = pagePath.split('/').filter(Boolean);
+    const pageName = pathParts[pathParts.length - 1] ?? '';
+    const parentPath = meta.parentPath ?? '/' + pathParts.slice(0, -1).join('/') + '/';
+
+    return runRemoteCommand(
+      'page:create',
+      [meta.template, parentPath, pageName, ...(dryRun ? [] : ['--dry-run=0'])],
+      undefined, undefined, undefined,
+      { fields, published: publish },
+    );
+  }
+
+  return result;
 }
 
 // ============================================================================
@@ -283,12 +303,9 @@ export async function publishPage(opts: PublishPageOptions): Promise<PwCommandRe
       return { success: false, error: 'Failed to read page.meta.json' };
     }
 
-    if (!meta.new) {
-      return {
-        success: false,
-        error: 'This page already exists in ProcessWire. Use pw_page_push to update it instead.',
-      };
-    }
+    // Don't hard-block when meta.new is false — the page may exist on one
+    // target but not the other.  Each target's handler already rejects
+    // duplicates gracefully (local PHP: "Page already exists"; remote API: 409).
   } else {
     // Auto-generate meta from page.yaml + directory structure
     let parsed: { fields?: Record<string, unknown> };

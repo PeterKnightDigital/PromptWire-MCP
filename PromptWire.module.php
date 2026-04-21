@@ -17,7 +17,7 @@
  * @package     PromptWire
  * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
- * @version     1.5.0
+ * @version     1.5.1
  * @link        https://github.com/PeterKnightDigital/PromptWire-MCP
  * 
  * @see         /bin/promptwire.php      CLI entrypoint
@@ -31,7 +31,7 @@ class PromptWire extends WireData implements Module {
         return [
             'title' => 'PromptWire',
             'summary' => 'ProcessWire ↔ Cursor MCP Bridge for AI-assisted development',
-            'version' => '1.5.0',
+            'version' => '1.5.1',
             'author' => 'Peter Knight',
             'href' => 'https://github.com/PeterKnightDigital/PromptWire-MCP',
             'singular' => true,

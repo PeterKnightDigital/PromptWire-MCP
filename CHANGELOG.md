@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1 (21 April 2026)
+
+- **Fixed:** `pw_page_push` now auto-creates pages on the remote target when they don't exist yet, falling back from `page:update` to `page:create` transparently. Previously, pushing a locally-created page to remote failed with "Page not found".
+- **Fixed:** `pw_page_publish` no longer blocks publishing to a second target after a page has already been created on the first. Each target now handles its own duplicate check independently.
+
 ## 1.5.0 (8 April 2026)
 
 - **Changed:** Module renamed from PW-MCP to **PromptWire**. Class names, file names, CLI scripts, API endpoints, and environment variables have all been updated.
