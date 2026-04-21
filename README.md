@@ -6,7 +6,7 @@ ProcessWire ↔ Cursor MCP Bridge for AI-assisted development.
 
 ## Introduction
 
-PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 30+ specialised tools for site inspection, content sync, schema management, page creation, and cross-environment deployment.
+PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 36 specialised tools for site inspection, content sync, schema management, page creation, database introspection, log analysis, and cross-environment deployment.
 
 **Just describe what you want in plain language:**
 
@@ -151,6 +151,28 @@ Content is synced to `site/assets/pw-mcp/` — editable YAML files that you can 
 | ---------------- | -------------------------------------------------- |
 | `pw_matrix_info` | Get matrix field structure (types, fields, labels) |
 | `pw_matrix_add`  | Add a new item to a repeater matrix field          |
+
+### Database
+
+| Tool             | Description                                                        |
+| ---------------- | ------------------------------------------------------------------ |
+| `pw_db_schema`   | Inspect database tables — list all or describe a single table      |
+| `pw_db_query`    | Execute read-only SELECT queries (mutations are blocked)           |
+| `pw_db_explain`  | Run EXPLAIN on a SELECT query for performance analysis             |
+| `pw_db_counts`   | Row counts for core tables and the 20 largest field-data tables    |
+
+### Logs
+
+| Tool             | Description                                                        |
+| ---------------- | ------------------------------------------------------------------ |
+| `pw_logs`        | List log files, or read/filter entries from a specific log         |
+| `pw_last_error`  | Retrieve the most recent error from the error and exception logs   |
+
+### Cache
+
+| Tool             | Description                                                        |
+| ---------------- | ------------------------------------------------------------------ |
+| `pw_clear_cache` | Clear ProcessWire caches (all, modules, templates, compiled, wire) |
 
 For detailed parameters and examples, see the [Tools reference](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/).
 
