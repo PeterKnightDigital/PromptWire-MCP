@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0 (21 April 2026)
+
+- **New:** `pw_db_schema` — inspect database tables. Without arguments, lists all tables with engines, row counts, and sizes. Pass a table name for detailed columns, types, keys, and indexes.
+- **New:** `pw_db_query` — execute read-only SELECT queries. Only SELECT, SHOW, and DESCRIBE are allowed; mutations are blocked. A LIMIT is auto-injected if omitted.
+- **New:** `pw_db_explain` — run EXPLAIN on a SELECT query for performance analysis.
+- **New:** `pw_db_counts` — row counts for core ProcessWire tables and the 20 largest field-data tables.
+- **New:** `pw_logs` — list available log files, or read and filter entries from a specific log by level and text pattern.
+- **New:** `pw_last_error` — retrieve the most recent error from the error and exception logs.
+- **New:** `pw_clear_cache` — clear ProcessWire caches by target (all, modules, templates, compiled, wire-cache).
+
 ## 1.5.1 (21 April 2026)
 
 - **Fixed:** `pw_page_push` now auto-creates pages on the remote target when they don't exist yet, falling back from `page:update` to `page:create` transparently. Previously, pushing a locally-created page to remote failed with "Page not found".
