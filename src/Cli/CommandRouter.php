@@ -265,6 +265,46 @@ class CommandRouter {
                 }
                 return $this->pageExists($paths);
 
+            // ================================================================
+            // PHASE 5: DATABASE, LOGS & CACHE TOOLS
+            // ================================================================
+            
+            case 'db-schema':
+                $table = $positional[0] ?? null;
+                return $this->dbSchema($table);
+            
+            case 'db-query':
+                $sql = $positional[0] ?? null;
+                if (!$sql) {
+                    return ['error' => 'SQL query required'];
+                }
+                $limit = isset($flags['limit']) ? (int) $flags['limit'] : 100;
+                return $this->dbQuery($sql, $limit);
+            
+            case 'db-explain':
+                $sql = $positional[0] ?? null;
+                if (!$sql) {
+                    return ['error' => 'SQL query required'];
+                }
+                return $this->dbExplain($sql);
+            
+            case 'db-counts':
+                return $this->dbCounts();
+            
+            case 'logs':
+                $logName = $positional[0] ?? null;
+                $level = $flags['level'] ?? null;
+                $text = $flags['text'] ?? null;
+                $limit = isset($flags['limit']) ? (int) $flags['limit'] : 50;
+                return $this->readLogs($logName, $level, $text, $limit);
+            
+            case 'last-error':
+                return $this->lastError();
+            
+            case 'clear-cache':
+                $target = $positional[0] ?? 'all';
+                return $this->clearCache($target);
+
             case 'help':
             default:
                 return $this->help();
@@ -1706,6 +1746,464 @@ class CommandRouter {
         return $exporter->export();
     }
     
+    // ========================================================================
+    // PHASE 5: DATABASE, LOGS & CACHE
+    // ========================================================================
+
+    /**
+     * Inspect database schema
+     *
+     * Lists all tables with their columns, types, keys, and nullable flags.
+     * Optionally filter to a single table for detailed view.
+     *
+     * @param string|null $table Optional table name to inspect
+     * @return array Schema information
+     */
+    private function dbSchema(?string $table = null): array {
+        $db = $this->wire->database;
+        $dbName = $this->wire->config->dbName;
+
+        if ($table) {
+            $stmt = $db->prepare(
+                "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA
+                 FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = :db AND TABLE_NAME = :tbl
+                 ORDER BY ORDINAL_POSITION"
+            );
+            $stmt->execute([':db' => $dbName, ':tbl' => $table]);
+            $columns = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            if (empty($columns)) {
+                return ['error' => "Table not found: $table"];
+            }
+
+            $idxStmt = $db->prepare(
+                "SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns_list, NON_UNIQUE
+                 FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA = :db AND TABLE_NAME = :tbl
+                 GROUP BY INDEX_NAME, NON_UNIQUE"
+            );
+            $idxStmt->execute([':db' => $dbName, ':tbl' => $table]);
+            $indexes = $idxStmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            return [
+                'table' => $table,
+                'columns' => $columns,
+                'indexes' => $indexes,
+            ];
+        }
+
+        // All tables overview
+        $stmt = $db->prepare(
+            "SELECT TABLE_NAME, ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH,
+                    AUTO_INCREMENT, TABLE_COLLATION
+             FROM information_schema.TABLES
+             WHERE TABLE_SCHEMA = :db
+             ORDER BY TABLE_NAME"
+        );
+        $stmt->execute([':db' => $dbName]);
+        $tables = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        return [
+            'database' => $dbName,
+            'tableCount' => count($tables),
+            'tables' => $tables,
+        ];
+    }
+
+    /**
+     * Execute a read-only SELECT query
+     *
+     * Only SELECT statements are allowed. Mutations are rejected.
+     *
+     * @param string $sql SQL query
+     * @param int $limit Maximum rows to return
+     * @return array Query results
+     */
+    private function dbQuery(string $sql, int $limit = 100): array {
+        $normalized = strtoupper(trim(preg_replace('/\s+/', ' ', $sql)));
+
+        // Block anything that isn't a SELECT or starts with a mutation keyword
+        $forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'TRUNCATE',
+                       'CREATE', 'REPLACE', 'RENAME', 'GRANT', 'REVOKE', 'LOCK',
+                       'UNLOCK', 'CALL', 'LOAD', 'SET '];
+        foreach ($forbidden as $keyword) {
+            if (strpos($normalized, $keyword) === 0) {
+                return ['error' => "Only SELECT queries are allowed (blocked: $keyword)"];
+            }
+        }
+
+        if (strpos($normalized, 'SELECT') !== 0 && strpos($normalized, 'SHOW') !== 0 &&
+            strpos($normalized, 'DESCRIBE') !== 0 && strpos($normalized, 'EXPLAIN') !== 0) {
+            return ['error' => 'Only SELECT, SHOW, DESCRIBE, and EXPLAIN statements are allowed'];
+        }
+
+        // Inject LIMIT if not present
+        if (strpos($normalized, 'LIMIT') === false && strpos($normalized, 'SELECT') === 0) {
+            $sql = rtrim($sql, '; ') . " LIMIT $limit";
+        }
+
+        try {
+            $db = $this->wire->database;
+            $stmt = $db->prepare($sql);
+            $stmt->execute();
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            return [
+                'query' => $sql,
+                'rowCount' => count($rows),
+                'rows' => $rows,
+            ];
+        } catch (\PDOException $e) {
+            return [
+                'error' => 'Query failed: ' . $e->getMessage(),
+                'query' => $sql,
+            ];
+        }
+    }
+
+    /**
+     * Run EXPLAIN on a query for performance analysis
+     *
+     * @param string $sql SQL query to explain
+     * @return array EXPLAIN output
+     */
+    private function dbExplain(string $sql): array {
+        $normalized = strtoupper(trim($sql));
+        if (strpos($normalized, 'SELECT') !== 0) {
+            return ['error' => 'EXPLAIN only works with SELECT queries'];
+        }
+
+        try {
+            $db = $this->wire->database;
+            $stmt = $db->prepare("EXPLAIN $sql");
+            $stmt->execute();
+            $plan = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+            return [
+                'query' => $sql,
+                'plan' => $plan,
+            ];
+        } catch (\PDOException $e) {
+            return [
+                'error' => 'EXPLAIN failed: ' . $e->getMessage(),
+                'query' => $sql,
+            ];
+        }
+    }
+
+    /**
+     * Get row counts for core ProcessWire tables
+     *
+     * Returns approximate row counts from information_schema plus
+     * exact counts for key content tables.
+     *
+     * @return array Table row counts
+     */
+    private function dbCounts(): array {
+        $db = $this->wire->database;
+        $dbName = $this->wire->config->dbName;
+
+        $coreTables = [
+            'pages', 'fields', 'templates', 'fieldgroups', 'fieldgroups_fields',
+            'modules', 'session', 'caches',
+        ];
+
+        $counts = [];
+        foreach ($coreTables as $tbl) {
+            try {
+                $stmt = $db->prepare("SELECT COUNT(*) AS cnt FROM `$tbl`");
+                $stmt->execute();
+                $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+                $counts[$tbl] = (int) $row['cnt'];
+            } catch (\PDOException $e) {
+                $counts[$tbl] = null;
+            }
+        }
+
+        // Also count field data tables (field_*)
+        $stmt = $db->prepare(
+            "SELECT TABLE_NAME, TABLE_ROWS
+             FROM information_schema.TABLES
+             WHERE TABLE_SCHEMA = :db AND TABLE_NAME LIKE 'field_%'
+             ORDER BY TABLE_ROWS DESC
+             LIMIT 20"
+        );
+        $stmt->execute([':db' => $dbName]);
+        $fieldTables = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+        return [
+            'coreTables' => $counts,
+            'topFieldTables' => $fieldTables,
+        ];
+    }
+
+    /**
+     * Read and filter ProcessWire log entries
+     *
+     * Reads from the PW log system (site/assets/logs/). Supports
+     * filtering by log name, level, and text pattern.
+     *
+     * @param string|null $logName Log file name (e.g. 'errors', 'messages', 'exceptions')
+     * @param string|null $level Filter by level (error, warning, info)
+     * @param string|null $text Text pattern to search within entries
+     * @param int $limit Maximum entries to return
+     * @return array Log entries
+     */
+    private function readLogs(?string $logName = null, ?string $level = null, ?string $text = null, int $limit = 50): array {
+        $logsPath = $this->wire->config->paths->assets . 'logs/';
+
+        if (!is_dir($logsPath)) {
+            return ['error' => 'Logs directory not found'];
+        }
+
+        // List available logs if no name specified
+        if (!$logName) {
+            $files = glob($logsPath . '*.txt');
+            $available = [];
+            foreach ($files as $file) {
+                $name = basename($file, '.txt');
+                $available[] = [
+                    'name' => $name,
+                    'size' => filesize($file),
+                    'sizeStr' => $this->formatBytes(filesize($file)),
+                    'modified' => date('c', filemtime($file)),
+                ];
+            }
+            return [
+                'availableLogs' => $available,
+                'hint' => 'Specify a log name to read entries. Common logs: errors, messages, exceptions',
+            ];
+        }
+
+        $logFile = $logsPath . $logName . '.txt';
+        if (!file_exists($logFile)) {
+            // Try without .txt extension
+            $logFile = $logsPath . $logName;
+            if (!file_exists($logFile)) {
+                return ['error' => "Log file not found: $logName"];
+            }
+        }
+
+        // Read lines from end of file (most recent first)
+        $lines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if ($lines === false) {
+            return ['error' => "Could not read log file: $logName"];
+        }
+
+        $lines = array_reverse($lines);
+
+        $entries = [];
+        foreach ($lines as $line) {
+            if (count($entries) >= $limit) break;
+
+            $entry = $this->parseLogLine($line);
+            if (!$entry) continue;
+
+            if ($level && stripos($entry['level'] ?? '', $level) === false) continue;
+            if ($text && stripos($entry['message'], $text) === false) continue;
+
+            $entries[] = $entry;
+        }
+
+        return [
+            'log' => $logName,
+            'count' => count($entries),
+            'entries' => $entries,
+        ];
+    }
+
+    /**
+     * Parse a single ProcessWire log line
+     *
+     * PW log format: "2024-01-15 10:30:45 [user] message text"
+     *
+     * @param string $line Raw log line
+     * @return array|null Parsed entry or null if unparseable
+     */
+    private function parseLogLine(string $line): ?array {
+        // PW log format: "YYYY-MM-DD HH:MM:SS \t URL \t message"
+        // or simply a timestamped line
+        if (preg_match('/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\t(.*)$/s', $line, $m)) {
+            $timestamp = trim($m[1]);
+            $rest = trim($m[2]);
+
+            // The rest may be tab-separated: URL \t message
+            $parts = explode("\t", $rest, 2);
+            $url = count($parts) > 1 ? trim($parts[0]) : null;
+            $message = count($parts) > 1 ? trim($parts[1]) : trim($parts[0]);
+
+            // Derive level from common keywords in the message
+            $levelGuess = 'info';
+            $msgLower = strtolower($message);
+            if (strpos($msgLower, 'error') !== false || strpos($msgLower, 'fatal') !== false ||
+                strpos($msgLower, 'exception') !== false) {
+                $levelGuess = 'error';
+            } elseif (strpos($msgLower, 'warning') !== false || strpos($msgLower, 'deprecated') !== false) {
+                $levelGuess = 'warning';
+            }
+
+            return [
+                'timestamp' => $timestamp,
+                'url' => $url,
+                'message' => $message,
+                'level' => $levelGuess,
+            ];
+        }
+
+        // Fallback: return raw line
+        if (strlen(trim($line)) > 0) {
+            return [
+                'timestamp' => null,
+                'url' => null,
+                'message' => trim($line),
+                'level' => 'info',
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the most recent error from logs
+     *
+     * Scans errors.txt and exceptions.txt for the latest entry.
+     *
+     * @return array Most recent error or "no errors" message
+     */
+    private function lastError(): array {
+        $logsPath = $this->wire->config->paths->assets . 'logs/';
+        $errorLogs = ['errors', 'exceptions'];
+        $latest = null;
+        $latestTimestamp = 0;
+
+        foreach ($errorLogs as $logName) {
+            $logFile = $logsPath . $logName . '.txt';
+            if (!file_exists($logFile)) continue;
+
+            $lines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            if (empty($lines)) continue;
+
+            // Get last non-empty line
+            for ($i = count($lines) - 1; $i >= 0; $i--) {
+                $entry = $this->parseLogLine($lines[$i]);
+                if ($entry && $entry['message']) {
+                    $ts = $entry['timestamp'] ? strtotime($entry['timestamp']) : 0;
+                    if ($ts >= $latestTimestamp) {
+                        $latestTimestamp = $ts;
+                        $latest = $entry;
+                        $latest['source'] = $logName;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (!$latest) {
+            return ['message' => 'No errors found in log files'];
+        }
+
+        return [
+            'lastError' => $latest,
+            'hint' => 'Use pw_logs with the log name for more context',
+        ];
+    }
+
+    /**
+     * Clear ProcessWire caches
+     *
+     * Supports selective or full cache clearing.
+     *
+     * @param string $target Cache target: all, modules, templates, compiled, wire-cache
+     * @return array Result with what was cleared
+     */
+    private function clearCache(string $target = 'all'): array {
+        $cleared = [];
+
+        $validTargets = ['all', 'modules', 'templates', 'compiled', 'wire-cache'];
+        if (!in_array($target, $validTargets)) {
+            return [
+                'error' => "Invalid cache target: $target",
+                'validTargets' => $validTargets,
+            ];
+        }
+
+        if ($target === 'all' || $target === 'modules') {
+            $this->wire->modules->resetCache();
+            $cleared[] = 'modules';
+        }
+
+        if ($target === 'all' || $target === 'templates') {
+            // Clear FileCompiler cache for templates
+            $compiledPath = $this->wire->config->paths->assets . 'cache/FileCompiler/';
+            if (is_dir($compiledPath)) {
+                $this->removeDir($compiledPath);
+                $cleared[] = 'templates (FileCompiler)';
+            } else {
+                $cleared[] = 'templates (no compiled files found)';
+            }
+        }
+
+        if ($target === 'all' || $target === 'compiled') {
+            // Clear all compiled caches
+            $cacheDirs = ['cache/FileCompiler/', 'cache/Latte/', 'cache/Page/'];
+            foreach ($cacheDirs as $dir) {
+                $fullPath = $this->wire->config->paths->assets . $dir;
+                if (is_dir($fullPath)) {
+                    $this->removeDir($fullPath);
+                    $cleared[] = $dir;
+                }
+            }
+        }
+
+        if ($target === 'all' || $target === 'wire-cache') {
+            // Clear WireCache (database-backed cache)
+            $this->wire->cache->deleteAll();
+            $cleared[] = 'wire-cache (database)';
+        }
+
+        return [
+            'success' => true,
+            'target' => $target,
+            'cleared' => $cleared,
+        ];
+    }
+
+    /**
+     * Recursively remove directory contents (preserves the directory itself)
+     *
+     * @param string $dir Directory path
+     */
+    private function removeDir(string $dir): void {
+        if (!is_dir($dir)) return;
+
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+
+        foreach ($items as $item) {
+            if ($item->isDir()) {
+                @rmdir($item->getRealPath());
+            } else {
+                @unlink($item->getRealPath());
+            }
+        }
+    }
+
+    /**
+     * Format byte size to human-readable string
+     *
+     * @param int $bytes Size in bytes
+     * @return string Formatted string (e.g., "1.5 MB")
+     */
+    private function formatBytes(int $bytes): string {
+        if ($bytes === 0) return '0 B';
+        $units = ['B', 'KB', 'MB', 'GB'];
+        $i = floor(log($bytes, 1024));
+        return round($bytes / pow(1024, $i), 1) . ' ' . $units[$i];
+    }
+
     /**
      * Show help information
      * 
@@ -1716,7 +2214,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.1.0',
+            'version' => '1.6.0',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
@@ -1741,6 +2239,13 @@ class CommandRouter {
                 'matrix:info [page] [field]' => 'Get matrix/repeater field structure and types',
                 'matrix:add [page] [field] [type]' => 'Add a new matrix item (--dry-run=0 to create)',
                 'schema:apply [file.json]' => 'Apply a schema JSON file to ProcessWire (--dry-run=0 to apply)',
+                'db-schema [table?]' => 'Inspect database schema (all tables, or one table in detail)',
+                'db-query [sql]' => 'Execute a read-only SELECT query (--limit=N)',
+                'db-explain [sql]' => 'Run EXPLAIN on a SELECT query for performance analysis',
+                'db-counts' => 'Get row counts for core tables and top field tables',
+                'logs [name?]' => 'Read log entries (--level=error --text=pattern --limit=N)',
+                'last-error' => 'Get the most recent error from log files',
+                'clear-cache [target?]' => 'Clear caches (all, modules, templates, compiled, wire-cache)',
                 'help' => 'Show this help',
             ],
             'flags' => [

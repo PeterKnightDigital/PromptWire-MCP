@@ -541,6 +541,115 @@ const tools = [
   // ========================================================================
   // PHASE 4: DIRECT WRITE TOOLS
   // ========================================================================
+  // ========================================================================
+  // PHASE 5: DATABASE, LOGS & CACHE
+  // ========================================================================
+  {
+    name: 'pw_db_schema',
+    description: 'Inspect the database schema. Without arguments lists all tables with engine, row counts, and size. Pass a table name for detailed columns, types, keys, and indexes.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        table: {
+          type: 'string',
+          description: 'Optional table name for detailed column/index info. Omit to list all tables.',
+        },
+      },
+    },
+  },
+  {
+    name: 'pw_db_query',
+    description: 'Execute a read-only SELECT query against the database. Only SELECT, SHOW, and DESCRIBE statements are allowed — mutations are blocked. A LIMIT is auto-injected if not present.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sql: {
+          type: 'string',
+          description: 'SQL query to execute (SELECT only)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum rows to return (default: 100)',
+          default: 100,
+        },
+      },
+      required: ['sql'],
+    },
+  },
+  {
+    name: 'pw_db_explain',
+    description: 'Run EXPLAIN on a SELECT query to show the execution plan. Useful for diagnosing slow queries and missing indexes.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        sql: {
+          type: 'string',
+          description: 'SELECT query to explain',
+        },
+      },
+      required: ['sql'],
+    },
+  },
+  {
+    name: 'pw_db_counts',
+    description: 'Get row counts for core ProcessWire tables (pages, fields, templates, etc.) and the 20 largest field data tables. Quick overview of data volume.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'pw_logs',
+    description: 'Read ProcessWire log entries. Without a log name, lists available log files with sizes. With a name (e.g. "errors", "messages", "exceptions"), returns entries filtered by level and text pattern.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        logName: {
+          type: 'string',
+          description: 'Log file name (e.g. "errors", "messages", "exceptions"). Omit to list available logs.',
+        },
+        level: {
+          type: 'string',
+          description: 'Filter by level: error, warning, or info',
+        },
+        text: {
+          type: 'string',
+          description: 'Filter entries containing this text pattern',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum entries to return (default: 50)',
+          default: 50,
+        },
+      },
+    },
+  },
+  {
+    name: 'pw_last_error',
+    description: 'Get the most recent error from ProcessWire error and exception logs. Quick shortcut to see what went wrong without digging through log files.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'pw_clear_cache',
+    description: 'Clear ProcessWire caches. Targets: "all" (everything), "modules" (module registry), "templates" (compiled template files), "compiled" (all compiled caches), "wire-cache" (database-backed WireCache).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        target: {
+          type: 'string',
+          enum: ['all', 'modules', 'templates', 'compiled', 'wire-cache'],
+          description: 'What to clear (default: "all")',
+          default: 'all',
+        },
+      },
+    },
+  },
+  // ========================================================================
+  // PHASE 4: DIRECT WRITE TOOLS
+  // ========================================================================
   {
     name: 'pw_matrix_info',
     description: 'Get detailed structure of a matrix/repeater field. Shows all matrix types, their fields, and any nested repeaters. Use this before adding content to understand the field structure.',
@@ -606,7 +715,7 @@ const tools = [
 const server = new Server(
   {
     name: 'promptwire',
-    version: '1.0.0',
+    version: '1.6.0',
   },
   {
     capabilities: {
@@ -997,6 +1106,64 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             : `Use these names with pw_schema_compare: ${sites.join(', ')}`,
         },
       });
+    }
+
+    // ========================================================================
+    // PHASE 5: DATABASE, LOGS & CACHE
+    // ========================================================================
+
+    case 'pw_db_schema': {
+      const table = (args as { table?: string }).table;
+      const cmdArgs = table ? [table] : [];
+      const result = await runPwCommand('db-schema', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_db_query': {
+      const { sql, limit } = args as { sql: string; limit?: number };
+      const cmdArgs = [sql];
+      if (limit) {
+        cmdArgs.push(`--limit=${limit}`);
+      }
+      const result = await runPwCommand('db-query', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_db_explain': {
+      const { sql } = args as { sql: string };
+      const result = await runPwCommand('db-explain', [sql]);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_db_counts': {
+      const result = await runPwCommand('db-counts');
+      return formatToolResponse(result);
+    }
+
+    case 'pw_logs': {
+      const { logName, level, text, limit } = args as {
+        logName?: string;
+        level?: string;
+        text?: string;
+        limit?: number;
+      };
+      const cmdArgs = logName ? [logName] : [];
+      if (level) cmdArgs.push(`--level=${level}`);
+      if (text) cmdArgs.push(`--text=${text}`);
+      if (limit) cmdArgs.push(`--limit=${limit}`);
+      const result = await runPwCommand('logs', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_last_error': {
+      const result = await runPwCommand('last-error');
+      return formatToolResponse(result);
+    }
+
+    case 'pw_clear_cache': {
+      const target = (args as { target?: string }).target || 'all';
+      const result = await runPwCommand('clear-cache', [target]);
+      return formatToolResponse(result);
     }
 
     // ========================================================================
