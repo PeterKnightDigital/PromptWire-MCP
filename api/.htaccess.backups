@@ -1,0 +1,10 @@
+# Deny all web access to PromptWire backup files.
+# Deploy this file as: site/assets/backups/promptwire/.htaccess
+
+<IfModule mod_authz_core.c>
+  Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order deny,allow
+  Deny from all
+</IfModule>

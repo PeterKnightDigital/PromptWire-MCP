@@ -17,7 +17,7 @@
  * @package     PromptWire
  * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
- * @version     1.6.0
+ * @version     1.7.0
  * @link        https://github.com/PeterKnightDigital/PromptWire-MCP
  * 
  * @see         /bin/promptwire.php      CLI entrypoint
@@ -31,11 +31,11 @@ class PromptWire extends WireData implements Module {
         return [
             'title' => 'PromptWire',
             'summary' => 'ProcessWire ↔ Cursor MCP Bridge for AI-assisted development',
-            'version' => '1.6.0',
+            'version' => '1.7.0',
             'author' => 'Peter Knight',
             'href' => 'https://github.com/PeterKnightDigital/PromptWire-MCP',
             'singular' => true,
-            'autoload' => false,
+            'autoload' => true,
             'icon' => 'plug',
             'requires' => 'ProcessWire>=3.0.0',
             'installs' => ['ProcessPromptWireAdmin'],
@@ -103,6 +103,33 @@ class PromptWire extends WireData implements Module {
             $item->isDir() ? rmdir($item->getRealPath()) : unlink($item->getRealPath());
         }
         rmdir($dir);
+    }
+
+    public function init() {
+        $flagFile = $this->wire('config')->paths->assets . 'cache/maintenance.flag';
+        if (!file_exists($flagFile)) return;
+        if ($this->wire('user')->isSuperuser()) return;
+        if (php_sapi_name() === 'cli') return;
+
+        $uri = $_SERVER['REQUEST_URI'] ?? '';
+        $apiPatterns = ['promptwire', 'pw-mcp', 'pw-bridge'];
+        foreach ($apiPatterns as $pattern) {
+            if (stripos($uri, $pattern) !== false) return;
+        }
+
+        $customPage = __DIR__ . '/maintenance.html';
+        header('HTTP/1.1 503 Service Temporarily Unavailable');
+        header('Retry-After: 300');
+        header('Content-Type: text/html; charset=utf-8');
+        if (file_exists($customPage)) {
+            readfile($customPage);
+        } else {
+            echo '<html><head><title>Maintenance</title></head><body>';
+            echo '<h1>Site is undergoing maintenance</h1>';
+            echo '<p>We\'ll be back shortly.</p>';
+            echo '</body></html>';
+        }
+        exit;
     }
 
     public function getPwVersion(): string {

@@ -35,6 +35,7 @@ import { pushPage, publishPage } from './pages/pusher.js';
 import { syncFiles } from './pages/file-sync.js';
 import { validateRefs } from './pages/validator.js';
 import { compareSites as compareSiteFull } from './sync/site-compare.js';
+import { syncSites } from './sync/site-sync.js';
 
 // ============================================================================
 // TOOL DEFINITIONS
@@ -704,6 +705,69 @@ const tools = [
   // PHASE 5: SITE SYNC
   // ========================================================================
   {
+    name: 'pw_maintenance',
+    description: 'Toggle maintenance mode on a ProcessWire site. When enabled, front-end visitors see a maintenance page (503). Superusers and the PromptWire API are unaffected. Use before deploying changes to production.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['on', 'off', 'status'],
+          description: 'Action: "on" to enable, "off" to disable, "status" to check current state.',
+        },
+        message: {
+          type: 'string',
+          description: 'Optional custom message when enabling maintenance mode.',
+        },
+        targets: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Where to toggle maintenance mode. Defaults to "local".',
+          default: 'local',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'pw_backup',
+    description: 'Create, list, restore, or delete site backups. Uses ProcessWire\'s built-in database backup engine for SQL dumps and creates a zip of site/templates and site/modules for file backups. Always create a backup before running destructive sync operations.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['create', 'list', 'restore', 'delete'],
+          description: 'Action to perform.',
+        },
+        description: {
+          type: 'string',
+          description: 'Label for the backup (used with "create").',
+        },
+        filename: {
+          type: 'string',
+          description: 'Backup filename or timestamp (used with "restore" and "delete").',
+        },
+        excludeTables: {
+          type: 'string',
+          description: 'Comma-separated table names to exclude from DB backup (used with "create").',
+        },
+        includeFiles: {
+          type: 'boolean',
+          description: 'Whether to include a file backup zip alongside the DB dump. Defaults to true.',
+          default: true,
+        },
+        targets: {
+          type: 'string',
+          enum: ['local', 'remote'],
+          description: 'Where to run the backup. Defaults to "local".',
+          default: 'local',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'pw_site_compare',
     description: 'Compare local and remote ProcessWire sites across pages, schema, and files. Pages are matched by path (not ID). Returns a structured report of what differs, what exists only on one side, and what is identical. Requires both PW_PATH (local) and PW_REMOTE_URL (remote).',
     inputSchema: {
@@ -728,6 +792,57 @@ const tools = [
           type: 'array',
           items: { type: 'string' },
           description: 'Glob patterns to skip in file comparison (e.g. ["site/modules/PromptWire/*"]). Defaults to ["site/modules/PromptWire/*"].',
+        },
+      },
+    },
+  },
+  {
+    name: 'pw_site_sync',
+    description: 'Synchronise local and remote ProcessWire sites. Runs a comparison first, then selectively pushes schema, pages, and/or files. Supports optional backup and maintenance mode. Dry-run by default — set dryRun=false to apply. If a step fails, maintenance mode stays ON and the backup ID is reported for rollback.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        direction: {
+          type: 'string',
+          enum: ['local-to-remote', 'remote-to-local'],
+          description: 'Sync direction. Defaults to "local-to-remote".',
+          default: 'local-to-remote',
+        },
+        scope: {
+          type: 'string',
+          enum: ['all', 'pages', 'schema', 'files'],
+          description: 'What to sync. Defaults to "all".',
+          default: 'all',
+        },
+        excludeTemplates: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Template names to exclude (supports wildcards). Defaults to ["user", "role", "permission", "admin"].',
+        },
+        excludePages: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Specific page paths to exclude.',
+        },
+        excludeFilePatterns: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Glob patterns to skip in file sync.',
+        },
+        backup: {
+          type: 'boolean',
+          description: 'Create a backup on the target before writing. Defaults to true.',
+          default: true,
+        },
+        maintenance: {
+          type: 'boolean',
+          description: 'Enable maintenance mode on the target during sync. Defaults to false.',
+          default: false,
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'Preview what would be synced without making changes. Defaults to true.',
+          default: true,
         },
       },
     },
@@ -1236,6 +1351,85 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // PHASE 5: SITE SYNC
     // ========================================================================
 
+    case 'pw_maintenance': {
+      const { action, message, targets } = args as {
+        action: 'on' | 'off' | 'status';
+        message?: string;
+        targets?: 'local' | 'remote' | 'both';
+      };
+      const target = targets ?? 'local';
+      const command = `maintenance:${action}`;
+      const cmdArgs = action === 'on' && message ? [message] : [];
+
+      if (target === 'both') {
+        const [localResult, remoteResult] = await Promise.all([
+          runPwCommand(command, cmdArgs),
+          (async () => {
+            const url = process.env.PW_REMOTE_URL;
+            const key = process.env.PW_REMOTE_KEY;
+            if (!url || !key) return { success: false, error: 'PW_REMOTE_URL and PW_REMOTE_KEY required for remote target.' };
+            const { runRemoteCommand } = await import('./remote/client.js');
+            return runRemoteCommand(command, cmdArgs, undefined, url, key);
+          })(),
+        ]);
+        return formatToolResponse({
+          success: localResult.success && remoteResult.success,
+          data: { local: localResult.data ?? localResult.error, remote: remoteResult.data ?? remoteResult.error },
+          error: (!localResult.success || !remoteResult.success)
+            ? `Local: ${localResult.error ?? 'ok'}, Remote: ${remoteResult.error ?? 'ok'}`
+            : undefined,
+        });
+      }
+
+      if (target === 'remote') {
+        const url = process.env.PW_REMOTE_URL;
+        const key = process.env.PW_REMOTE_KEY;
+        if (!url || !key) {
+          return formatToolResponse({ success: false, error: 'PW_REMOTE_URL and PW_REMOTE_KEY required for remote target.' });
+        }
+        const { runRemoteCommand } = await import('./remote/client.js');
+        const result = await runRemoteCommand(command, cmdArgs, undefined, url, key);
+        return formatToolResponse(result);
+      }
+
+      const result = await runPwCommand(command, cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_backup': {
+      const { action, description, filename, excludeTables, includeFiles, targets } = args as {
+        action: 'create' | 'list' | 'restore' | 'delete';
+        description?: string;
+        filename?: string;
+        excludeTables?: string;
+        includeFiles?: boolean;
+        targets?: 'local' | 'remote';
+      };
+      const target = targets ?? 'local';
+      const command = `backup:${action}`;
+
+      const positionalArgs: string[] = [];
+      if (action === 'create' && description) positionalArgs.push(description);
+      if ((action === 'restore' || action === 'delete') && filename) positionalArgs.push(filename);
+
+      if (action === 'create' && excludeTables) positionalArgs.push(`--exclude-tables=${excludeTables}`);
+      if (action === 'create' && includeFiles === false) positionalArgs.push('--no-files');
+
+      if (target === 'remote') {
+        const url = process.env.PW_REMOTE_URL;
+        const key = process.env.PW_REMOTE_KEY;
+        if (!url || !key) {
+          return formatToolResponse({ success: false, error: 'PW_REMOTE_URL and PW_REMOTE_KEY required for remote target.' });
+        }
+        const { runRemoteCommand } = await import('./remote/client.js');
+        const result = await runRemoteCommand(command, positionalArgs, undefined, url, key);
+        return formatToolResponse(result);
+      }
+
+      const result = await runPwCommand(command, positionalArgs);
+      return formatToolResponse(result);
+    }
+
     case 'pw_site_compare': {
       const {
         excludeTemplates,
@@ -1253,6 +1447,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         excludePages,
         includeDirs,
         excludeFilePatterns,
+      });
+      return formatToolResponse(result);
+    }
+
+    case 'pw_site_sync': {
+      const {
+        direction,
+        scope,
+        excludeTemplates,
+        excludePages,
+        excludeFilePatterns,
+        backup,
+        maintenance,
+        dryRun,
+      } = args as {
+        direction?: 'local-to-remote' | 'remote-to-local';
+        scope?: 'all' | 'pages' | 'schema' | 'files';
+        excludeTemplates?: string[];
+        excludePages?: string[];
+        excludeFilePatterns?: string[];
+        backup?: boolean;
+        maintenance?: boolean;
+        dryRun?: boolean;
+      };
+      const result = await syncSites({
+        direction:          direction ?? 'local-to-remote',
+        scope:              scope ?? 'all',
+        excludeTemplates,
+        excludePages,
+        excludeFilePatterns,
+        backup:             backup !== false,
+        maintenance:        maintenance ?? false,
+        dryRun:             dryRun !== false,
       });
       return formatToolResponse(result);
     }

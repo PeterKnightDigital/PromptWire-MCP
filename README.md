@@ -6,7 +6,7 @@ ProcessWire ↔ Cursor MCP Bridge for AI-assisted development.
 
 ## Introduction
 
-PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 36 specialised tools for site inspection, content sync, schema management, page creation, database introspection, log analysis, and cross-environment deployment.
+PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 40 specialised tools for site inspection, content sync, schema management, page creation, database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
 
 **Just describe what you want in plain language:**
 
@@ -15,6 +15,8 @@ PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Pr
 > *"Pull our About page, rewrite the body to be more concise, and push the changes to both local and production."*
 
 > *"Compare our local schema against production and flag anything that could cause problems if we pushed."*
+
+> *"Sync everything to production with backup and maintenance mode. Dry-run first."*
 
 The agent reads your site's schema, selects the right tools, sequences the operations, and previews everything before applying. No tool names to memorise — see the [Prompt recipes](https://www.peterknight.digital/docs/promptwire/v1/prompt-recipes/) for more examples.
 
@@ -85,7 +87,7 @@ If `which php` returns the correct version (8.0+), you can omit `PHP_PATH` entir
 
 ### 4. (Optional) Remote site access
 
-To push content to a production site, deploy the API endpoint file (`api/promptwire-api.php`) to your remote site root. **Rename it** to something non-obvious (e.g. `pw-xyz8k3m.php`) so the URL isn't guessable from the public documentation, then set `PW_REMOTE_URL` to match.
+To push content to a production site, deploy the API endpoint file (`api/promptwire-api.php`) to your remote site root. **Rename it** to something non-obvious (e.g. `pw-xyz8k3m.php`) so the URL isn't guessable from the public documentation, then set `PW_REMOTE_URL` to match. The endpoint enforces HTTPS; requests over plain HTTP are rejected with a 403.
 
 See the [Remote setup guide](https://www.peterknight.digital/docs/promptwire/v1/remote-setup/) for full instructions.
 
@@ -174,6 +176,15 @@ Content is synced to `site/assets/pw-mcp/` — editable YAML files that you can 
 | ---------------- | ------------------------------------------------------------------ |
 | `pw_clear_cache` | Clear ProcessWire caches (all, modules, templates, compiled, wire) |
 
+### Site sync
+
+| Tool               | Description                                                                  |
+| ------------------ | ---------------------------------------------------------------------------- |
+| `pw_site_compare`  | Compare local and remote sites across pages, schema, and template/module files |
+| `pw_site_sync`     | Orchestrated deployment: compare, backup, maintenance, push, verify          |
+| `pw_maintenance`   | Toggle maintenance mode on local, remote, or both sites                      |
+| `pw_backup`        | Create, list, restore, or delete site backups (database + files)             |
+
 For detailed parameters and examples, see the [Tools reference](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/).
 
 ## Admin dashboard
@@ -192,9 +203,10 @@ For a full walkthrough, see the [Admin dashboard guide](https://www.peterknight.
 - [**Schema sync**](https://www.peterknight.digital/docs/promptwire/v1/schema-sync/) — Synchronising fields and templates between sites
 - [**Admin dashboard**](https://www.peterknight.digital/docs/promptwire/v1/admin-dashboard/) — Visual sync UI walkthrough
 - [**Prompt recipes**](https://www.peterknight.digital/docs/promptwire/v1/prompt-recipes/) — Natural language prompts for common workflows
-- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All tools with parameters and examples
+- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 40 tools with parameters and examples
 - [**Environment variables**](https://www.peterknight.digital/docs/promptwire/v1/environment-variables/) — Configuration reference
-- [**Security**](https://www.peterknight.digital/docs/promptwire/v1/security/) — API authentication, IP allowlists, and best practices
+- [**Security**](https://www.peterknight.digital/docs/promptwire/v1/security/) — HTTPS enforcement, API authentication, backup protection, and best practices
+- [**Changelog**](https://www.peterknight.digital/docs/promptwire/v1/changelog/) — Version history
 
 ## Requirements
 

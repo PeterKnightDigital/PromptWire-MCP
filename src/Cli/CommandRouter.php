@@ -305,6 +305,44 @@ class CommandRouter {
                 $target = $positional[0] ?? 'all';
                 return $this->clearCache($target);
 
+            case 'maintenance:on':
+                $message = $positional[0] ?? null;
+                return $this->maintenanceOn($message);
+
+            case 'maintenance:off':
+                return $this->maintenanceOff();
+
+            case 'maintenance:status':
+                return $this->maintenanceStatus();
+
+            case 'backup:create':
+                $description = $positional[0] ?? '';
+                $excludeTables = $flags['exclude-tables'] ?? '';
+                $includeFiles = !isset($flags['no-files']);
+                return $this->backupCreate($description, $excludeTables, $includeFiles);
+
+            case 'backup:list':
+                return $this->backupList();
+
+            case 'backup:restore':
+                $filename = $positional[0] ?? null;
+                if (!$filename) {
+                    return ['error' => 'Backup filename required. Use backup:list to see available backups.'];
+                }
+                return $this->backupRestore($filename);
+
+            case 'backup:delete':
+                $filename = $positional[0] ?? null;
+                if (!$filename) {
+                    return ['error' => 'Backup filename required. Use backup:list to see available backups.'];
+                }
+                return $this->backupDelete($filename);
+
+            case 'files:push':
+                $filesJson = $flags['files'] ?? '[]';
+                $dryRun = !isset($flags['confirm']);
+                return $this->filesPush($filesJson, $dryRun);
+
             case 'site:inventory':
                 $excludeTemplates = $flags['exclude-templates'] ?? '';
                 $includeSystem = isset($flags['include-system']) && $flags['include-system'];
@@ -2216,6 +2254,454 @@ class CommandRouter {
     }
 
     // ========================================================================
+    // SITE SYNC — MAINTENANCE MODE
+    // ========================================================================
+
+    /**
+     * Enable maintenance mode.
+     *
+     * Creates a flag file that the PromptWire module checks on every
+     * front-end request.  Superusers and API endpoint requests are
+     * not affected.
+     *
+     * @param string|null $message Optional custom message (reserved for future use)
+     * @return array Status
+     */
+    private function maintenanceOn(?string $message = null): array {
+        $flagFile = $this->wire->config->paths->assets . 'cache/maintenance.flag';
+        $data = [
+            'enabledAt' => date('c'),
+            'enabledBy' => 'PromptWire CLI',
+            'message'   => $message,
+        ];
+
+        $dir = dirname($flagFile);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
+        file_put_contents($flagFile, json_encode($data, JSON_PRETTY_PRINT));
+
+        return [
+            'success'     => true,
+            'maintenance' => true,
+            'flagFile'    => $flagFile,
+            'enabledAt'   => $data['enabledAt'],
+            'message'     => $message,
+            'note'        => 'Front-end visitors will see the maintenance page. Superusers and API requests are unaffected.',
+        ];
+    }
+
+    /**
+     * Disable maintenance mode.
+     *
+     * Removes the flag file so normal front-end rendering resumes.
+     *
+     * @return array Status
+     */
+    private function maintenanceOff(): array {
+        $flagFile = $this->wire->config->paths->assets . 'cache/maintenance.flag';
+
+        if (!file_exists($flagFile)) {
+            return [
+                'success'     => true,
+                'maintenance' => false,
+                'note'        => 'Maintenance mode was not enabled.',
+            ];
+        }
+
+        unlink($flagFile);
+
+        return [
+            'success'     => true,
+            'maintenance' => false,
+            'disabledAt'  => date('c'),
+            'note'        => 'Maintenance mode disabled. Front-end is live.',
+        ];
+    }
+
+    /**
+     * Check whether maintenance mode is active.
+     *
+     * @return array Current status
+     */
+    private function maintenanceStatus(): array {
+        $flagFile = $this->wire->config->paths->assets . 'cache/maintenance.flag';
+
+        if (!file_exists($flagFile)) {
+            return [
+                'maintenance' => false,
+                'note'        => 'Site is live.',
+            ];
+        }
+
+        $data = json_decode(file_get_contents($flagFile), true) ?: [];
+
+        return [
+            'maintenance' => true,
+            'enabledAt'   => $data['enabledAt'] ?? 'unknown',
+            'enabledBy'   => $data['enabledBy'] ?? 'unknown',
+            'message'     => $data['message'] ?? null,
+            'note'        => 'Front-end visitors see the maintenance page. Superusers and API requests are unaffected.',
+        ];
+    }
+
+    // ========================================================================
+    // SITE SYNC — BACKUP & RESTORE
+    // ========================================================================
+
+    /**
+     * Create a backup of the database (and optionally key files).
+     *
+     * Uses ProcessWire's built-in WireDatabaseBackup for the SQL dump,
+     * then optionally creates a zip of site/templates and site/modules.
+     *
+     * @param string $description  Human-readable label for this backup
+     * @param string $excludeTables  Comma-separated table names to skip
+     * @param bool   $includeFiles   Whether to also back up template/module files
+     * @return array
+     */
+    private function backupCreate(string $description = '', string $excludeTables = '', bool $includeFiles = true): array {
+        $config  = $this->wire->config;
+        $database = $this->wire->database;
+
+        $backupDir = $config->paths->assets . 'backups/promptwire/';
+        if (!is_dir($backupDir)) {
+            mkdir($backupDir, 0755, true);
+            $htaccess = $backupDir . '.htaccess';
+            if (!file_exists($htaccess)) {
+                file_put_contents($htaccess, "# Deny all web access to backup files\n<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n  Order deny,allow\n  Deny from all\n</IfModule>\n");
+            }
+        }
+
+        $timestamp = date('Y-m-d_His');
+        $label = $description ?: 'PromptWire backup';
+
+        $backup = $database->backups();
+        $backup->setPath($backupDir);
+        $backup->setDatabase($database);
+        $backup->setDatabaseConfig($config);
+
+        $options = [
+            'filename'    => "db-{$timestamp}.sql",
+            'description' => $label,
+        ];
+
+        if ($excludeTables) {
+            $options['excludeTables'] = array_map('trim', explode(',', $excludeTables));
+        }
+
+        $sqlFile = $backup->backup($options);
+        $errors  = $backup->errors();
+
+        if (!$sqlFile) {
+            return [
+                'success' => false,
+                'error'   => 'Database backup failed: ' . implode('; ', $errors),
+            ];
+        }
+
+        $result = [
+            'success'  => true,
+            'database' => [
+                'file' => basename($sqlFile),
+                'size' => filesize($sqlFile),
+                'path' => $sqlFile,
+            ],
+        ];
+
+        if ($includeFiles && class_exists('ZipArchive')) {
+            $zipPath = $backupDir . "files-{$timestamp}.zip";
+            $zip = new \ZipArchive();
+
+            if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true) {
+                $dirs = [
+                    'site/templates' => $config->paths->site . 'templates',
+                    'site/modules'   => $config->paths->site . 'modules',
+                ];
+
+                foreach ($dirs as $prefix => $dirPath) {
+                    if (!is_dir($dirPath)) continue;
+                    $iterator = new \RecursiveIteratorIterator(
+                        new \RecursiveDirectoryIterator($dirPath, \RecursiveDirectoryIterator::SKIP_DOTS),
+                        \RecursiveIteratorIterator::LEAVES_ONLY
+                    );
+                    foreach ($iterator as $file) {
+                        if ($file->isFile()) {
+                            $relativePath = $prefix . '/' . substr($file->getRealPath(), strlen(realpath($dirPath)) + 1);
+                            $zip->addFile($file->getRealPath(), $relativePath);
+                        }
+                    }
+                }
+
+                $zip->close();
+                $result['files'] = [
+                    'file' => basename($zipPath),
+                    'size' => filesize($zipPath),
+                    'path' => $zipPath,
+                ];
+            } else {
+                $result['files'] = ['warning' => 'Could not create file backup zip.'];
+            }
+        } elseif ($includeFiles) {
+            $result['files'] = ['warning' => 'ZipArchive not available — file backup skipped.'];
+        }
+
+        $result['timestamp']   = $timestamp;
+        $result['description'] = $label;
+
+        return $result;
+    }
+
+    /**
+     * List available PromptWire backups.
+     *
+     * @return array
+     */
+    private function backupList(): array {
+        $backupDir = $this->wire->config->paths->assets . 'backups/promptwire/';
+
+        if (!is_dir($backupDir)) {
+            return ['backups' => [], 'count' => 0, 'path' => $backupDir];
+        }
+
+        $database = $this->wire->database;
+        $backup   = $database->backups();
+        $backup->setPath($backupDir);
+
+        $groups = [];
+        $files  = scandir($backupDir);
+        sort($files);
+
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..') continue;
+            $fullPath = $backupDir . $file;
+
+            if (preg_match('/^db-(\d{4}-\d{2}-\d{2}_\d{6})\.sql$/', $file, $m)) {
+                $ts = $m[1];
+                if (!isset($groups[$ts])) $groups[$ts] = ['timestamp' => $ts];
+                $info = $backup->getFileInfo($fullPath);
+                $groups[$ts]['database'] = [
+                    'file'        => $file,
+                    'size'        => filesize($fullPath),
+                    'description' => $info['description'] ?? '',
+                    'valid'       => $info['valid'] ?? false,
+                    'tables'      => $info['numTables'] ?? null,
+                ];
+            } elseif (preg_match('/^files-(\d{4}-\d{2}-\d{2}_\d{6})\.zip$/', $file, $m)) {
+                $ts = $m[1];
+                if (!isset($groups[$ts])) $groups[$ts] = ['timestamp' => $ts];
+                $groups[$ts]['files'] = [
+                    'file' => $file,
+                    'size' => filesize($fullPath),
+                ];
+            }
+        }
+
+        krsort($groups);
+
+        return [
+            'backups' => array_values($groups),
+            'count'   => count($groups),
+            'path'    => $backupDir,
+        ];
+    }
+
+    /**
+     * Restore a database backup.
+     *
+     * Accepts either a full filename (db-2026-04-21_231500.sql) or
+     * just the timestamp portion (2026-04-21_231500).
+     *
+     * @param string $filename
+     * @return array
+     */
+    private function backupRestore(string $filename): array {
+        $backupDir = $this->wire->config->paths->assets . 'backups/promptwire/';
+
+        if (preg_match('/^\d{4}-\d{2}-\d{2}_\d{6}$/', $filename)) {
+            $filename = "db-{$filename}.sql";
+        }
+
+        $fullPath = $backupDir . basename($filename);
+
+        if (!file_exists($fullPath)) {
+            return ['success' => false, 'error' => "Backup file not found: {$filename}"];
+        }
+
+        $database = $this->wire->database;
+        $backup   = $database->backups();
+        $backup->setPath($backupDir);
+        $backup->setDatabase($database);
+        $backup->setDatabaseConfig($this->wire->config);
+
+        $success = $backup->restore($fullPath);
+        $errors  = $backup->errors();
+
+        if (!$success) {
+            return [
+                'success' => false,
+                'error'   => 'Restore failed: ' . implode('; ', $errors),
+            ];
+        }
+
+        return [
+            'success'  => true,
+            'restored' => basename($fullPath),
+            'note'     => 'Database restored. File backup (if any) must be restored manually or via pw_site_sync.',
+        ];
+    }
+
+    /**
+     * Delete a backup (both SQL and zip if they share the same timestamp).
+     *
+     * @param string $filename  Full filename or timestamp
+     * @return array
+     */
+    private function backupDelete(string $filename): array {
+        $backupDir = $this->wire->config->paths->assets . 'backups/promptwire/';
+
+        $timestamp = $filename;
+        if (preg_match('/^(?:db|files)-(\d{4}-\d{2}-\d{2}_\d{6})/', $filename, $m)) {
+            $timestamp = $m[1];
+        }
+
+        $deleted = [];
+        $candidates = ["db-{$timestamp}.sql", "files-{$timestamp}.zip"];
+
+        foreach ($candidates as $candidate) {
+            $path = $backupDir . $candidate;
+            if (file_exists($path) && unlink($path)) {
+                $deleted[] = $candidate;
+            }
+        }
+
+        if (empty($deleted)) {
+            return ['success' => false, 'error' => "No backup files found for: {$filename}"];
+        }
+
+        return [
+            'success' => true,
+            'deleted' => $deleted,
+        ];
+    }
+
+    // ========================================================================
+    // SITE SYNC — FILE PUSH
+    // ========================================================================
+
+    /**
+     * Write one or more files to the site.
+     *
+     * Accepts a JSON array of {relativePath, contentBase64} objects.
+     * Validates that paths are within allowed directories and backs up
+     * any files being overwritten.
+     *
+     * @param string $filesJson  JSON-encoded array of files to write
+     * @param bool   $dryRun     If true, report what would happen without writing
+     * @return array
+     */
+    private function filesPush(string $filesJson, bool $dryRun = true): array {
+        $files = json_decode($filesJson, true);
+        if (!is_array($files) || empty($files)) {
+            return ['success' => false, 'error' => 'No files provided. Expected JSON array of {relativePath, contentBase64}.'];
+        }
+
+        $pwRoot = rtrim($this->wire->config->paths->root, '/') . '/';
+        $allowedPrefixes = ['site/templates/', 'site/modules/', 'site/init.php', 'site/ready.php', 'site/finished.php'];
+
+        $results   = [];
+        $written   = 0;
+        $skipped   = 0;
+        $backedUp  = 0;
+
+        $backupDir = '';
+        if (!$dryRun) {
+            $backupDir = $this->wire->config->paths->assets . 'backups/promptwire/file-push-' . date('Y-m-d_His') . '/';
+        }
+
+        foreach ($files as $file) {
+            $relPath = $file['relativePath'] ?? '';
+            $content = $file['contentBase64'] ?? '';
+
+            if (!$relPath) {
+                $results[] = ['path' => $relPath, 'status' => 'error', 'reason' => 'Missing relativePath'];
+                $skipped++;
+                continue;
+            }
+
+            $allowed = false;
+            foreach ($allowedPrefixes as $prefix) {
+                if (strpos($relPath, $prefix) === 0) {
+                    $allowed = true;
+                    break;
+                }
+            }
+
+            if (!$allowed) {
+                $results[] = ['path' => $relPath, 'status' => 'denied', 'reason' => 'Path outside allowed directories'];
+                $skipped++;
+                continue;
+            }
+
+            if (strpos($relPath, '..') !== false) {
+                $results[] = ['path' => $relPath, 'status' => 'denied', 'reason' => 'Path traversal not allowed'];
+                $skipped++;
+                continue;
+            }
+
+            $fullPath = $pwRoot . $relPath;
+            $exists = file_exists($fullPath);
+
+            if ($dryRun) {
+                $results[] = [
+                    'path'   => $relPath,
+                    'status' => $exists ? 'would_overwrite' : 'would_create',
+                    'size'   => strlen(base64_decode($content)),
+                ];
+                $written++;
+                continue;
+            }
+
+            if ($exists && $backupDir) {
+                $backupPath = $backupDir . $relPath;
+                $backupParent = dirname($backupPath);
+                if (!is_dir($backupParent)) mkdir($backupParent, 0755, true);
+                copy($fullPath, $backupPath);
+                $backedUp++;
+            }
+
+            $dir = dirname($fullPath);
+            if (!is_dir($dir)) mkdir($dir, 0755, true);
+
+            $decoded = base64_decode($content);
+            if ($decoded === false) {
+                $results[] = ['path' => $relPath, 'status' => 'error', 'reason' => 'Invalid base64 content'];
+                $skipped++;
+                continue;
+            }
+
+            file_put_contents($fullPath, $decoded);
+            $results[] = [
+                'path'   => $relPath,
+                'status' => $exists ? 'overwritten' : 'created',
+                'size'   => strlen($decoded),
+            ];
+            $written++;
+        }
+
+        return [
+            'success'  => $skipped === 0,
+            'dryRun'   => $dryRun,
+            'written'  => $written,
+            'skipped'  => $skipped,
+            'backedUp' => $backedUp,
+            'backupDir'=> $backupDir ?: null,
+            'files'    => $results,
+        ];
+    }
+
+    // ========================================================================
     // SITE SYNC — INVENTORY & COMPARISON
     // ========================================================================
 
@@ -2433,6 +2919,14 @@ class CommandRouter {
                 'logs [name?]' => 'Read log entries (--level=error --text=pattern --limit=N)',
                 'last-error' => 'Get the most recent error from log files',
                 'clear-cache [target?]' => 'Clear caches (all, modules, templates, compiled, wire-cache)',
+                'maintenance:on [message?]' => 'Enable maintenance mode (blocks front-end visitors)',
+                'maintenance:off' => 'Disable maintenance mode (site goes live)',
+                'maintenance:status' => 'Check if maintenance mode is active',
+                'backup:create [description?]' => 'Create DB + file backup (--exclude-tables=sessions,caches --no-files)',
+                'backup:list' => 'List available PromptWire backups',
+                'backup:restore <filename|timestamp>' => 'Restore a database backup',
+                'backup:delete <filename|timestamp>' => 'Delete a backup (DB + files)',
+                'files:push' => 'Push files to site (--files=JSON --confirm for live)',
                 'site:inventory' => 'Page inventory with content hashes (--exclude-templates=user,role --include-system)',
                 'files:inventory' => 'File inventory with MD5 hashes (--directories=site/templates,site/modules --extensions=php,js)',
                 'help' => 'Show this help',

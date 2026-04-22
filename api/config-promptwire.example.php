@@ -28,3 +28,9 @@ define('PROMPTWIRE_API_KEY', 'REPLACE_WITH_A_STRONG_RANDOM_KEY');
 
 // Multiple IPs: comma-separated
 // define('PROMPTWIRE_ALLOWED_IPS', '1.2.3.4,5.6.7.8');
+
+// HTTPS is enforced by default. The API key is sent in a header, so it must
+// not travel over an unencrypted connection. Only define this for local dev
+// environments that genuinely cannot use HTTPS (e.g. plain HTTP on MAMP).
+// NEVER set this on a production or internet-facing site.
+// define('PROMPTWIRE_ALLOW_HTTP', true);

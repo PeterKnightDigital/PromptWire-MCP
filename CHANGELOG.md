@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.0 (21 April 2026)
+
+- **New:** `pw_site_compare` — compare local and remote sites across pages, schema, and template/module files. Pages are matched by path, not ID, so comparison works across environments with different auto-increment sequences.
+- **New:** `pw_site_sync` — orchestrated deployment. Runs a comparison, optionally backs up the target, enables maintenance mode, pushes schema, pages (with file/image assets), and template/module files, then disables maintenance. Dry-run by default.
+- **New:** `pw_maintenance` — toggle maintenance mode on local, remote, or both sites. Front-end visitors see a styled 503 page; superusers and the PromptWire API are unaffected.
+- **New:** `pw_backup` — create, list, restore, and delete site backups. Database dumps use ProcessWire's built-in `WireDatabaseBackup`; file backups zip `site/templates` and `site/modules`.
+- **Security:** HTTPS is now enforced on the API endpoint. Requests over plain HTTP receive a 403 before the API key is checked. Local development environments can bypass this with `PROMPTWIRE_ALLOW_HTTP` in `config-promptwire.php`.
+- **Security:** Backup directories are automatically protected with a `.htaccess` that denies all web access.
+- **Changed:** Module is now `autoload` so it can intercept front-end requests during maintenance mode. The overhead is a single `file_exists()` check per page load.
+
 ## 1.6.0 (21 April 2026)
 
 - **New:** `pw_db_schema` — inspect database tables. Without arguments, lists all tables with engines, row counts, and sizes. Pass a table name for detailed columns, types, keys, and indexes.

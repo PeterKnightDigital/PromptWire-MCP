@@ -95,6 +95,24 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // ============================================================================
+// SECURITY: HTTPS ENFORCEMENT
+// ============================================================================
+
+$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
+    || (isset($_SERVER['SERVER_PORT']) && (int) $_SERVER['SERVER_PORT'] === 443);
+
+if (!$isHttps && !defined('PROMPTWIRE_ALLOW_HTTP')) {
+    http_response_code(403);
+    echo json_encode([
+        'error' => 'HTTPS required — API key must not be sent over an unencrypted connection. '
+                 . 'If you are behind a reverse proxy that terminates SSL, ensure X-Forwarded-Proto is set. '
+                 . 'For local development only, define PROMPTWIRE_ALLOW_HTTP in config-promptwire.php to bypass.',
+    ]);
+    exit;
+}
+
+// ============================================================================
 // SECURITY: API KEY AUTHENTICATION
 // ============================================================================
 
