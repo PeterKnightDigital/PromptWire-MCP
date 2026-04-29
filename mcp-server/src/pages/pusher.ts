@@ -367,9 +367,15 @@ export async function publishPage(opts: PublishPageOptions): Promise<PwCommandRe
       results['remote'] = { error: `Failed to parse YAML at ${yamlPath} — cannot publish with empty fields` };
     } else {
       const template   = meta.template   ?? '';
-      const parentPath = meta.parentPath ?? '/';
       const pathParts  = (meta.canonicalPath ?? '').split('/').filter(Boolean);
       const pageName   = meta.pageName ?? pathParts[pathParts.length - 1] ?? '';
+      // Derive parentPath from canonicalPath when not explicitly set on the meta.
+      // Pulled pages only carry canonicalPath; without this the publish would
+      // default to '/' and create the page at the site root.
+      const derivedParentPath = pathParts.length > 1
+        ? '/' + pathParts.slice(0, -1).join('/') + '/'
+        : '/';
+      const parentPath = meta.parentPath ?? derivedParentPath;
 
       const remoteResult = await runRemoteCommand(
         'page:create',

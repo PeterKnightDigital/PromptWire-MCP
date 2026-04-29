@@ -23,6 +23,7 @@ import { runRemoteCommand } from '../remote/client.js';
 import { compareSites, type SiteCompareResult, type FileDiffItem, type PageDiffItem } from './site-compare.js';
 import { schemaPush } from '../schema/sync.js';
 import { syncFiles } from '../pages/file-sync.js';
+import { publishPage, pushPage } from '../pages/pusher.js';
 
 // ============================================================================
 // TYPES
@@ -377,24 +378,48 @@ async function pushPages(
       let pushResult: PwCommandResult;
 
       if (isNew) {
-        pushResult = await runRemoteCommand(
-          'page:publish',
-          [page.path],
-          undefined,
-          remoteUrl,
-          remoteKey,
-        );
-      } else {
-        // Pull the page content locally, then push to remote
+        // Pull the page locally first so we have an up-to-date page.yaml
+        // and page.meta.json in the sync directory to publish from.
         const pullResult = await runPwCommand('page:pull', [page.path]);
         if (!pullResult.success) {
           results.push({ path: page.path, success: false, error: `Pull failed: ${pullResult.error}` });
           continue;
         }
 
-        // Determine sync dir path for this page
+        // Publish the local sync directory to remote. publishPage reads the
+        // local YAML/meta and calls the remote page:create API endpoint with
+        // the parsed field data — the prior implementation incorrectly called
+        // page:publish on the remote with a URL path, which the remote CLI
+        // tried to resolve as a local filesystem path and always failed.
         const syncDir = `site/assets/pw-mcp${page.path}`;
-        pushResult = await runPwCommand('page:push', [syncDir, '--targets=remote', '--confirm']);
+        pushResult = await publishPage({
+          localPath: syncDir,
+          dryRun:    false,
+          published: true,
+          targets:   'remote',
+        });
+      } else {
+        // Pull the page content locally, then push to remote.
+        // Re-pulling refreshes page.yaml from the local DB so the latest
+        // local edits are reflected in what we push, and updates the meta
+        // hash so the remote-side change check uses a current baseline.
+        const pullResult = await runPwCommand('page:pull', [page.path]);
+        if (!pullResult.success) {
+          results.push({ path: page.path, success: false, error: `Pull failed: ${pullResult.error}` });
+          continue;
+        }
+
+        // Push the local sync directory to remote via the TS pushPage helper.
+        // The previous implementation called runPwCommand('page:push', [..., '--targets=remote', '--confirm'])
+        // but the PHP CLI doesn't recognise either flag and dry-run defaults
+        // to ON, so every "update" was silently a no-op against local PW.
+        const syncDir = `site/assets/pw-mcp${page.path}`;
+        pushResult = await pushPage({
+          localPath: syncDir,
+          dryRun:    false,
+          force:     true,
+          targets:   'remote',
+        });
       }
 
       results.push({

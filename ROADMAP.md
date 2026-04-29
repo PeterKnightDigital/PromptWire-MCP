@@ -6,6 +6,230 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ---
 
+## v1.8.0 — Module-aware Site Sync (Modules, Users, Custom Tables)
+
+A second-generation site sync that handles ProcessWire data living **outside** the page tree: module configs, module install state, user accounts, and custom module-owned database tables (e.g. FormBuilder forms). Closes the gap revealed by deploying a multi-module site to production for the first time using v1.7.0.
+
+### The problem
+
+v1.7.0's `pw_site_sync` handles three dimensions: schema, pages, and template/module files. In production it became clear that this is necessary but not sufficient. A true "replica site" also requires:
+
+- **Module configs** (`modules.data`) — Login Register Pro, FormBuilder, SeoNeo settings live here, with embedded references to local-only IDs (field IDs, role IDs, page IDs) that don't match the remote.
+- **Module install state** — pushing the `.module.php` file is not the same as installing it. Modules need an explicit install step that runs the module's `___install()` and updates `modules.installed`.
+- **Schema "membership" changes** — schema sync today updates field/template settings, but does not assign newly-created fields into existing template fieldgroups. Adding `seoneo_tab` to 32 templates after installing SeoNeo required 32 manual edits.
+- **User accounts** — additive only, never overwrite. Must preserve hashed password + salt so users can keep logging in.
+- **Module-owned custom tables** — FormBuilder's `forms` table holds form definitions and we want it pushable; `forms_entries` holds customer submissions and **must never be overwritten or erased in the production direction** (data loss risk).
+
+Without these, a "fresh-install" of a complex production site requires hours of manual admin clicks and SQL inserts after `pw_site_sync` finishes.
+
+### Design principles (extends v1.7.0)
+
+6. **Translate IDs by name across environments.** Local field/role/page IDs differ from remote. Module configs that store them as raw integers must be translated using name → ID lookups on the target before being written.
+7. **Additive-by-default for tables outside the page system.** Users, forms, and other module-owned rows: never overwrite when matched by natural key (name/email for users; name for forms). The user must opt in to overwrite per-row.
+8. **Customer-data-bearing tables are append-only from local.** `forms_entries`, `lic_*` (license activations), and any future "submissions" tables follow this rule. Pulling from production for backup is fine; pushing local entries to production is refused at the registry layer (no opt-in flag overrides this — wrong tool for that job).
+
+### New PHP commands (CommandRouter)
+
+#### `module:install` / `module:uninstall`
+
+Wraps `$modules->install($class)` / `$modules->uninstall($class)`. Refreshes module cache before and after. Returns the installed module's class name and isInstalled status. Refuses to install modules whose files don't exist on disk (no implicit upload).
+
+#### `module:config:get` / `module:config:set`
+
+Wraps `$modules->getModuleConfigData()` / `$modules->saveModuleConfigData()`. Idempotent; `set` accepts the full data object and replaces it.
+
+#### `page:set-status`
+
+Set the `status` flags on an existing page (hidden, unpublished, locked). Used during migrations to retire old pages on production without deleting them. Accepts `path`, `hidden: bool`, `unpublished: bool`, `locked: bool`. Returns the new combined status integer.
+
+In our deployment, we needed this to hide old `/account/login/`, `/account/register/`, and `/account/forgot-password/` pages on production after the unified `/account/sign-in/` LRP page replaced them. Today this requires admin UI clicks per page.
+
+#### `template:create` / `field:assign-to-template`
+
+`template:create` accepts a name + initial fields list and creates a Template + Fieldgroup pair. Refuses if a template with the name already exists. Used to handle templates that are auto-created by modules at install time but not picked up by schema sync (e.g. LRP's `login-register` template).
+
+`field:assign-to-template` accepts a template name + array of field names and adds the fields to the template's fieldgroup, preserving any existing fields. Idempotent — fields already present are skipped. This is the missing piece for "I just installed SeoNeo, now please put `seoneo_tab` on every content template."
+
+#### `users:list` / `users:create`
+
+`users:list` returns all users with name, email, roles, and selected `member_*` fields.
+
+`users:create` accepts:
+- `name`, `email` (required)
+- `pass_hash` + `pass_salt` (optional — when both present, the `field_pass` row is updated directly to preserve the original credentials so the user can log in with their existing password)
+- `roles` (array of role names; resolved to remote IDs)
+- Any `member_*` field values
+
+Refuses to create if a user with the same name OR email already exists. Returns the existing user's ID in that case so the caller knows to skip rather than fail.
+
+#### `tables:dump` / `tables:apply`
+
+Generic mechanism for module-owned tables. `tables:dump` returns the rows of a named table (paginated). `tables:apply` accepts rows and either INSERTs or UPDATEs based on a configurable conflict-key. A registry maps table names to:
+
+- `conflictKey` — natural-key column (e.g. `name` for `forms`, `email` for users, `lic_key` for licenses)
+- `mode` — `"additive"` (INSERT only when conflictKey not present), `"upsert"` (INSERT or UPDATE), or `"append-only"` (INSERT only, never matches existing — for entries/submissions tables)
+- `direction` — `"any"`, `"local-to-remote"`, `"remote-to-local"`, or `"pull-only"` (refuses any push regardless of `mode`)
+
+Default registry ships with these entries (extensible by user config):
+
+| Table | Mode | Direction | Notes |
+|---|---|---|---|
+| `forms` | additive | local-to-remote | FormBuilder form definitions |
+| `forms_entries` | append-only | pull-only | **Customer submissions — never overwritten** |
+| `lic_activations` | append-only | pull-only | License activation events |
+| (user tables) | (handled by `users:create`) | local-to-remote | Specialised: must preserve hashed password |
+
+### New MCP tools (TypeScript)
+
+#### `pw_module_install` / `pw_module_uninstall`
+
+#### `pw_module_config`
+- `action: "get" | "set" | "translate-and-set"`
+- `class` — module class name
+- `data` — for set actions
+- For `translate-and-set`: accepts a config with placeholder names and resolves them to remote IDs server-side. E.g.:
+
+  ```json
+  {
+    "registerFields_byName": ["email", "pass", "member_first_name", "member_last_name"],
+    "loginRoles_byName": ["login-register", "member"],
+    "pageId_byPath": "/account/sign-in/"
+  }
+  ```
+
+  The remote PHP resolves each `*_byName` and `*_byPath` to the appropriate ID and writes the standard config keys (`registerFields`, `loginRoles`, `pageId`). Removes the need for the caller to issue separate `resolve-fields` / `resolve-roles` / `resolve-paths` calls.
+
+#### `pw_users_sync`
+- `direction: "local-to-remote"` (only direction supported initially)
+- `mode: "additive"` (default — never overwrites existing remote users)
+- Fetches local user list, fetches remote user list, identifies users present locally but not remotely (matched by email AND name), and creates them on remote with hashed password preserved.
+
+#### `pw_tables_sync`
+- `tables` — array of table names, or `"all"` to use the registry
+- `direction`, `mode`, `dryRun`
+- Honours each table's registry entry for safety constraints. The registry **cannot** be overridden to push to a `pull-only` table — that's a hard constraint, not a default.
+
+### Schema sync gaps (extends existing tools)
+
+The following gaps in `pw_schema_push` and `pw_schema_compare` were uncovered during the production deployment and should be fixed alongside v1.8.0:
+
+1. **Fieldgroup membership is not synced.** When a field already exists on the remote with a different ID than local, and a local template's fieldgroup gains that field, the remote template's fieldgroup is not updated. Fix: after pushing a template, diff the local fieldgroup against the remote fieldgroup by field name and add the missing assignments.
+
+2. **`new` templates report "unchanged"** when they don't exist on the remote at all. `pw_schema_compare` appears to only compare templates existing on both sides, missing the "local only" case. Repro: `pw_site_sync --scope=schema` returned `templates: {created: 0, updated: 0}` despite a local-only `login-register` template. We had to create it manually on remote.
+
+3. **Templates auto-created by modules at install time** (LRP's `login-register`, SeoNeo's `seoneo_tab` field) need to either be picked up by schema sync after install, or excluded from schema diff (since they'll be created by the module install). Today they fall in a gap: schema sync ignores them, and module install on remote may not create them at the right time.
+
+### Integration into `pw_site_sync`
+
+A new `scope: "all"` (or `"full"`) value runs everything in dependency order:
+
+1. Schema (fields → templates → fieldgroup assignments)
+2. Files (templates, modules)
+3. **Modules** (refresh → install pending → push translated configs)
+4. Pages (parents before children, new before existing)
+5. **Users** (additive)
+6. **Module-owned tables** (registry-driven; `forms` etc.)
+7. Verify
+
+Each phase respects the same `excludeTemplates`, `backup`, `maintenance`, and `dryRun` parameters from v1.7.0.
+
+### Safety guardrails
+
+- **Whitelist of writable modules** for `module:install` and `module:config:set`. Default whitelist: any module that's already installed locally. Prevents an MCP agent from installing arbitrary modules from the internet.
+- **`forms_entries`, `lic_activations`, and similar are pull-only at the registry layer.** No flag opts in — these tables can only be pulled to local for backup/analysis. Pushing requires editing the registry config explicitly, which is intentional friction.
+- **User passwords are never logged.** The `pass_hash` / `pass_salt` fields are flagged sensitive in the response payload and replaced with `"<redacted>"` in any echo back.
+- **Module install on remote requires the file to be on disk first.** Refuses with a clear error if not, so an agent can't accidentally trigger an install of a module whose code isn't yet shipped.
+
+### Pre-existing PromptWire bugs to fix in this cycle
+
+Items worth pulling forward into v1.8.0 because they were hit during the same session:
+
+- **`pw_db_query --site=remote` silently runs against local DB.** The `--site` flag is consumed but not honoured. **This was the single highest-cost bug** of the deployment — caused multiple hours of misdiagnosis where production was assumed to be in sync (or modules assumed installed) when neither was true. Fix priority should match the impact: route to the remote DB when `--site=remote` is passed, or remove the flag entirely so callers know they're getting local data and use a different mechanism for remote queries.
+- **`filesInventory` excludes files with `.module` extension.** FormBuilder and LoginRegisterPro both ship core files as `.module` (without `.php`), so they were silently omitted from `pw_site_sync`. Add `.module` to the default extension list.
+- **`filesInventory` does not follow symlinks.** SeoNeo and StemplatesPro were locally symlinked to sibling repos; sync silently skipped them. Either follow symlinks (and document) or warn loudly when a synced directory contains an unexpanded symlink.
+- **`pw_health.writesEnabled` is hardcoded to `false`.** Confusing during incident response — operators see writes are blocked when they aren't. Wire it to a real config (e.g. `PROMPTWIRE_READ_ONLY` env var) or remove the field. Existing roadmap item #5 covers this.
+- **`pw_site_compare` and `pw_page_push` dry-run report phantom changes from value-format roundtripping.** After a successful page push, compare still flags the page as "modified" because the diff renderer normalises one side and not the other:
+  - `blog_date` (datetime field): stored value reads back as epoch integer (`1775692800`) on one side and ISO string (`2026-04-09T00:00:00.000Z`) on the other. Same instant, different render → flagged different.
+  - `blog_tags` / `blog_images` (Page fields): one side renders pipe-separated (`1187|1188`), the other comma-space separated (`1187, 1188`). Same IDs, different separator → flagged different.
+  - **Effect:** after pushing 88 pages successfully, 18 still appear in `pw_site_compare` as "modified" with zero real differences. The operator either keeps pushing the same pages forever (no-op writes) or learns to ignore the compare output. Both are bad. Fix: normalise both sides to the storage representation before diffing, or pre-cast the local YAML value to the same type as the remote read.
+
+### Compare/sync consistency
+
+`pw_site_compare` and the actual sync engines should report the same numbers. During the v1.8.0 deployment, compare reported `schemaChanged: 33` before, during, and after a successful schema sync. The number never decremented. Possible causes:
+
+- Compare looks at a different criterion than sync acts on (e.g. compare counts fieldgroup membership drift, sync only updates field/template settings)
+- Compare results are cached and not invalidated after a sync
+- Compare counts something that sync deliberately ignores (system templates, etc.)
+
+Whichever it is, the user-facing metric should match. A compare that perpetually says "33 changes pending" after a successful sync is worse than no number at all — it conditions the operator to ignore the compare output.
+
+### Cache invalidation visibility
+
+After file pushes that affect modules, PW's module cache must be refreshed before the new state is visible. Today this happens implicitly inside some operations and not others, with no observability. `?reset=1` admin pings return 200 but require an authenticated session to actually do anything; without one they're silently no-ops.
+
+Proposed: a `pw_cache_clear` MCP tool that hits an authenticated CommandRouter endpoint and returns confirmation that the clear actually happened. Stop relying on `?reset=1` pings, which are an admin UI primitive misused as an API.
+
+### Sensible compare → sync feedback loop
+
+The current compare returns counts (e.g. "123 modified pages") but no ordered list of what would be pushed. During the deployment we never knew which 123 pages would be touched and didn't push pages at all because of that uncertainty. Result: at session end, **production still has 123 stale pages and 43 missing pages** because the operator (me) couldn't confidently scope a page push.
+
+A `pw_site_compare` that returns:
+- A grouped, ordered list of changes (by template, by section)
+- Per-page "what would change" summary (which fields differ)
+- A `pushPlan` array that can be passed back to `pw_site_sync` to push exactly those items and no others
+
+…would convert "I'm not sure if pushing pages will surprise me" into "I can see exactly what pushes, opt in per-page if I want, and verify after."
+
+### Diagnostic / observability improvements
+
+The biggest unblock during the v1.8.0 deployment came not from new sync automation but from **accurate diagnostics**. `pw_db_query` lies, `pw_health` lies about writes, and there's no way to ask the remote "what modules are actually installed?" or "what fields are on this template right now?". A small set of read-only inspection tools would prevent most "I thought X was Y" misdiagnoses:
+
+- **`pw_modules_list`** — class, isInstalled, fileExists, file path, version, install error if any. For all installed modules or a specified list. (We built `list-modules` as a one-off.)
+- **`pw_inspect_template`** — fields currently on a template's fieldgroup, family settings, access rules. (We built `inspect-template` as a one-off.)
+- **`pw_users_list`** — name, email, roles, member_* fields. (We built `list-users` as a one-off.)
+- **`pw_resolve`** — bulk name → ID resolver for fields, roles, templates, pages on a given target. The pattern recurred constantly during ID translation; a single tool would replace half a dozen ad-hoc queries.
+
+These are cheap to add, hard to misuse, and would have eliminated the need for a custom diagnostic endpoint in the deployment session.
+
+### Pull a single page from remote into local
+
+`pw_page_pull` and `pw_pages_pull` always read from the **local** ProcessWire (the one the MCP server's PHP CLI is connected to). There is no `--site=remote` (or `source: "remote"`) option. The asymmetry is glaring once you notice it: `pw_page_push` accepts `targets: "local" | "remote" | "both"` but `pw_page_pull` is local-only.
+
+Real-world scenario hit during the v1.8.0 deployment session: an editor changed a TinyMCE body field on production (removed three inline images). To get that change reflected in the local MAMP DB and the local YAML, the workflow had to be:
+
+1. Spin up a temporary remote read endpoint in `_init.php` that exposes `$page->getUnformatted($field)`.
+2. Push the modified `_init.php` to remote via `pw_site_sync scope=files`.
+3. `curl` the field value from prod into a local file.
+4. Overwrite `site/assets/pw-mcp/<page>/fields/body.html` with the fetched content.
+5. `pw_page_push targets: "local"` to write the change to local MAMP DB.
+6. Restore `_init.php`, push files again to clean up the endpoint.
+
+This is **6 manual steps and a custom diagnostic endpoint** for what should be one tool call. Proposed:
+
+- **`pw_page_pull source: "remote"`** — fetch the page from production over HTTP, rewrite the local YAML + field files, optionally also write to local MAMP DB. Mirror the existing `targets` semantics on push.
+- Field-level variant: `pw_page_field_pull pageIdOrPath:1192 field:body source:remote` — for cases where you want only one field updated, leaving everything else local.
+- Should respect the same authenticated POST endpoint pattern as the rest of PromptWire — no token-in-querystring workaround.
+
+This is the inverse of the push pipeline that already exists, so most of the plumbing (HTTP API auth, page-by-path resolution on remote, YAML serialiser) is already in place.
+
+### Process gaps / first-time deployment friction
+
+These are operator-experience issues that hit the very first production deployment. None are fundamental architectural problems, but they're the kind of thing that makes the difference between "I can deploy in 5 minutes" and "I spent 4 hours figuring out why nothing worked."
+
+- **Write-protection default.** First-time deployment required disabling write protection somewhere before sync would actually write anything. The error path was unclear; happy path needs a clear bootstrap section in the README.
+- **`pw_logs` returns the index but not the content.** Asking for a specific log by `name:` returned the catalogue of available logs (with sizes/dates) but not the actual log entries. Workaround required FTP/SSH to the server to read logs directly.
+- **No `pw_cache_clear`.** After file pushes affecting modules, the module cache must be refreshed for changes to be visible to subsequent inspect calls. We worked around this by adding `refresh-modules` to a custom diagnostic endpoint.
+- **Repeated unauthenticated requests trip hosting firewalls.** Plesk's Fail2Ban blocked our public IP after a flurry of `?_pkdops=TOKEN` requests during diagnostics. A native MCP tool calling its own POST-only authenticated endpoint wouldn't trip this — only the workaround pattern of GET requests with a token query string did. Future diagnostic tooling should use the same authenticated POST endpoint as the rest of PromptWire.
+
+### Out of scope for this round
+
+- **Bidirectional user sync** — too easy to create duplicates or roll back roles. Only local→remote, additive.
+- **Module uninstall on remote.** Easy to add when needed; deferred until a real use case appears.
+- **Module dependency resolution.** If module A requires module B and B isn't installed, install fails; we report and let the user decide. No auto-install of dependencies.
+- **Pulling `forms_entries` for analysis.** Allowed by the registry, but a dedicated `pw_entries_pull` tool with date/form filters can wait for a v1.8.x point release if useful.
+
+---
+
 ## v1.7.0 — Site Sync, Backup & Maintenance Mode
 
 A full-site comparison and deployment workflow for keeping local development and remote production in sync, without overwriting production-only data (user accounts, license pages, purchase records).
