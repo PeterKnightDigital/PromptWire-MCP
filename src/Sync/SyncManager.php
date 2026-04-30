@@ -176,9 +176,19 @@ class SyncManager {
         // receiver might never have seen the source's MediaHub directory
         // before — without the snapshot, the receiver has to make a second
         // page-assets:inventory call before it can plan a sync.
+        //
+        // ids block: this code runs on whichever site `page:export-yaml` is
+        // hit on — for the typical workflow (`pw_page_pull source: "remote"`)
+        // that's the production site, and from the *receiver's* point of
+        // view this id is the REMOTE id. So we label the slot 'remote'.
+        // The receiving MCP-side puller is responsible for merging the
+        // payload into any existing local meta without overwriting
+        // ids.local — see pullPageFromRemote in mcp-server/src/pages/
+        // puller.ts.
         $meta = [
             '_readme'       => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml instead.',
             'pageId'        => $page->id,
+            'ids'           => $this->buildIdsBlock('remote', (int) $page->id),
             'canonicalPath' => $page->path,
             'template'      => $page->template->name,
             'title'         => (string) $page->title,
@@ -293,9 +303,21 @@ class SyncManager {
         //     written into the local sync tree) carry the source side's
         //     view of the page's media — including module-managed files
         //     like MediaHub that the page's fieldgroup never exposes.
+        //
+        // ids block (added v1.10.1): per-environment pageId record. We're
+        // running locally so this writes ids.local; if the user previously
+        // pulled from remote into the same sync directory, that pull's
+        // ids.remote slot is preserved. Top-level `pageId` is kept as a
+        // back-compat mirror.
+        $metaPath  = $localPath . '/page.meta.json';
+        $existingMeta = file_exists($metaPath)
+            ? json_decode(file_get_contents($metaPath), true)
+            : null;
+
         $meta = [
             '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
             'pageId' => $page->id,
+            'ids' => $this->buildIdsBlock('local', (int) $page->id, $existingMeta),
             'canonicalPath' => $page->path,
             'template' => $page->template->name,
             'title' => $page->title,
@@ -307,7 +329,6 @@ class SyncManager {
             'pageAssets' => $assetSnap,
         ];
         
-        $metaPath = $localPath . '/page.meta.json';
         file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         
         return [
@@ -498,9 +519,17 @@ class SyncManager {
         
         // Read meta file
         $meta = json_decode(file_get_contents($metaPath), true);
-        if (!$meta || !isset($meta['pageId'])) {
+        if (!$meta) {
             $relMeta = $this->getRelativePath($metaPath);
-            return ['error' => "Invalid meta file at: $relMeta — missing pageId. Use pw_page_init to regenerate it."];
+            return ['error' => "Invalid meta file at: $relMeta — could not parse JSON. Use pw_page_init to regenerate it."];
+        }
+
+        // Need at least canonicalPath OR a legacy pageId to find the page.
+        $canonicalPath = $meta['canonicalPath'] ?? null;
+        $localId       = $this->readEnvId($meta, 'local');
+        if (!$canonicalPath && !$localId) {
+            $relMeta = $this->getRelativePath($metaPath);
+            return ['error' => "Invalid meta file at: $relMeta — missing both canonicalPath and pageId. Use pw_page_init to regenerate it."];
         }
         
         // Read content file
@@ -508,13 +537,59 @@ class SyncManager {
         if (!$content || !isset($content['fields'])) {
             return ['error' => "Invalid content file"];
         }
-        
-        // Load the page
-        $page = $this->wire->pages->get($meta['pageId']);
-        if (!$page || !$page->id) {
-            return ['error' => "Page not found: {$meta['pageId']}"];
+
+        // Path-first lookup with id verification (v1.10.1).
+        //
+        // Why path-first instead of going straight to the id:
+        //   - Two ProcessWire sites started from independent fresh installs
+        //     have different auto-increment sequences. The same canonical
+        //     path resolves to different ids on each side. Looking up by
+        //     id silently addresses the wrong page (or fails) on whichever
+        //     side wasn't the one we last pulled from. This was the entire
+        //     reason for the v1.10.1 ids-block format change.
+        //   - Path-first matches the contract pw_page_assets and the
+        //     remote API endpoints already use, so the same cross-
+        //     environment safety applies uniformly to page content.
+        //
+        // Id is then used as a SANITY CHECK: if the canonical path now
+        // resolves to a different id than the last-seen local id in the
+        // meta, refuse the push unless --force was passed. That catches:
+        //   - The remote/local page was deleted and a new one created at
+        //     the same path (different id).
+        //   - The path was rebound to an unrelated page (e.g. by an admin
+        //     re-using a slug).
+        //   - The meta is from a completely different site.
+        $page = null;
+        if ($canonicalPath) {
+            $page = $this->wire->pages->get($canonicalPath);
         }
-        
+        if ((!$page || !$page->id) && $localId) {
+            // Path didn't resolve — fall back to the id (covers legacy
+            // metas without canonicalPath, and the rare case where a
+            // page was moved without sync:reconcile being run).
+            $page = $this->wire->pages->get($localId);
+        }
+        if (!$page || !$page->id) {
+            $hint = $canonicalPath
+                ? "Tried path '$canonicalPath'" . ($localId ? " then id $localId" : '') . "."
+                : "Tried id $localId.";
+            return ['error' => "Page not found on this site. $hint Use pw_sync_reconcile to fix path drift, or re-pull."];
+        }
+
+        // Id sanity check.
+        if ($localId && (int) $page->id !== $localId && !$force) {
+            return [
+                'error' => 'Path/id mismatch: meta last saw id ' . $localId .
+                    " for $canonicalPath but it now resolves to id {$page->id} on this site.",
+                'hint'  => 'Either the page was deleted and recreated, the slug was reused, or the meta is from a different site. ' .
+                    'Re-pull with pw_page_pull, or pass force:true to push to the new id anyway.',
+                'metaPath'      => $this->getRelativePath($metaPath),
+                'expectedId'    => $localId,
+                'currentId'     => (int) $page->id,
+                'canonicalPath' => $canonicalPath,
+            ];
+        }
+
         // Verify template matches
         if ($page->template->name !== $meta['template']) {
             return ['error' => "Template mismatch: expected {$meta['template']}, got {$page->template->name}"];
@@ -656,6 +731,13 @@ class SyncManager {
         $meta['contentHash'] = $newContentHash;
         $meta['status'] = 'clean';
         $meta['pageAssets'] = $newAssetSnap;
+        // v1.10.1: refresh ids.local — the lastSeenAt timestamp advances
+        // on every successful push, AND if the canonical path now resolves
+        // to a different id than the meta last saw (e.g. force-push after
+        // a slug reuse) the new id is recorded. ids.remote is preserved
+        // verbatim because this push only touched the local side.
+        $meta['ids'] = $this->buildIdsBlock('local', (int) $page->id, $meta);
+        $meta['pageId'] = (int) $page->id;
         
         file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         
@@ -840,20 +922,30 @@ class SyncManager {
         
         // Read meta file
         $meta = json_decode(file_get_contents($metaPath), true);
-        if (!$meta || !isset($meta['pageId'])) {
+        $localId       = is_array($meta) ? $this->readEnvId($meta, 'local') : null;
+        $canonicalPath = is_array($meta) ? ($meta['canonicalPath'] ?? null) : null;
+        if (!$meta || (!$localId && !$canonicalPath)) {
             return [
                 'localPath' => $this->getRelativePath($localDir),
                 'status' => 'orphan',
                 'error' => 'Invalid meta file',
             ];
         }
-        
-        // Load the ProcessWire page
-        $page = $this->wire->pages->get($meta['pageId']);
+
+        // v1.10.1 path-first lookup with id fallback. Same rationale as
+        // pushPage: a meta whose `pageId` was overwritten by a remote pull
+        // would silently address the wrong page when looked up by id;
+        // matching by canonical path first, with the id as a sanity check,
+        // gives the same status accuracy regardless of which side last
+        // wrote the meta.
+        $page = $canonicalPath ? $this->wire->pages->get($canonicalPath) : null;
+        if ((!$page || !$page->id) && $localId) {
+            $page = $this->wire->pages->get($localId);
+        }
         if (!$page || !$page->id) {
             return [
                 'localPath' => $this->getRelativePath($localDir),
-                'pageId' => $meta['pageId'],
+                'pageId' => $localId,
                 'status' => 'orphan',
                 'error' => 'Page deleted from ProcessWire',
             ];
@@ -906,12 +998,18 @@ class SyncManager {
         
         $result = [
             'localPath' => $this->getRelativePath($localDir),
-            'pageId' => $meta['pageId'],
+            'pageId' => (int) $page->id,
             'pagePath' => $page->path,
             'title' => $page->title,
             'status' => $status,
-            'pulledAt' => $meta['pulledAt'],
+            'pulledAt' => $meta['pulledAt'] ?? null,
         ];
+
+        // Surface per-environment ids when known so the dashboard / status
+        // tooling can show "local 1234 / remote 5678" at a glance.
+        if (!empty($meta['ids']) && is_array($meta['ids'])) {
+            $result['ids'] = $meta['ids'];
+        }
         
         if ($localDirty && !empty($changes)) {
             $result['localChanges'] = count($changes);
@@ -2468,6 +2566,102 @@ class SyncManager {
         return $yaml;
     }
     
+    // ========================================================================
+    // v1.10.1 — PER-ENVIRONMENT IDS IN page.meta.json
+    // ========================================================================
+    //
+    // Background: prior to v1.10.1 page.meta.json had a single top-level
+    // `pageId` slot. Whatever side last wrote the meta (a local pull, or a
+    // remote-pull payload mirrored into the local sync tree) won. The other
+    // side's id was lost, and pushPage's `$wire->pages->get($meta['pageId'])`
+    // could silently address the wrong page after a re-pull from the other
+    // environment.
+    //
+    // v1.10.1 adds a per-environment `ids` block:
+    //
+    //   "ids": {
+    //     "local":  { "id": 1234, "lastSeenAt": "2026-04-30T15:00:00+00:00" },
+    //     "remote": { "id": 5678, "lastSeenAt": "2026-04-30T15:30:00+00:00" }
+    //   }
+    //
+    // Every meta-write site populates only its own slot. Top-level
+    // `pageId` is kept as a back-compat mirror so older tooling (admin
+    // dashboard, anything we don't own that reads meta.pageId directly)
+    // keeps working. The mirror value is whichever id was just written
+    // by the current operation — same behaviour the legacy single-slot
+    // had, just with the per-environment record as the authoritative source.
+
+    /**
+     * Build (or refresh) the per-environment `ids` block for a page meta.
+     *
+     * Always writes the slot for $env, preserving the OTHER environment's
+     * slot if any existing meta is supplied. The two slots never overwrite
+     * each other — that's the whole point of the v1.10.1 format change.
+     *
+     * @param string     $env       'local' or 'remote' — which side this
+     *                              write is about. Local is whatever site
+     *                              the PHP code is currently running on;
+     *                              remote is the side reached via the HTTP
+     *                              API (used by the export path so the
+     *                              receiving site labels the id correctly).
+     * @param int        $pageId    The page id on the chosen side.
+     * @param array|null $existing  Existing meta (decoded JSON) or null.
+     *                              Used to preserve the other side's slot.
+     * @return array { local?: {id, lastSeenAt}, remote?: {id, lastSeenAt} }
+     */
+    private function buildIdsBlock(string $env, int $pageId, ?array $existing = null): array {
+        if ($env !== 'local' && $env !== 'remote') {
+            // Defensive: bad env keys would corrupt the meta. Treat as
+            // local (the dominant case) and let the caller's tests catch
+            // the typo rather than silently carry a malformed slot.
+            $env = 'local';
+        }
+
+        $existingIds = (is_array($existing) && isset($existing['ids']) && is_array($existing['ids']))
+            ? $existing['ids']
+            : [];
+
+        $existingIds[$env] = [
+            'id'         => (int) $pageId,
+            'lastSeenAt' => gmdate('c'),
+        ];
+
+        // Stable key order so two consecutive writes from the same side
+        // produce byte-identical JSON when nothing else changed.
+        ksort($existingIds);
+        return $existingIds;
+    }
+
+    /**
+     * Read the page id for a given environment from a meta array, falling
+     * back to legacy `pageId` for older metas that predate v1.10.1.
+     *
+     * Migration semantics: legacy `pageId` always referred to whichever side
+     * last wrote the meta. We treat it as the LOCAL id because the
+     * dominant historical case is `pw_page_pull` (local pull → local id in
+     * meta.pageId), and any meta that was last refreshed from a remote
+     * pull was already in the broken state we're fixing — trusting it as
+     * "remote" wouldn't make things worse, but defaulting to local is the
+     * safer guess for the install base. Callers asking for `remote` while
+     * only legacy `pageId` exists get null and a chance to fall back to a
+     * path lookup.
+     *
+     * @param array  $meta Decoded page.meta.json.
+     * @param string $env  'local' or 'remote'.
+     * @return int|null Page id on that side, or null if unknown.
+     */
+    private function readEnvId(array $meta, string $env): ?int {
+        if (isset($meta['ids'][$env]['id'])) {
+            $id = (int) $meta['ids'][$env]['id'];
+            return $id > 0 ? $id : null;
+        }
+        if ($env === 'local' && isset($meta['pageId'])) {
+            $id = (int) $meta['pageId'];
+            return $id > 0 ? $id : null;
+        }
+        return null;
+    }
+
     /**
      * Build a human-readable header comment block for page.yaml.
      *
@@ -2772,7 +2966,8 @@ class SyncManager {
             
             $meta = [
                 '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
-                'pageId' => $existingPage->id,
+                'pageId' => (int) $existingPage->id,
+                'ids' => $this->buildIdsBlock('local', (int) $existingPage->id),
                 'new' => false,
                 'canonicalPath' => $existingPage->path,
                 'template' => $existingPage->template->name,
@@ -3091,7 +3286,13 @@ class SyncManager {
         $page->save();
         
         // Update meta file with real page ID
-        $meta['pageId'] = $page->id;
+        $meta['pageId'] = (int) $page->id;
+        // v1.10.1: scaffolds created via pw_page_new have no ids block
+        // (the page didn't exist yet). Now that publishPage has actually
+        // created the page on this site, record its id under ids.local.
+        // Any pre-existing ids.remote (e.g. if the page was first created
+        // on remote and is now being mirrored locally) is preserved.
+        $meta['ids'] = $this->buildIdsBlock('local', (int) $page->id, $meta);
         $meta['new'] = false;
         $meta['canonicalPath'] = $page->path;
         $meta['publishedAt'] = date('c');
@@ -3289,18 +3490,25 @@ class SyncManager {
                 continue;
             }
             
-            // Get page from ProcessWire by ID
-            $pageId = $meta['pageId'] ?? null;
-            if (!$pageId) {
+            // v1.10.1: prefer the canonical path, fall back to the legacy
+            // pageId. Path-first matches pushPage and getPageSyncStatus so
+            // reconcile gives the same result regardless of which side last
+            // wrote the meta.
+            $pageId        = $this->readEnvId($meta, 'local');
+            $canonicalPath = $meta['canonicalPath'] ?? null;
+            if (!$pageId && !$canonicalPath) {
                 $results['errors'][] = [
                     'path' => $this->getRelativePath($localDir),
-                    'error' => 'No pageId in meta file',
+                    'error' => 'No canonicalPath or pageId in meta file',
                 ];
                 continue;
             }
-            
-            $page = $this->wire->pages->get($pageId);
-            
+
+            $page = $canonicalPath ? $this->wire->pages->get($canonicalPath) : null;
+            if ((!$page || !$page->id) && $pageId) {
+                $page = $this->wire->pages->get($pageId);
+            }
+
             // Check if page still exists
             if (!$page || !$page->id) {
                 // Page was deleted - this is an orphan
@@ -3308,7 +3516,7 @@ class SyncManager {
                     'localPath' => $this->getRelativePath($localDir),
                     'pageId' => $pageId,
                     'title' => $meta['title'] ?? 'Unknown',
-                    'lastKnownPath' => $meta['canonicalPath'] ?? 'Unknown',
+                    'lastKnownPath' => $canonicalPath ?? 'Unknown',
                 ];
                 
                 if (!$dryRun) {
