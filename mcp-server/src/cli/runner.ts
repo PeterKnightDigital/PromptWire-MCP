@@ -180,6 +180,78 @@ export async function runPwCommand(
 }
 
 // ============================================================================
+// SITE-AWARE ROUTING (v1.8.1+)
+// ============================================================================
+
+/**
+ * Site selector accepted by tools that work against either local or remote.
+ *
+ * - "local"  → runs against the local PHP CLI (uses PW_PATH).
+ * - "remote" → runs against the remote API endpoint (uses PW_REMOTE_URL +
+ *              PW_REMOTE_KEY). Fails fast if PW_REMOTE_URL is not set.
+ * - "both"   → runs against both in parallel and returns
+ *              `{ local, remote }` in the data payload so the caller can see
+ *              both sides side-by-side. Useful for diagnosing drift.
+ */
+export type Site = 'local' | 'remote' | 'both';
+
+/**
+ * Run a CommandRouter command against the chosen site(s).
+ *
+ * For "local" and "remote" the result shape is identical to runPwCommand /
+ * runRemoteCommand. For "both" the result is `{ success: true, data: { local,
+ * remote } }` where each side carries its own success/data/error so the
+ * caller can render partial results when one environment is unreachable.
+ *
+ * Routing rules (deliberate, do not change without bumping a major):
+ * - "local": always runPwCommand (which itself falls back to remote when only
+ *   PW_REMOTE_URL is configured — preserves single-site setups).
+ * - "remote": always runRemoteCommand. Fails with a clear error when
+ *   PW_REMOTE_URL is missing rather than silently going local (this was the
+ *   v1.7.x bug — `pw_db_query --site=remote` silently ran against local DB).
+ */
+export async function runOnSite(
+  site: Site | undefined,
+  command: string,
+  args: string[] = []
+): Promise<PwCommandResult> {
+  const target: Site = site ?? 'local';
+
+  if (target === 'remote') {
+    if (!process.env.PW_REMOTE_URL) {
+      return {
+        success: false,
+        error:
+          'site="remote" requested but PW_REMOTE_URL is not set in this MCP server\'s env. ' +
+          'Add a remote endpoint to mcp.json (PW_REMOTE_URL + PW_REMOTE_KEY) to run commands against production.',
+      };
+    }
+    return runRemoteCommand(command, args);
+  }
+
+  if (target === 'both') {
+    if (!process.env.PW_REMOTE_URL) {
+      return {
+        success: false,
+        error:
+          'site="both" requested but PW_REMOTE_URL is not set in this MCP server\'s env. ' +
+          'Either set a remote endpoint or use site="local".',
+      };
+    }
+    const [local, remote] = await Promise.all([
+      runPwCommand(command, args),
+      runRemoteCommand(command, args),
+    ]);
+    return {
+      success: true,
+      data: { local, remote },
+    };
+  }
+
+  return runPwCommand(command, args);
+}
+
+// ============================================================================
 // RESPONSE FORMATTING
 // ============================================================================
 

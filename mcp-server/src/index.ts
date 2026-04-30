@@ -28,7 +28,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { runPwCommand, formatToolResponse } from './cli/runner.js';
+import { runPwCommand, runOnSite, formatToolResponse, type Site } from './cli/runner.js';
 import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
 import { compareSites as compareSchemas, listSiteConfigs } from './schema/compare.js';
 import { pushPage, publishPage } from './pages/pusher.js';
@@ -46,10 +46,17 @@ import { syncSites } from './sync/site-sync.js';
 const tools = [
   {
     name: 'pw_health',
-    description: 'Check ProcessWire connection and get site info (version, counts, module status)',
+    description: 'Check ProcessWire connection and get site info (version, counts, module status). Pass site="remote" to inspect production, or site="both" to compare local and remote side-by-side.',
     inputSchema: {
       type: 'object' as const,
-      properties: {},
+      properties: {
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local". "remote" requires PW_REMOTE_URL + PW_REMOTE_KEY in env.',
+          default: 'local',
+        },
+      },
     },
   },
   {
@@ -548,7 +555,7 @@ const tools = [
   // ========================================================================
   {
     name: 'pw_db_schema',
-    description: 'Inspect the database schema. Without arguments lists all tables with engine, row counts, and size. Pass a table name for detailed columns, types, keys, and indexes.',
+    description: 'Inspect the database schema. Without arguments lists all tables with engine, row counts, and size. Pass a table name for detailed columns, types, keys, and indexes. Pass site="remote" to inspect production.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -556,12 +563,18 @@ const tools = [
           type: 'string',
           description: 'Optional table name for detailed column/index info. Omit to list all tables.',
         },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local".',
+          default: 'local',
+        },
       },
     },
   },
   {
     name: 'pw_db_query',
-    description: 'Execute a read-only SELECT query against the database. Only SELECT, SHOW, and DESCRIBE statements are allowed — mutations are blocked. A LIMIT is auto-injected if not present.',
+    description: 'Execute a read-only SELECT query against the database. Only SELECT, SHOW, and DESCRIBE statements are allowed — mutations are blocked. A LIMIT is auto-injected if not present. Pass site="remote" to query production.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -574,13 +587,19 @@ const tools = [
           description: 'Maximum rows to return (default: 100)',
           default: 100,
         },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local". Prior to v1.8.1 the --site flag was silently ignored — use this `site` arg.',
+          default: 'local',
+        },
       },
       required: ['sql'],
     },
   },
   {
     name: 'pw_db_explain',
-    description: 'Run EXPLAIN on a SELECT query to show the execution plan. Useful for diagnosing slow queries and missing indexes.',
+    description: 'Run EXPLAIN on a SELECT query to show the execution plan. Useful for diagnosing slow queries and missing indexes. Pass site="remote" to explain against production.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -588,21 +607,34 @@ const tools = [
           type: 'string',
           description: 'SELECT query to explain',
         },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local".',
+          default: 'local',
+        },
       },
       required: ['sql'],
     },
   },
   {
     name: 'pw_db_counts',
-    description: 'Get row counts for core ProcessWire tables (pages, fields, templates, etc.) and the 20 largest field data tables. Quick overview of data volume.',
+    description: 'Get row counts for core ProcessWire tables (pages, fields, templates, etc.) and the 20 largest field data tables. Quick overview of data volume. Pass site="both" to compare local vs remote.',
     inputSchema: {
       type: 'object' as const,
-      properties: {},
+      properties: {
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local".',
+          default: 'local',
+        },
+      },
     },
   },
   {
     name: 'pw_logs',
-    description: 'Read ProcessWire log entries. Without a log name, lists available log files with sizes. With a name (e.g. "errors", "messages", "exceptions"), returns entries filtered by level and text pattern.',
+    description: 'Read ProcessWire log entries. Without a log name, lists available log files with sizes. With a name (e.g. "errors", "messages", "exceptions"), returns entries filtered by level and text pattern. Pass site="remote" to read production logs.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -623,20 +655,33 @@ const tools = [
           description: 'Maximum entries to return (default: 50)',
           default: 50,
         },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local".',
+          default: 'local',
+        },
       },
     },
   },
   {
     name: 'pw_last_error',
-    description: 'Get the most recent error from ProcessWire error and exception logs. Quick shortcut to see what went wrong without digging through log files.',
+    description: 'Get the most recent error from ProcessWire error and exception logs. Quick shortcut to see what went wrong without digging through log files. Pass site="remote" for the latest production error.',
     inputSchema: {
       type: 'object' as const,
-      properties: {},
+      properties: {
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local".',
+          default: 'local',
+        },
+      },
     },
   },
   {
     name: 'pw_clear_cache',
-    description: 'Clear ProcessWire caches. Targets: "all" (everything), "modules" (module registry), "templates" (compiled template files), "compiled" (all compiled caches), "wire-cache" (database-backed WireCache).',
+    description: 'Clear ProcessWire caches. Targets: "all" (everything), "modules" (module registry), "templates" (compiled template files), "compiled" (all compiled caches), "wire-cache" (database-backed WireCache). Pass site="remote" to clear caches on production after a file push.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -645,6 +690,12 @@ const tools = [
           enum: ['all', 'modules', 'templates', 'compiled', 'wire-cache'],
           description: 'What to clear (default: "all")',
           default: 'all',
+        },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to clear caches on. Defaults to "local". Use "remote" after pushing module files to production.',
+          default: 'local',
         },
       },
     },
@@ -898,7 +949,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   switch (name) {
     // Health check - verify connection and get site info
     case 'pw_health': {
-      const result = await runPwCommand('health');
+      const { site } = args as { site?: Site };
+      const result = await runOnSite(site, 'health');
       return formatToolResponse(result);
     }
 
@@ -1261,56 +1313,59 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ========================================================================
 
     case 'pw_db_schema': {
-      const table = (args as { table?: string }).table;
+      const { table, site } = args as { table?: string; site?: Site };
       const cmdArgs = table ? [table] : [];
-      const result = await runPwCommand('db-schema', cmdArgs);
+      const result = await runOnSite(site, 'db-schema', cmdArgs);
       return formatToolResponse(result);
     }
 
     case 'pw_db_query': {
-      const { sql, limit } = args as { sql: string; limit?: number };
+      const { sql, limit, site } = args as { sql: string; limit?: number; site?: Site };
       const cmdArgs = [sql];
       if (limit) {
         cmdArgs.push(`--limit=${limit}`);
       }
-      const result = await runPwCommand('db-query', cmdArgs);
+      const result = await runOnSite(site, 'db-query', cmdArgs);
       return formatToolResponse(result);
     }
 
     case 'pw_db_explain': {
-      const { sql } = args as { sql: string };
-      const result = await runPwCommand('db-explain', [sql]);
+      const { sql, site } = args as { sql: string; site?: Site };
+      const result = await runOnSite(site, 'db-explain', [sql]);
       return formatToolResponse(result);
     }
 
     case 'pw_db_counts': {
-      const result = await runPwCommand('db-counts');
+      const { site } = args as { site?: Site };
+      const result = await runOnSite(site, 'db-counts');
       return formatToolResponse(result);
     }
 
     case 'pw_logs': {
-      const { logName, level, text, limit } = args as {
+      const { logName, level, text, limit, site } = args as {
         logName?: string;
         level?: string;
         text?: string;
         limit?: number;
+        site?: Site;
       };
       const cmdArgs = logName ? [logName] : [];
       if (level) cmdArgs.push(`--level=${level}`);
       if (text) cmdArgs.push(`--text=${text}`);
       if (limit) cmdArgs.push(`--limit=${limit}`);
-      const result = await runPwCommand('logs', cmdArgs);
+      const result = await runOnSite(site, 'logs', cmdArgs);
       return formatToolResponse(result);
     }
 
     case 'pw_last_error': {
-      const result = await runPwCommand('last-error');
+      const { site } = args as { site?: Site };
+      const result = await runOnSite(site, 'last-error');
       return formatToolResponse(result);
     }
 
     case 'pw_clear_cache': {
-      const target = (args as { target?: string }).target || 'all';
-      const result = await runPwCommand('clear-cache', [target]);
+      const { target, site } = args as { target?: string; site?: Site };
+      const result = await runOnSite(site, 'clear-cache', [target || 'all']);
       return formatToolResponse(result);
     }
 

@@ -8,6 +8,20 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.8.1 — Site-aware diagnostics (`site: local | remote | both`) (2026-04-30)
+
+Closes the diagnostic-blindness gap exposed during the peterknight.digital migration: `pw_db_query --site=remote` silently queried the local database, which forced the operator to build temporary PHP endpoints in `_init.php` to inspect the live ProcessWire runtime. The fix is small, backward compatible, and also unlocks side-by-side `local` + `remote` comparisons in a single tool call.
+
+- **New `runOnSite(site, command, args)` helper** in `mcp-server/src/cli/runner.ts`. Single source of truth for routing — no handler decides for itself which environment to talk to.
+- **8 read tools gain a `site` arg** with values `local | remote | both` (default `local`, fully backward compatible): `pw_health`, `pw_db_schema`, `pw_db_query`, `pw_db_explain`, `pw_db_counts`, `pw_logs`, `pw_last_error`, `pw_clear_cache`.
+- **`site: "remote"` now actually goes remote.** Previously `--site=remote` was passed as a flag to the local PHP CLI, which ignored it. Now it routes through `runRemoteCommand()` and uses `PW_REMOTE_URL` + `PW_REMOTE_KEY`. Fails fast with a clear error if `PW_REMOTE_URL` is not configured rather than silently going local.
+- **`site: "both"` returns `{ local, remote }` in parallel** for drift inspection (e.g. compare row counts, last error, or whether a query returns the same result on both sides). Each side carries its own success/error so partial results are still rendered when one environment is unreachable.
+- **`pw_clear_cache` now works against production** — useful immediately after a file push when ProcessWire's module registry needs a kick.
+
+Migration impact: zero. The `site` arg defaults to `local` everywhere, so existing tool calls behave exactly as before. New behaviour is opt-in.
+
+---
+
 ### v1.8.0 — `filesInventory` correctness (2026-04-30)
 
 The first of the v1.8.x bug-fix series shipped ahead of the larger module-aware sync work (now planned for v1.9.0–v1.14.0). All low-risk, all backward compatible.
