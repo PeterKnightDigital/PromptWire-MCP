@@ -15,7 +15,7 @@
  * @license     MIT
  */
 
-import { readFile, access, readdir } from 'fs/promises';
+import { readFile, access, readdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { load as yamlLoad } from 'js-yaml';
@@ -123,6 +123,16 @@ export async function pushPage(opts: PushPageOptions): Promise<PwCommandResult> 
     const remoteResult = await pushToRemote(yamlPath, pagePath, dryRun, publish, meta as PageMeta & { parentPath?: string });
     if (!remoteResult.success) hasFailure = true;
     results['remote'] = remoteResult.success ? remoteResult.data : { error: remoteResult.error };
+
+    // v1.10.1: a successful live remote push now has authoritative
+    // knowledge of the remote pageId (from the API response). Record it
+    // in the local page.meta.json under ids.remote so subsequent compares
+    // and pushes know both sides' ids without re-resolving. Skipped on
+    // dry-runs (we don't want to mutate state during a preview) and on
+    // failures (no id to record).
+    if (remoteResult.success && !dryRun) {
+      await recordRemoteIdInMeta(metaPath, remoteResult.data);
+    }
   }
 
   return {
@@ -385,6 +395,13 @@ export async function publishPage(opts: PublishPageOptions): Promise<PwCommandRe
       );
       if (!remoteResult.success) hasFailure = true;
       results['remote'] = remoteResult.success ? remoteResult.data : { error: remoteResult.error };
+
+      // v1.10.1: record the freshly-created remote id into the local meta
+      // so the local page.meta.json now knows both sides' ids. Same
+      // best-effort, dry-run-aware behaviour as the pushPage equivalent.
+      if (remoteResult.success && !dryRun) {
+        await recordRemoteIdInMeta(metaPath, remoteResult.data);
+      }
     }
   }
 
@@ -393,6 +410,49 @@ export async function publishPage(opts: PublishPageOptions): Promise<PwCommandRe
     ...(hasFailure ? { error: 'One or more publish targets failed — check results for details' } : {}),
     data: { dryRun, published, targets, results },
   };
+}
+
+/**
+ * Update the local page.meta.json to record the remote pageId after a
+ * successful live remote push or publish.
+ *
+ * Why this matters: prior to v1.10.1 the local meta only ever knew the
+ * id of whichever side last wrote it. Recording the remote id back into
+ * the LOCAL meta after a successful remote operation closes the loop —
+ * the local meta now carries both sides' ids, exactly as if the user
+ * had pulled from both sides in turn, but without the second round-trip.
+ *
+ * Best-effort: if the local meta is missing or unreadable, we silently
+ * skip rather than failing the push. The remote push already succeeded;
+ * the next `pw_page_pull` on this directory will fix the meta.
+ */
+async function recordRemoteIdInMeta(metaPath: string, remoteData: unknown): Promise<void> {
+  if (!existsSync(metaPath)) return;
+  if (!remoteData || typeof remoteData !== 'object') return;
+
+  // page:update / page:create both return { pageId } on success.
+  const pageId = (remoteData as { pageId?: number; id?: number }).pageId
+    ?? (remoteData as { pageId?: number; id?: number }).id;
+  if (typeof pageId !== 'number' || pageId <= 0) return;
+
+  try {
+    const raw  = await readFile(metaPath, 'utf8');
+    const meta = JSON.parse(raw) as Record<string, unknown>;
+
+    const existingIds = (meta.ids && typeof meta.ids === 'object')
+      ? meta.ids as Record<string, unknown>
+      : {};
+
+    existingIds.remote = {
+      id:         pageId,
+      lastSeenAt: new Date().toISOString(),
+    };
+
+    meta.ids = existingIds;
+    await writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+  } catch {
+    // Best-effort — see docblock.
+  }
 }
 
 async function publishToLocal(yamlPath: string, dryRun: boolean, published: boolean): Promise<PwCommandResult> {
