@@ -32,6 +32,7 @@ import { runPwCommand, runOnSite, formatToolResponse, type Site } from './cli/ru
 import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
 import { compareSites as compareSchemas, listSiteConfigs } from './schema/compare.js';
 import { pushPage, publishPage, pushPagesBulk } from './pages/pusher.js';
+import { pullPageFromRemote } from './pages/puller.js';
 import { syncFiles } from './pages/file-sync.js';
 import { validateRefs } from './pages/validator.js';
 import { compareSites as compareSiteFull } from './sync/site-compare.js';
@@ -210,13 +211,19 @@ const tools = [
   // ========================================================================
   {
     name: 'pw_page_pull',
-    description: 'Pull a ProcessWire page into local sync directory (site/syncs/) as editable YAML file. Creates page.meta.json (identity) and page.yaml (editable content).',
+    description: 'Pull a ProcessWire page into the local sync directory (site/assets/pw-mcp/) as editable YAML. Creates page.meta.json (identity) and page.yaml (editable content). Pass source="remote" to fetch a page from production over HTTP and mirror it into the local sync tree (useful when an edit was made directly in the production admin and needs to come back to local).',
     inputSchema: {
       type: 'object' as const,
       properties: {
         pageIdOrPath: {
           type: 'string',
           description: 'Page ID (number) or path (e.g., "/about/" or "/services/web-design/")',
+        },
+        source: {
+          type: 'string',
+          enum: ['local', 'remote'],
+          description: 'Where to pull the page from. "local" (default) reads from the local PW database. "remote" calls page:export-yaml on the remote API and writes the result into the local sync tree. Requires PW_REMOTE_URL + PW_REMOTE_KEY in env.',
+          default: 'local',
         },
       },
       required: ['pageIdOrPath'],
@@ -1056,10 +1063,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // SYNC TOOLS
     // ========================================================================
 
-    // Pull page to local sync directory
+    // Pull page to local sync directory (from local PW or from remote PW)
     case 'pw_page_pull': {
-      const pageIdOrPath = (args as { pageIdOrPath: string }).pageIdOrPath;
-      const result = await runPwCommand('page:pull', [pageIdOrPath]);
+      const { pageIdOrPath, source } = args as {
+        pageIdOrPath: string;
+        source?: 'local' | 'remote';
+      };
+
+      // Default to local for full backward compatibility with v1.7.x callers.
+      if (!source || source === 'local') {
+        const result = await runPwCommand('page:pull', [pageIdOrPath]);
+        return formatToolResponse(result);
+      }
+
+      // Remote source: fetch via page:export-yaml on the remote API and
+      // write the inline payload into the local sync tree. PW_PATH is
+      // required so we know where to write.
+      const result = await pullPageFromRemote({ idOrPath: pageIdOrPath });
       return formatToolResponse(result);
     }
 

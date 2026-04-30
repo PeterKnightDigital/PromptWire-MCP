@@ -143,6 +143,19 @@ class CommandRouter {
                 $contentFormat = $flags['content-format'] ?? 'yaml';
                 $root = $flags['root'] ?? null;
                 return $this->pagePull($idOrPath, $contentFormat, $root);
+
+            // v1.8.3 — Inline YAML export with no filesystem writes. Used by
+            // pw_page_pull source=remote so the MCP server can fetch a page's
+            // editable content over HTTP and write it into the *local* sync
+            // tree, rather than leaving a stray sync directory on production.
+            case 'page:export-yaml':
+                $idOrPath = $positional[0] ?? null;
+                if (!$idOrPath) {
+                    return ['error' => 'Page ID or path required'];
+                }
+                require_once(__DIR__ . '/../Sync/SyncManager.php');
+                $syncManager = new \PromptWire\Sync\SyncManager($this->wire);
+                return $syncManager->exportPageYaml($idOrPath);
             
             case 'page:push':
                 $localPath = $positional[0] ?? null;
@@ -2923,6 +2936,7 @@ class CommandRouter {
                 'search-files [query]' => 'Search files by name, extension, or description',
                 'export-schema' => 'Export full schema (--format=yaml for YAML output)',
                 'page:pull [id|path]' => 'Pull page into local sync directory',
+                'page:export-yaml [id|path]' => 'Export page as inline YAML payload (no filesystem writes; used by pw_page_pull source=remote)',
                 'page:push [path]' => 'Push local changes to ProcessWire (--dry-run=0 to apply)',
                 'pages:pull [selector]' => 'Pull multiple pages by selector, parent, or template',
                 'pages:push [directory]' => 'Push all local changes in directory (--dry-run=0 to apply)',

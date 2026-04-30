@@ -8,6 +8,21 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.8.3 — `pw_page_pull source: local | remote` + `page:export-yaml` (2026-04-30)
+
+Closes the "production-edit drift" gap that surfaced when the operator edited a remote page directly in the production admin (removed images from a TinyMCE field) and then needed to bring those changes back to local. Previously this required a temporary `_init.php` endpoint to fetch the field over `curl`. Now it's one tool call.
+
+- **New `page:export-yaml` CLI command** in `CommandRouter`. Returns a fully self-contained JSON payload (`yaml` + `meta` + page identity) with **no filesystem writes on the exporting side** — production stays clean, no stray sync directories left behind.
+- **Inline-only field extraction** (rich text stays embedded in the YAML). External HTML splitting is deliberately left to the receiving side, where the operator has chosen the target directory.
+- **`pw_page_pull` accepts `source: "local" | "remote"`** (default `"local"` — fully backward compatible). `source: "remote"` calls the new endpoint over HTTP and writes the payload into the *local* sync tree at `site/assets/pw-mcp/<canonical-path>/`, mirroring the layout that local `page:pull` produces.
+- **Round-trip integrity check.** The MCP server re-hashes the YAML it wrote to disk and compares against the remote `contentHash`. Mismatches are surfaced as a non-fatal warning rather than failing the pull (the YAML is still on disk and usable).
+- **Path-based routing**, not ID-based. The local directory is derived from `canonicalPath` so cross-environment pulls land in the right place even when DB IDs differ.
+- **New `pages/puller.ts` module** in the MCP server, sibling to `pages/pusher.ts`. Symmetric naming with no shared file mutability surface.
+
+Migration impact: zero. `source` defaults to `"local"`; existing `pw_page_pull` calls behave exactly as before. The new endpoint is additive.
+
+---
+
 ### v1.8.2 — `pw_pages_push` gains `targets: local | remote | both` (2026-04-30)
 
 Removes the manual page-by-page loop the operator had to run during the peterknight.digital migration to push 88 pages to production (because `pw_pages_push` was local-only). The bulk pusher now reuses the proven `pushPage()` per-page logic so every page benefits from path-based lookup and `_pageRef` resolution.

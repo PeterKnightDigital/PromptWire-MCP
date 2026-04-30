@@ -102,6 +102,88 @@ class SyncManager {
      * @param string $format Output format for content (yaml or json)
      * @return array Result with success status and file paths
      */
+    /**
+     * Export a page's content as an inline YAML payload (no filesystem writes).
+     *
+     * Used by the v1.8.3 `page:export-yaml` command and the remote-source
+     * variant of `pw_page_pull` so the MCP server can fetch a remote page's
+     * editable content over HTTP and write it into the local sync tree.
+     *
+     * Differs from pullPage() in two important ways:
+     *   1. No file is written on the *exporting* server. The caller decides
+     *      where (or whether) the YAML/meta lands.
+     *   2. Rich-text fields are returned inline (extractPageFields($page) with
+     *      no $localPath). External HTML splitting only makes sense once the
+     *      receiver has chosen a target directory.
+     *
+     * Cross-environment safety: the meta block uses canonicalPath as the
+     * primary identity so the receiving site can match by URL even when DB
+     * IDs differ. pageId is included for same-site verification only.
+     *
+     * @param int|string $idOrPath Page ID or PW path
+     * @return array {
+     *     success:       bool,
+     *     pageId:        int,
+     *     canonicalPath: string,
+     *     template:      string,
+     *     title:         string,
+     *     yaml:          string,         Inline page.yaml content
+     *     meta:          array,          Inline page.meta.json structure
+     *     fieldCount:    int,
+     * } or { error: string }
+     */
+    public function exportPageYaml($idOrPath): array {
+        $page = $this->getPage($idOrPath);
+
+        if (!$page || !$page->id) {
+            return ['error' => "Page not found: $idOrPath"];
+        }
+
+        if ($page->template->flags & \ProcessWire\Template::flagSystem) {
+            return ['error' => 'Cannot export system pages'];
+        }
+
+        // Inline-only extraction (no $localPath) so rich text stays embedded
+        // in the YAML and the payload is fully self-contained over HTTP.
+        $fields       = $this->extractPageFields($page);
+        $revisionHash = $this->generateRevisionHash($fields);
+        $fieldLabels  = $this->getFieldLabelsForTemplate($page->template);
+
+        $content = ['fields' => $fields];
+        $yaml    = $this->arrayToYamlWithLabels($content, $fieldLabels);
+
+        // contentHash = md5 of the inline YAML the receiver will write. The
+        // receiver re-hashes after writing to disk to confirm bit-identical
+        // arrival. (pullPage() hashes after writing because it may emit
+        // additional external files; export is single-payload so this is safe.)
+        $contentHash = md5($yaml);
+
+        $meta = [
+            '_readme'       => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml instead.',
+            'pageId'        => $page->id,
+            'canonicalPath' => $page->path,
+            'template'      => $page->template->name,
+            'title'         => (string) $page->title,
+            'pulledAt'      => date('c'),
+            'lastPushedAt'  => null,
+            'revisionHash'  => $revisionHash,
+            'contentHash'   => $contentHash,
+            'status'        => 'clean',
+            'exportedFrom'  => 'page:export-yaml',
+        ];
+
+        return [
+            'success'       => true,
+            'pageId'        => $page->id,
+            'canonicalPath' => $page->path,
+            'template'      => $page->template->name,
+            'title'         => (string) $page->title,
+            'yaml'          => $yaml,
+            'meta'          => $meta,
+            'fieldCount'    => count($fields),
+        ];
+    }
+
     public function pullPage($idOrPath, string $format = 'yaml'): array {
         // Load the page
         $page = $this->getPage($idOrPath);
