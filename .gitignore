@@ -25,3 +25,8 @@ npm-debug.log*
 
 # PHP
 *.cache
+
+# Per-session AI handoff scratch (contains internal infra references —
+# never commit to the public repo). See ROADMAP.md for the public plan.
+SESSION-NEXT.md
+SESSION-*.md
