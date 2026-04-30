@@ -15,6 +15,7 @@
 import { runPwCommand, type PwCommandResult } from '../cli/runner.js';
 import { runRemoteCommand } from '../remote/client.js';
 import { compareSites as compareSchemas } from '../schema/compare.js';
+import { compareSiteAssets, type SiteAssetCompareResult } from './page-assets.js';
 
 // ============================================================================
 // TYPES
@@ -96,6 +97,15 @@ export interface SiteCompareResult {
     modified:   FileDiffItem[];
     localOnly:  FileDiffItem[];
     remoteOnly: FileDiffItem[];
+  };
+  pageAssets?: SiteAssetCompareResult & {
+    /**
+     * Set when the assets compare was attempted but the remote endpoint is
+     * older than v1.10.0 (so page-assets:inventory does not exist there).
+     * Carried as a non-fatal warning rather than failing the whole compare,
+     * because the page/schema/file diffs are still valuable independently.
+     */
+    warning?: string;
   };
 }
 
@@ -278,6 +288,12 @@ export async function compareSites(options: {
   excludePages?: string[];
   includeDirs?: string[];
   excludeFilePatterns?: string[];
+  /**
+   * Include the per-page assets diff (site/assets/files/{pageId}/) in the
+   * report. Defaults to true. Pass false to skip the extra inventory call
+   * if you only care about pages/schema/templates and want a faster run.
+   */
+  includePageAssets?: boolean;
 }): Promise<PwCommandResult> {
   const pwPath    = process.env.PW_PATH;
   const remoteUrl = process.env.PW_REMOTE_URL;
@@ -294,13 +310,28 @@ export async function compareSites(options: {
   const dirsStr = (options.includeDirs ?? ['site/templates', 'site/modules']).join(',');
   const excludeFilePatternsStr = (options.excludeFilePatterns ?? ['site/modules/PromptWire/*']).join(',');
 
-  // Fetch all four inventories in parallel
-  const [localPages, remotePages, localFiles, remoteFiles, schemaResult] = await Promise.all([
+  const wantPageAssets = options.includePageAssets !== false;
+
+  // Fetch all four inventories in parallel. The page-assets compare is
+  // additive — when the remote site is on an older PromptWire that doesn't
+  // ship page-assets:inventory, the compare result carries a warning
+  // instead of failing the whole report.
+  const [
+    localPages,
+    remotePages,
+    localFiles,
+    remoteFiles,
+    schemaResult,
+    pageAssetsResult,
+  ] = await Promise.all([
     fetchLocalPageInventory(excludeTemplatesStr),
     fetchRemotePageInventory(excludeTemplatesStr),
     fetchLocalFileInventory(dirsStr, excludeFilePatternsStr),
     fetchRemoteFileInventory(dirsStr, excludeFilePatternsStr),
     compareSchemas('current', 'production'),
+    wantPageAssets
+      ? compareSiteAssets({ excludeTemplates: options.excludeTemplates })
+      : Promise.resolve<PwCommandResult>({ success: false, error: 'skipped' }),
   ]);
 
   if (!localPages) {
@@ -374,6 +405,25 @@ export async function compareSites(options: {
     schema: schemaSummary,
     files:  fileDiff,
   };
+
+  if (wantPageAssets) {
+    if (pageAssetsResult.success && pageAssetsResult.data) {
+      result.pageAssets = pageAssetsResult.data as SiteAssetCompareResult;
+    } else if (pageAssetsResult.error && pageAssetsResult.error !== 'skipped') {
+      // Non-fatal: surface as a warning so the rest of the report is usable
+      // even when only the assets compare failed (e.g. remote API hasn't
+      // been upgraded to v1.10.0 yet so page-assets:inventory is missing).
+      result.pageAssets = {
+        pagesCompared:    0,
+        pagesIdentical:   0,
+        pagesDiffer:      0,
+        pagesWithIdDrift: 0,
+        totals:           { changed: 0, localOnly: 0, remoteOnly: 0 },
+        diffs:            [],
+        warning:          `Page-assets compare unavailable: ${pageAssetsResult.error}`,
+      };
+    }
+  }
 
   return { success: true, data: result };
 }

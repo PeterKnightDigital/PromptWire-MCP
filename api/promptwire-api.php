@@ -809,6 +809,250 @@ if ($command === 'file:delete') {
 }
 
 // ============================================================================
+// SPECIAL CASE: page-assets:upload — write a file directly into
+// site/assets/files/{pageId}/. Distinct from file:upload because it does
+// NOT require a target field — it's the primitive needed to sync MediaHub-
+// style assets and other module-managed files that live in the page-asset
+// directory but aren't attached as Pagefiles/Pageimages on a fieldgroup.
+//
+// Accepts: { command, args: ["/path/" or pageId], fileData: { filename,
+//   data (base64), modified? (ISO 8601, applied via touch()) } }
+// Refuses paths that escape the page directory.
+// ============================================================================
+
+if ($command === 'page-assets:upload') {
+    $pageRef  = $flags['_positional'][0] ?? null;
+    $fileData = $request['fileData'] ?? null;
+
+    if (!$pageRef || !is_array($fileData)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'page-assets:upload requires a page id/path and fileData object']);
+        exit;
+    }
+
+    $filename = $fileData['filename'] ?? null;
+    $base64   = $fileData['data']     ?? null;
+    $modified = $fileData['modified'] ?? null;
+    $dryRun   = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+
+    if (!$filename || $base64 === null) {
+        http_response_code(400);
+        echo json_encode(['error' => 'fileData requires filename and data (base64)']);
+        exit;
+    }
+
+    // Cross-environment safety: page-assets:upload/delete are reached via the
+    // remote API, but the MCP-side syncPageAssets() always passes the
+    // CANONICAL PW PATH here (e.g. "/about/"), not a numeric id, so the
+    // remote side resolves to its own page id and writes into its own
+    // site/assets/files/{remoteId}/ directory. Numeric ids are accepted only
+    // as a convenience for direct curl-style debugging — in production
+    // workflows the path-based form is what gets hit, so id drift between
+    // local and remote auto-increment sequences is a non-issue.
+    $page = ctype_digit((string) $pageRef)
+        ? $wire->pages->get((int) $pageRef)
+        : $wire->pages->get($pageRef);
+    if (!$page || !$page->id) {
+        http_response_code(404);
+        echo json_encode(['error' => "Page not found: $pageRef"]);
+        exit;
+    }
+
+    $pageDir = $wire->config->paths->root . 'site/assets/files/' . $page->id;
+    if (!is_dir($pageDir)) {
+        if (!$dryRun && !mkdir($pageDir, 0755, true)) {
+            http_response_code(500);
+            echo json_encode(['error' => "Failed to create page assets directory: $pageDir"]);
+            exit;
+        }
+    }
+
+    // Resolve the destination, refusing any path that escapes the page dir.
+    $relPath = ltrim((string) $filename, '/');
+    if ($relPath === '' || str_contains($relPath, '..')) {
+        http_response_code(400);
+        echo json_encode(['error' => "Invalid filename: $filename"]);
+        exit;
+    }
+    $destPath = $pageDir . '/' . $relPath;
+
+    // Ensure subdirectory exists (e.g. MediaHub variants/).
+    $destSubdir = dirname($destPath);
+    if (!is_dir($destSubdir) && !$dryRun) {
+        if (!mkdir($destSubdir, 0755, true)) {
+            http_response_code(500);
+            echo json_encode(['error' => "Failed to create subdirectory: $destSubdir"]);
+            exit;
+        }
+    }
+
+    if ($dryRun) {
+        $decoded = base64_decode($base64, true);
+        echo json_encode([
+            'success'  => true,
+            'dryRun'   => true,
+            'pageId'   => $page->id,
+            'pagePath' => $page->path,
+            'filename' => $relPath,
+            'size'     => $decoded !== false ? strlen($decoded) : 0,
+            'action'   => file_exists($destPath) ? 'would_overwrite' : 'would_upload',
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $decoded = base64_decode($base64, true);
+    if ($decoded === false) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Invalid base64 data']);
+        exit;
+    }
+
+    $hadExisting = file_exists($destPath);
+    if (file_put_contents($destPath, $decoded) === false) {
+        http_response_code(500);
+        echo json_encode(['error' => "Failed to write asset: $relPath"]);
+        exit;
+    }
+    @chmod($destPath, 0644);
+
+    if ($modified) {
+        $ts = strtotime((string) $modified);
+        if ($ts > 0) @touch($destPath, $ts);
+    }
+
+    echo json_encode([
+        'success'  => true,
+        'dryRun'   => false,
+        'pageId'   => $page->id,
+        'pagePath' => $page->path,
+        'filename' => $relPath,
+        'size'     => strlen($decoded),
+        'md5'      => md5($decoded),
+        'action'   => $hadExisting ? 'overwritten' : 'uploaded',
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
+// SPECIAL CASE: page-assets:delete — remove a file from
+// site/assets/files/{pageId}/. Refuses to escape the page directory and (by
+// default) also removes any PW image variations that share the original's
+// basename so a deleted JPEG doesn't leave its 480x270 cache behind.
+//
+// Accepts: { command, args: ["/path/" or pageId], fileData: { filename,
+//   removeVariations? (default true) } }
+// ============================================================================
+
+if ($command === 'page-assets:delete') {
+    $pageRef  = $flags['_positional'][0] ?? null;
+    $fileData = $request['fileData'] ?? null;
+
+    if (!$pageRef || !is_array($fileData)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'page-assets:delete requires a page id/path and fileData object']);
+        exit;
+    }
+
+    $filename         = $fileData['filename'] ?? null;
+    $removeVariations = !isset($fileData['removeVariations']) || (bool) $fileData['removeVariations'];
+    $dryRun           = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+
+    if (!$filename) {
+        http_response_code(400);
+        echo json_encode(['error' => 'fileData requires filename']);
+        exit;
+    }
+
+    // Same cross-environment note as page-assets:upload above — production
+    // callers pass the canonical PW path so the remote resolves to its own
+    // page id, sidestepping any local↔remote auto-increment drift. Numeric
+    // ids are accepted for ad-hoc debugging only.
+    $page = ctype_digit((string) $pageRef)
+        ? $wire->pages->get((int) $pageRef)
+        : $wire->pages->get($pageRef);
+    if (!$page || !$page->id) {
+        http_response_code(404);
+        echo json_encode(['error' => "Page not found: $pageRef"]);
+        exit;
+    }
+
+    $pageDir = realpath($wire->config->paths->root . 'site/assets/files/' . $page->id);
+    if ($pageDir === false) {
+        echo json_encode([
+            'success'  => true,
+            'dryRun'   => $dryRun,
+            'pageId'   => $page->id,
+            'action'   => 'not_found',
+            'filename' => $filename,
+            'message'  => 'No assets directory exists for this page — nothing to delete',
+        ]);
+        exit;
+    }
+
+    $relPath = ltrim((string) $filename, '/');
+    $target  = $pageDir . DIRECTORY_SEPARATOR . $relPath;
+    $real    = realpath($target);
+    if ($real === false || strpos($real, $pageDir . DIRECTORY_SEPARATOR) !== 0) {
+        echo json_encode([
+            'success'  => true,
+            'dryRun'   => $dryRun,
+            'pageId'   => $page->id,
+            'pagePath' => $page->path,
+            'filename' => $relPath,
+            'action'   => 'not_found',
+            'message'  => 'File does not exist on remote — nothing to delete',
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    // Compute the variation glob from the original basename. PW variations
+    // are <basename>.<width>x<height>[-suffix].<ext>. We only care about
+    // variations of THIS specific original — siblings with different
+    // basenames are unaffected.
+    $variations = [];
+    if ($removeVariations) {
+        $info     = pathinfo($real);
+        $basename = $info['filename'] ?? '';
+        $ext      = isset($info['extension']) ? $info['extension'] : '';
+        if ($basename !== '') {
+            $variationGlob = dirname($real) . '/' . $basename . '.*x*' . ($ext ? '.' . $ext : '');
+            foreach (glob($variationGlob) ?: [] as $varPath) {
+                if (preg_match('/\.\d+x\d+(-[a-z0-9-]+)?\.[a-z]+$/i', basename($varPath))) {
+                    $variations[] = $varPath;
+                }
+            }
+        }
+    }
+
+    if ($dryRun) {
+        echo json_encode([
+            'success'    => true,
+            'dryRun'     => true,
+            'pageId'     => $page->id,
+            'pagePath'   => $page->path,
+            'filename'   => $relPath,
+            'action'     => 'would_delete',
+            'variations' => array_map('basename', $variations),
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    @unlink($real);
+    foreach ($variations as $varPath) @unlink($varPath);
+
+    echo json_encode([
+        'success'    => true,
+        'dryRun'     => false,
+        'pageId'     => $page->id,
+        'pagePath'   => $page->path,
+        'filename'   => $relPath,
+        'action'     => 'deleted',
+        'variations' => array_map('basename', $variations),
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
 // SPECIAL CASE: schema:apply — fully self-contained, no external dependencies
 // ============================================================================
 

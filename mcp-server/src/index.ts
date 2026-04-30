@@ -37,6 +37,7 @@ import { syncFiles } from './pages/file-sync.js';
 import { validateRefs } from './pages/validator.js';
 import { compareSites as compareSiteFull } from './sync/site-compare.js';
 import { syncSites } from './sync/site-sync.js';
+import { syncPageAssets, compareSiteAssets } from './sync/page-assets.js';
 
 // ============================================================================
 // TOOL DEFINITIONS
@@ -262,6 +263,46 @@ const tools = [
         },
       },
       required: ['localPath'],
+    },
+  },
+  {
+    name: 'pw_page_assets',
+    description: 'Synchronise the on-disk asset directory for a page (site/assets/files/{pageId}/) between local and remote. Catches both standard FieldtypeFile/FieldtypeImage uploads AND module-managed files (e.g. MediaHub) that live in the same per-page directory but are not exposed via fieldgroup iteration. Supports both directions (local-to-remote and remote-to-local). Dry-run by default. PW image variations (name.WxH[-suffix].ext) are filtered by default. PAGE ID DRIFT IS HANDLED: pages are matched by canonical PW path, and each side resolves its own pageId before walking its own site/assets/files/{pageId}/ directory. Local 1234 and remote 5678 may both legitimately resolve to /about/ — this is normal for two sites that started from independent fresh installs rather than a DB clone. The result payload reports localPageId, remotePageId, and an idDrift boolean so operators can see at a glance which physical disk directory was read or written on each environment.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['inventory', 'compare', 'push', 'pull'],
+          description: '"inventory" lists assets for one page on the chosen side. "compare" diffs both sides for one page. "push" syncs local→remote. "pull" syncs remote→local.',
+        },
+        pageRef: {
+          type: 'string',
+          description: 'Page id or PW path (e.g. "/about/"). Required for all actions except site-wide compare. Note: numeric ids are resolved on the LOCAL site first, then translated to the corresponding remote page via canonical path — so a numeric id never accidentally addresses the wrong remote page when local/remote auto-increment sequences have diverged. If you only know the remote id, look up its path with pw_get_page first.',
+        },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote'],
+          description: 'For action="inventory" only — which side to read. Defaults to "local".',
+          default: 'local',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'For push/pull: if true (default), preview transfers without writing. Set to false to apply.',
+          default: true,
+        },
+        deleteOrphans: {
+          type: 'boolean',
+          description: 'For push/pull: also delete files on the destination that have no counterpart on the source. Default: false (safe).',
+          default: false,
+        },
+        includeVariations: {
+          type: 'boolean',
+          description: 'Include PW image variations (name.WxH[-suffix].ext) in inventory/sync. Default: false (variations are regenerated on demand and produce noisy diffs).',
+          default: false,
+        },
+      },
+      required: ['action'],
     },
   },
   {
@@ -933,7 +974,7 @@ const tools = [
   },
   {
     name: 'pw_site_compare',
-    description: 'Compare local and remote ProcessWire sites across pages, schema, and files. Pages are matched by path (not ID). Returns a structured report of what differs, what exists only on one side, and what is identical. Requires both PW_PATH (local) and PW_REMOTE_URL (remote).',
+    description: 'Compare local and remote ProcessWire sites across pages, schema, template/module files, and per-page on-disk assets (site/assets/files/{pageId}/). Pages are matched by path (not ID). Returns a structured report of what differs, what exists only on one side, and what is identical. The page-assets section catches both standard file/image field uploads AND module-managed files (e.g. MediaHub) that field iteration would miss. Requires both PW_PATH (local) and PW_REMOTE_URL (remote).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -957,12 +998,17 @@ const tools = [
           items: { type: 'string' },
           description: 'Glob patterns to skip in file comparison (e.g. ["site/modules/PromptWire/*"]). Defaults to ["site/modules/PromptWire/*"].',
         },
+        includePageAssets: {
+          type: 'boolean',
+          description: 'Include the per-page on-disk assets diff (site/assets/files/{pageId}/) in the report. Defaults to true. Set false to skip the extra inventory call when you only need the pages/schema/files sections.',
+          default: true,
+        },
       },
     },
   },
   {
     name: 'pw_site_sync',
-    description: 'Synchronise local and remote ProcessWire sites. Runs a comparison first, then selectively pushes schema, pages, and/or files. Supports optional backup and maintenance mode. Dry-run by default — set dryRun=false to apply. If a step fails, maintenance mode stays ON and the backup ID is reported for rollback.',
+    description: 'Synchronise local and remote ProcessWire sites. Runs a comparison first, then selectively pushes schema, pages, page assets (site/assets/files/{pageId}/), and/or template/module files. Page assets cover both standard file/image field uploads and module-managed files (e.g. MediaHub) keyed by page id. Supports optional backup and maintenance mode. Dry-run by default — set dryRun=false to apply. If a step fails, maintenance mode stays ON and the backup ID is reported for rollback.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1027,7 +1073,7 @@ const tools = [
 const server = new Server(
   {
     name: 'promptwire',
-    version: '1.9.3',
+    version: '1.10.0',
   },
   {
     capabilities: {
@@ -1198,6 +1244,124 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         publish: publish ?? false,
       });
       return formatToolResponse(result);
+    }
+
+    // Sync on-disk page assets (site/assets/files/{pageId}/) — catches both
+    // standard file/image field uploads AND module-managed files (MediaHub
+    // etc.) that field iteration would miss. Supports both directions.
+    case 'pw_page_assets': {
+      const {
+        action,
+        pageRef,
+        site,
+        dryRun,
+        deleteOrphans,
+        includeVariations,
+      } = args as {
+        action: 'inventory' | 'compare' | 'push' | 'pull';
+        pageRef?: string;
+        site?: 'local' | 'remote';
+        dryRun?: boolean;
+        deleteOrphans?: boolean;
+        includeVariations?: boolean;
+      };
+
+      const wantVariations = includeVariations === true;
+
+      if (action === 'inventory') {
+        if (!pageRef) {
+          return formatToolResponse({ success: false, error: 'pw_page_assets action="inventory" requires pageRef' });
+        }
+        const cmdArgs = [pageRef];
+        if (wantVariations) cmdArgs.push('--include-variations');
+        const result = await runOnSite(site ?? 'local', 'page-assets:inventory', cmdArgs);
+        return formatToolResponse(result);
+      }
+
+      if (action === 'compare') {
+        // Per-page compare uses page-assets:inventory on both sides and
+        // diffs locally. Site-wide compare is exposed via pw_site_compare.
+        if (!pageRef) {
+          // No page ref → defer to the site-wide compare helper so callers
+          // can sweep the full site in one call.
+          const result = await compareSiteAssets({ includeVariations: wantVariations });
+          return formatToolResponse(result);
+        }
+        const localArgs  = [pageRef];
+        const remoteArgs = [pageRef];
+        if (wantVariations) {
+          localArgs.push('--include-variations');
+          remoteArgs.push('--include-variations');
+        }
+        const [localResult, remoteResult] = await Promise.all([
+          runPwCommand('page-assets:inventory', localArgs),
+          (async () => {
+            if (!process.env.PW_REMOTE_URL || !process.env.PW_REMOTE_KEY) {
+              return { success: false, error: 'PW_REMOTE_URL/PW_REMOTE_KEY required for compare' };
+            }
+            const { runRemoteCommand } = await import('./remote/client.js');
+            return runRemoteCommand('page-assets:inventory', remoteArgs);
+          })(),
+        ]);
+        if (!localResult.success || !remoteResult.success) {
+          return formatToolResponse({
+            success: false,
+            error: `Compare failed — local: ${localResult.error ?? 'ok'}, remote: ${remoteResult.error ?? 'ok'}`,
+          });
+        }
+        const { diffAssets } = await import('./sync/page-assets.js');
+        const localData  = localResult.data  as { pageId?: number; pagePath?: string; assets?: Array<{ relativePath: string; md5: string; size: number }> };
+        const remoteData = remoteResult.data as { pageId?: number; pagePath?: string; assets?: Array<{ relativePath: string; md5: string; size: number }> };
+        const diff = diffAssets(localData.assets ?? [], remoteData.assets ?? []);
+
+        // Each side resolves its OWN pageId from the canonical PW path,
+        // so two sites started from independent fresh installs (rather
+        // than a DB clone) will legitimately have different ids for the
+        // same page. Surface both ids and a single idDrift flag so the
+        // operator can see immediately whether the diff is "different
+        // page on each side" (would mean the path-resolution went wrong
+        // somewhere) or "same page, different auto-increment history".
+        const localPageId  = typeof localData.pageId  === 'number' ? localData.pageId  : undefined;
+        const remotePageId = typeof remoteData.pageId === 'number' ? remoteData.pageId : undefined;
+        const idDrift = localPageId !== undefined
+          && remotePageId !== undefined
+          && localPageId !== remotePageId;
+
+        return formatToolResponse({
+          success: true,
+          data: {
+            pagePath: localData.pagePath ?? remoteData.pagePath ?? pageRef,
+            local:  { pageId: localPageId,  count: (localData.assets  ?? []).length },
+            remote: { pageId: remotePageId, count: (remoteData.assets ?? []).length },
+            idDrift,
+            summary: {
+              unchanged:  diff.unchanged,
+              changed:    diff.changed.length,
+              localOnly:  diff.localOnly.length,
+              remoteOnly: diff.remoteOnly.length,
+            },
+            changed:    diff.changed,
+            localOnly:  diff.localOnly.map(f => f.relativePath),
+            remoteOnly: diff.remoteOnly.map(f => f.relativePath),
+          },
+        });
+      }
+
+      if (action === 'push' || action === 'pull') {
+        if (!pageRef) {
+          return formatToolResponse({ success: false, error: `pw_page_assets action="${action}" requires pageRef` });
+        }
+        const result = await syncPageAssets({
+          pageRef,
+          direction: action === 'push' ? 'local-to-remote' : 'remote-to-local',
+          dryRun: dryRun !== false,
+          deleteOrphans: deleteOrphans === true,
+          includeVariations: wantVariations,
+        });
+        return formatToolResponse(result);
+      }
+
+      return formatToolResponse({ success: false, error: `Unknown pw_page_assets action: ${action}` });
     }
 
     // Sync file/image fields from local to remote
@@ -1678,17 +1842,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         excludePages,
         includeDirs,
         excludeFilePatterns,
+        includePageAssets,
       } = args as {
         excludeTemplates?: string[];
         excludePages?: string[];
         includeDirs?: string[];
         excludeFilePatterns?: string[];
+        includePageAssets?: boolean;
       };
       const result = await compareSiteFull({
         excludeTemplates,
         excludePages,
         includeDirs,
         excludeFilePatterns,
+        includePageAssets,
       });
       return formatToolResponse(result);
     }
