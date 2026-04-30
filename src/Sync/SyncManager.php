@@ -158,6 +158,13 @@ class SyncManager {
         // additional external files; export is single-payload so this is safe.)
         $contentHash = md5($yaml);
 
+        // Asset snapshot is included in the export payload so the receiving
+        // side knows, in one HTTP round-trip, both the page content AND the
+        // exporting site's view of the on-disk media (site/assets/files/
+        // {pageId}/). This matters for cross-environment pulls where the
+        // receiver might never have seen the source's MediaHub directory
+        // before — without the snapshot, the receiver has to make a second
+        // page-assets:inventory call before it can plan a sync.
         $meta = [
             '_readme'       => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml instead.',
             'pageId'        => $page->id,
@@ -170,6 +177,7 @@ class SyncManager {
             'contentHash'   => $contentHash,
             'status'        => 'clean',
             'exportedFrom'  => 'page:export-yaml',
+            'pageAssets'    => $this->buildPageAssetSnapshot($page),
         ];
 
         return [
@@ -232,6 +240,15 @@ class SyncManager {
         $contentHash = $this->computeCombinedContentHash($localPath);
         
         // Create metadata file with both hashes
+        //
+        // pageAssets snapshot (added v1.10.0): captures the full inventory
+        // of site/assets/files/{pageId}/ at pull time so:
+        //   - asset drift can be detected without a fresh remote inventory
+        //     (a local md5 walk against this baseline is enough);
+        //   - meta files exchanged between environments (e.g. a remote pull
+        //     written into the local sync tree) carry the source side's
+        //     view of the page's media — including module-managed files
+        //     like MediaHub that the page's fieldgroup never exposes.
         $meta = [
             '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
             'pageId' => $page->id,
@@ -243,6 +260,7 @@ class SyncManager {
             'revisionHash' => $revisionHash,
             'contentHash' => $contentHash, // Hash of the actual file content
             'status' => 'clean',
+            'pageAssets' => $this->buildPageAssetSnapshot($page),
         ];
         
         $metaPath = $localPath . '/page.meta.json';
@@ -2180,6 +2198,107 @@ class SyncManager {
     private function generateRevisionHash(array $fields): string {
         $json = json_encode($fields, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         return 'sha256:' . hash('sha256', $json);
+    }
+
+    /**
+     * Build a snapshot of the page's on-disk assets at the moment of pull,
+     * for embedding in page.meta.json under the `pageAssets` key.
+     *
+     * Why this lives in the meta:
+     *   - "Have my page assets drifted since I last pulled?" becomes a
+     *     local stat/md5 walk against this baseline, no remote round-trip.
+     *   - When a page.meta.json is shared between environments (a remote
+     *     pull writes it into the local sync tree, exactly as exportPageYaml
+     *     already supports), the snapshot travels with it. The receiver
+     *     instantly knows which assets the source side considered "the
+     *     state of this page" without a second API call.
+     *   - Module-managed files (notably MediaHub, see v1.10.0 release
+     *     notes) are captured the same way as standard FieldtypeFile /
+     *     FieldtypeImage uploads, because the snapshot walks
+     *     site/assets/files/{pageId}/ directly rather than iterating the
+     *     page's fieldgroup. So a remote pull no longer "forgets" about
+     *     MediaHub assets that were never attached as Pagefiles.
+     *
+     * Snapshot shape (intentionally compact — embedded in JSON, must stay
+     * small enough that a remote-pull payload is still reasonable on a
+     * page with hundreds of assets):
+     *
+     *   {
+     *     "pageId": 1234,                    // pageId on THIS site
+     *     "capturedAt": "2026-04-30T15:00:00+00:00",
+     *     "directoryExists": true,
+     *     "assetCount": 7,
+     *     "totalBytes": 4827341,
+     *     "directoryHash": "md5:...",        // md5 of the sorted asset list
+     *     "assets": [
+     *       { "relativePath": "...", "size": 12345, "md5": "..." },
+     *       ...
+     *     ]
+     *   }
+     *
+     * PW image variations (name.WxH[-suffix].ext) are filtered for the
+     * same reason as page-assets:inventory: they're regenerated on demand
+     * and would otherwise produce noise in the snapshot purely from cache
+     * state, not from anything the operator did.
+     *
+     * @param Page $page
+     * @return array Snapshot suitable for JSON-encoding into page.meta.json
+     */
+    private function buildPageAssetSnapshot(Page $page): array {
+        $rootPath = $this->wire->config->paths->root;
+        $pageDir  = $rootPath . 'site/assets/files/' . $page->id;
+
+        $snapshot = [
+            'pageId'          => (int) $page->id,
+            'capturedAt'      => gmdate('c'),
+            'directoryExists' => is_dir($pageDir),
+            'assetCount'      => 0,
+            'totalBytes'      => 0,
+            'directoryHash'   => null,
+            'assets'          => [],
+        ];
+
+        if (!$snapshot['directoryExists']) {
+            return $snapshot;
+        }
+
+        $variationPattern = '/\.\d+x\d+(-[a-z0-9-]+)?\.[a-z]+$/i';
+        $entries  = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($pageDir, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        foreach ($iterator as $fileInfo) {
+            if ($fileInfo->isDir()) continue;
+            $name = $fileInfo->getFilename();
+            if ($name === '' || $name[0] === '.') continue;
+            if (preg_match($variationPattern, $name)) continue;
+
+            $rel = ltrim(str_replace($pageDir, '', $fileInfo->getPathname()), '/\\');
+            $rel = str_replace('\\', '/', $rel);
+            $entries[] = [
+                'relativePath' => $rel,
+                'size'         => (int) $fileInfo->getSize(),
+                'md5'          => md5_file($fileInfo->getPathname()),
+            ];
+        }
+
+        usort($entries, fn($a, $b) => strcmp($a['relativePath'], $b['relativePath']));
+
+        $totalBytes = 0;
+        $hashSeed   = '';
+        foreach ($entries as $entry) {
+            $totalBytes += $entry['size'];
+            $hashSeed   .= $entry['relativePath'] . ':' . $entry['md5'] . "\n";
+        }
+
+        $snapshot['assetCount']    = count($entries);
+        $snapshot['totalBytes']    = $totalBytes;
+        $snapshot['directoryHash'] = 'md5:' . md5($hashSeed);
+        $snapshot['assets']        = $entries;
+
+        return $snapshot;
     }
     
     /**

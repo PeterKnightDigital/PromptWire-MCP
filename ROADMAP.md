@@ -32,8 +32,30 @@ v1.10.0 fixes both by treating the page-asset directory as a first-class sync su
   - File transfers are serial. Sites with heavy media (a single page can hold dozens of MB of PDFs and images) would otherwise multiply memory by the worker count for no real benefit.
   - Transfer failures are reported per file, not as a single binary success/failure, so the operator can see which assets need a retry.
 - **MCP server timeout extended to 120s for `page-assets:*` commands** (matching the existing `file:*` handling). Some uploads — especially bulk MediaHub directories with high-res originals — can run past the default 60s.
+- **`page.meta.json` gains a `pageAssets` snapshot at pull time.** Both local `page:pull` and the remote `page:export-yaml` payload now include the source side's view of `site/assets/files/{pageId}/` as part of the meta — `{ pageId, capturedAt, directoryExists, assetCount, totalBytes, directoryHash, assets: [{relativePath, size, md5}] }`. This makes meta files self-describing about media even when they cross environments: a remote-pulled meta written into the local sync tree carries the production view of the page's assets, including MediaHub-style files that the page's fieldgroup never exposes. `pw_page_assets push`/`pull` consume the snapshot to emit a `driftSinceLastPull` block that flags adds/removes/modifications on whichever side the snapshot represents (local or remote, identified by matching the snapshot's `pageId`). Answers "what has changed since I last pulled?" without a fresh remote round-trip. Strictly additive — older meta files without the snapshot fall through to the existing live-vs-live diff.
 
-Migration impact: zero for callers. `pw_page_assets` is new; `pw_site_compare` gains an additive `pageAssets` field; `pw_site_sync` swaps its `page-files` step for `page-assets` but keeps the same overall step ordering and the same "non-fatal: page content already pushed" failure semantics. The remote API needs the v1.10.0 endpoint deployed for the new commands; older endpoints surface as a `pageAssets.warning` rather than breaking the rest of the compare/sync.
+Migration impact: zero for callers. `pw_page_assets` is new; `pw_site_compare` gains an additive `pageAssets` field; `pw_site_sync` swaps its `page-files` step for `page-assets` but keeps the same overall step ordering and the same "non-fatal: page content already pushed" failure semantics. The remote API needs the v1.10.0 endpoint deployed for the new commands; older endpoints surface as a `pageAssets.warning` rather than breaking the rest of the compare/sync. Existing `page.meta.json` files keep working unchanged — re-pulling refreshes them with the new `pageAssets` snapshot block.
+
+#### Follow-up (planned, not in this release): per-environment `ids` in `page.meta.json`
+
+`page.meta.json` currently has a single `pageId` field. Whatever side you last pulled from, that side's id wins — pull from local then re-pull from remote and `meta.pageId` silently switches from the local id to the remote one. The push side (`SyncManager::pushPage`) reads `meta.pageId` and looks it up via `$wire->pages->get($meta['pageId'])`, so a meta that was last refreshed from the remote will silently address the wrong page on local (or fail with "Page not found"). Conversely the meta — which is your *persistent record* of the page — has nowhere to record the local id and the remote id side by side, so an at-a-glance "which physical id corresponds to this page on each environment?" question requires re-resolving on both sides every time.
+
+The fix is a new `ids` block alongside the existing top-level `pageId` (kept for back-compat):
+
+```json
+{
+  "pageId": 1234,                  // back-compat mirror of ids.local
+  "canonicalPath": "/about/",
+  "ids": {
+    "local":  { "id": 1234, "lastSeenAt": "2026-04-30T15:00:00+00:00" },
+    "remote": { "id": 5678, "lastSeenAt": "2026-04-30T15:00:30+00:00" }
+  }
+}
+```
+
+Each pull populates *its own* slot without overwriting the other. `pushPage` resolves the page by canonical path (matching what `pw_page_assets` and the rest of v1.10.0 already do) and uses the appropriate `ids.<env>.id` purely as a sanity check — refusing to push if the path resolves to a page with a different id than last seen. Same path-first cross-environment safety the page-assets work has, applied uniformly to page content.
+
+Deferring this from v1.10.0 because it's a real refactor of an existing critical write path (`pushPage` is the most-used write tool in the suite) and deserves its own PR with focused testing. Tracking as v1.10.1.
 
 Both `PromptWire.module.php` and `mcp-server/package.json` are bumped to 1.10.0 so the version Cursor reports matches the feature set.
 

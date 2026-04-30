@@ -94,6 +94,29 @@ export interface PageAssetCompareOptions {
 // PW image variation pattern: name.WIDTHxHEIGHT[-suffix].ext
 const VARIATION_PATTERN = /\.\d+x\d+(-[a-z0-9-]+)?\.[a-z]+$/i;
 
+/**
+ * Asset snapshot stored inside page.meta.json under the `pageAssets` key,
+ * written by SyncManager::buildPageAssetSnapshot at pull time. Captures
+ * the source side's view of site/assets/files/{pageId}/ as of the last
+ * pull, so subsequent compare/push/pull calls can report what has drifted
+ * since — without a fresh remote inventory call.
+ */
+interface PageAssetSnapshot {
+  pageId:          number;
+  capturedAt:      string;
+  directoryExists: boolean;
+  assetCount:      number;
+  totalBytes:      number;
+  directoryHash:   string | null;
+  assets:          PageAssetEntry[];
+}
+
+interface PageMetaWithAssets {
+  pageId?:        number;
+  canonicalPath?: string;
+  pageAssets?:    PageAssetSnapshot;
+}
+
 // ============================================================================
 // LOCAL FILESYSTEM HELPERS
 // ============================================================================
@@ -175,6 +198,87 @@ async function fetchRemoteInventory(
   const data = result.data as PageAssetInventory;
   if (typeof data.pageId !== 'number') return null;
   return data;
+}
+
+// ============================================================================
+// SNAPSHOT (page.meta.json `pageAssets` key)
+// ============================================================================
+
+/**
+ * Locate the page.meta.json that mirrors the given canonical PW path under
+ * the local sync tree (site/assets/pw-mcp/<path>/page.meta.json), parse it,
+ * and return the embedded asset snapshot — or null if the page has never
+ * been pulled, or if the meta predates v1.10.0 (so the pageAssets key is
+ * missing). Callers treat null as "no baseline to compare against" and
+ * fall back to the live inventory.
+ */
+async function loadPulledSnapshot(
+  pwPath: string,
+  canonicalPath: string,
+): Promise<PageAssetSnapshot | null> {
+  const trimmed = canonicalPath.replace(/^\/+|\/+$/g, '');
+  const segments = trimmed === '' ? ['home'] : trimmed.split('/');
+  const metaPath = path.join(pwPath, 'site', 'assets', 'pw-mcp', ...segments, 'page.meta.json');
+
+  if (!existsSync(metaPath)) return null;
+
+  try {
+    const raw = await readFile(metaPath, 'utf-8');
+    const meta = JSON.parse(raw) as PageMetaWithAssets;
+    if (!meta.pageAssets || typeof meta.pageAssets !== 'object') return null;
+    return meta.pageAssets;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Diff a live inventory against the snapshot captured at pull time.
+ *
+ * Useful for two questions:
+ *   - Local: "what has changed in site/assets/files/{localId}/ since I
+ *     last pulled?" — answered without a remote round-trip.
+ *   - Remote: "what has changed on the remote side since I pulled?" —
+ *     when the snapshot came from a remote pull, this surfaces direct
+ *     production edits made between the pull and now.
+ */
+function diffAgainstSnapshot(
+  current: PageAssetEntry[],
+  snapshot: PageAssetSnapshot,
+): {
+  capturedAt:    string;
+  unchanged:     number;
+  added:         string[];
+  removed:       string[];
+  modified:      string[];
+  totalDrifted:  number;
+} {
+  const snap = new Map(snapshot.assets.map(a => [a.relativePath, a]));
+  const cur  = new Map(current.map(a => [a.relativePath, a]));
+
+  const added:    string[] = [];
+  const removed:  string[] = [];
+  const modified: string[] = [];
+  let   unchanged = 0;
+
+  for (const [rel, cf] of cur) {
+    const sf = snap.get(rel);
+    if (!sf) added.push(rel);
+    else if (sf.md5 !== cf.md5) modified.push(rel);
+    else unchanged++;
+  }
+  for (const rel of snap.keys()) {
+    if (!cur.has(rel)) removed.push(rel);
+  }
+
+  return {
+    capturedAt:   snapshot.capturedAt,
+    unchanged,
+    added,
+    removed,
+    modified,
+    totalDrifted: added.length + removed.length + modified.length,
+  };
 }
 
 // ============================================================================
@@ -287,6 +391,27 @@ export async function syncPageAssets(opts: PageAssetSyncOptions): Promise<PwComm
     };
   }
 
+  // If this page has been pulled into the local sync tree at any point on
+  // or after v1.10.0, page.meta.json carries a `pageAssets` snapshot of the
+  // source side's view of the asset directory at pull time. Use it to
+  // surface drift-since-pull on whichever side the snapshot represents
+  // (the snapshot's pageId tells us which env it came from). This is purely
+  // additive — when the snapshot is missing or the meta predates v1.10.0,
+  // the existing local↔remote diff is unaffected.
+  const snapshot = await loadPulledSnapshot(pwPath, local.pagePath);
+  let driftSinceLastPull: ReturnType<typeof diffAgainstSnapshot> & {
+    snapshotSide: 'local' | 'remote' | 'unknown';
+  } | undefined;
+  if (snapshot) {
+    const compareSide: PageAssetEntry[] = snapshot.pageId === local.pageId
+      ? localAssets
+      : (snapshot.pageId === remote.pageId ? remote.assets : localAssets);
+    const side: 'local' | 'remote' | 'unknown' = snapshot.pageId === local.pageId
+      ? 'local'
+      : (snapshot.pageId === remote.pageId ? 'remote' : 'unknown');
+    driftSinceLastPull = { ...diffAgainstSnapshot(compareSide, snapshot), snapshotSide: side };
+  }
+
   // Surface the per-side ids and the drift flag in every result so the
   // operator can see at a glance which physical disk directory was read
   // / written on each environment. Also catches the failure mode where
@@ -327,6 +452,7 @@ export async function syncPageAssets(opts: PageAssetSyncOptions): Promise<PwComm
         toTransfer: toTransfer.map(f => f.relativePath),
         toDelete:   toDelete.map(f => f.relativePath),
         changed:    diff.changed,
+        ...(driftSinceLastPull ? { driftSinceLastPull } : {}),
       },
     };
   }
@@ -474,6 +600,7 @@ export async function syncPageAssets(opts: PageAssetSyncOptions): Promise<PwComm
       },
       transfers: transferResults,
       deletes:   deleteResults,
+      ...(driftSinceLastPull ? { driftSinceLastPull } : {}),
     },
   };
 }
