@@ -444,6 +444,48 @@ class CommandRouter {
                 }
                 return $this->templateInspect($name);
 
+            // ================================================================
+            // v1.10.0 — PAGE ASSETS (site/assets/files/{pageId}/) SYNC
+            // ================================================================
+            // These commands operate on the page-asset directory directly,
+            // not via field iteration. That matters because:
+            //
+            //   1. Standard FieldtypeFile / FieldtypeImage uploads land in
+            //      site/assets/files/{pageId}/ as do their PW-generated
+            //      image variations.
+            //   2. Custom modules (e.g. MediaHub) also store files in the
+            //      same directory keyed by page id, but those files are
+            //      not exposed via $page->template->fieldgroup iteration —
+            //      so the existing field-aware file:inventory would miss
+            //      them entirely.
+            //
+            // Walking the directory directly catches both. PW image
+            // variations (name.WIDTHxHEIGHT[-suffix].ext) are filtered by
+            // default because they're regenerated on demand and would
+            // produce noisy diffs that the operator does not actually
+            // want to sync.
+
+            case 'page-assets:inventory':
+                $pageRef           = $positional[0] ?? null;
+                $includeVariations = isset($flags['include-variations']) && $flags['include-variations'];
+                $allPages          = isset($flags['all-pages']) && $flags['all-pages'];
+                $excludeTemplates  = $flags['exclude-templates'] ?? '';
+                if ($allPages) {
+                    return $this->pageAssetsInventoryAll($includeVariations, $excludeTemplates);
+                }
+                if (!$pageRef) {
+                    return ['error' => 'page-assets:inventory requires a page id/path (or --all-pages for the full site)'];
+                }
+                return $this->pageAssetsInventory($pageRef, $includeVariations);
+
+            case 'page-assets:download':
+                $pageRef  = $positional[0] ?? null;
+                $filename = $flags['filename'] ?? null;
+                if (!$pageRef || !$filename) {
+                    return ['error' => 'page-assets:download requires a page id/path and --filename=NAME'];
+                }
+                return $this->pageAssetsDownload($pageRef, $filename);
+
             case 'help':
             default:
                 return $this->help();
@@ -3364,6 +3406,230 @@ class CommandRouter {
         ];
     }
 
+    // ========================================================================
+    // v1.10.0 — PAGE ASSETS HANDLERS
+    // ========================================================================
+
+    /**
+     * PW image variation pattern: name.WIDTHxHEIGHT[-suffix].ext
+     *
+     * Variations are regenerated on demand from originals and listing them in
+     * an inventory produces noisy diffs (different cache state on each
+     * environment) for files that don't actually need to be synced. They are
+     * filtered out by default; pass --include-variations to bypass.
+     */
+    private const PAGE_ASSET_VARIATION_PATTERN = '/\.\d+x\d+(-[a-z0-9-]+)?\.[a-z]+$/i';
+
+    /**
+     * Resolve a page id/path/numeric-id to a [pageId, pagePath] pair, or
+     * return an error array. Used by every page-assets handler so the
+     * caller can pass either form.
+     *
+     * Returns ['_error' => string] on failure (the underscore key keeps
+     * the shape distinct from a real page-id payload).
+     *
+     * @param string $pageRef Numeric id, "/path/", or bare path
+     * @return array{pageId:int, pagePath:string}|array{_error:string}
+     */
+    private function resolvePageRef(string $pageRef): array {
+        $page = ctype_digit($pageRef)
+            ? $this->wire->pages->get((int) $pageRef)
+            : $this->wire->pages->get($pageRef);
+
+        if (!$page || !$page->id) {
+            return ['_error' => "Page not found: {$pageRef}"];
+        }
+
+        return ['pageId' => (int) $page->id, 'pagePath' => (string) $page->path];
+    }
+
+    /**
+     * Inventory the on-disk assets for a single page.
+     *
+     * Walks site/assets/files/{pageId}/ directly rather than going through
+     * $page->template->fieldgroup so files placed there by modules outside
+     * the normal field flow (MediaHub, custom uploaders, etc.) are still
+     * picked up. Default mode skips PW image variations; subdirectories
+     * are walked recursively because some modules nest assets one level
+     * deep (e.g. MediaHub variants/) and the relative path is the stable
+     * identity used for diffing across environments.
+     *
+     * @param string $pageRef           Numeric id or PW path.
+     * @param bool   $includeVariations If true, image variations are listed too.
+     * @return array Inventory payload.
+     */
+    private function pageAssetsInventory(string $pageRef, bool $includeVariations = false): array {
+        $resolved = $this->resolvePageRef($pageRef);
+        if (isset($resolved['_error'])) {
+            return ['error' => $resolved['_error']];
+        }
+
+        return [
+            'pageId'   => $resolved['pageId'],
+            'pagePath' => $resolved['pagePath'],
+            'assets'   => $this->buildPageAssetEntries($resolved['pageId'], $includeVariations),
+        ];
+    }
+
+    /**
+     * Inventory page assets for every page on the site that has a
+     * site/assets/files/{pageId}/ directory.
+     *
+     * Used by pw_site_compare to diff the union of pages-with-assets across
+     * two environments in one round-trip. The site is walked once (rather
+     * than asking the caller to inventory each page individually) because
+     * the typical comparison touches dozens to hundreds of pages and the
+     * per-call HTTP overhead would dominate the actual file-hash work.
+     *
+     * Pages whose template matches the exclusion list are skipped — same
+     * defaults as siteInventory so the page-assets diff is always a subset
+     * of the page-content diff.
+     *
+     * @param bool   $includeVariations If true, image variations included.
+     * @param string $excludeTemplates  Comma-separated template names/wildcards.
+     * @return array Pages keyed by canonical PW path.
+     */
+    private function pageAssetsInventoryAll(bool $includeVariations = false, string $excludeTemplates = ''): array {
+        $excludeList = array_filter(array_map('trim', explode(',', $excludeTemplates)));
+
+        $rootPath  = $this->wire->config->paths->root;
+        $assetsDir = $rootPath . 'site/assets/files/';
+        if (!is_dir($assetsDir)) {
+            return [
+                'siteName'    => $this->wire->config->httpHost ?: basename($rootPath),
+                'generatedAt' => gmdate('c'),
+                'pageCount'   => 0,
+                'pages'       => [],
+            ];
+        }
+
+        // Map page-id directories → page paths (skip the directory if the
+        // page no longer exists — orphaned asset directories are common
+        // after page deletions and shouldn't crash the inventory).
+        $pageDirs = [];
+        $entries  = @scandir($assetsDir) ?: [];
+        foreach ($entries as $entry) {
+            if (!ctype_digit($entry)) continue;
+            if (!is_dir($assetsDir . $entry)) continue;
+            $pageDirs[] = (int) $entry;
+        }
+
+        $pages = [];
+        foreach ($pageDirs as $pageId) {
+            $page = $this->wire->pages->get($pageId);
+            if (!$page || !$page->id) continue;
+            if ($this->matchesExcludeList($page->template->name, $excludeList)) continue;
+
+            $assets = $this->buildPageAssetEntries($pageId, $includeVariations);
+            if (empty($assets)) continue;
+
+            $pages[$page->path] = [
+                'pageId'   => $pageId,
+                'pagePath' => (string) $page->path,
+                'template' => $page->template->name,
+                'assets'   => $assets,
+            ];
+        }
+
+        ksort($pages);
+
+        return [
+            'siteName'         => $this->wire->config->httpHost ?: basename($rootPath),
+            'generatedAt'      => gmdate('c'),
+            'includeVariations'=> $includeVariations,
+            'pageCount'        => count($pages),
+            'pages'            => $pages,
+        ];
+    }
+
+    /**
+     * Walk site/assets/files/{pageId}/ recursively and return one entry per
+     * file (relative path, size, md5, mtime).
+     *
+     * @param int  $pageId
+     * @param bool $includeVariations
+     * @return array<int,array{relativePath:string, size:int, md5:string, modified:string}>
+     */
+    private function buildPageAssetEntries(int $pageId, bool $includeVariations): array {
+        $rootPath = $this->wire->config->paths->root;
+        $pageDir  = $rootPath . 'site/assets/files/' . $pageId . '/';
+        if (!is_dir($pageDir)) return [];
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($pageDir, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        $entries = [];
+        foreach ($iterator as $fileInfo) {
+            if ($fileInfo->isDir()) continue;
+            $name = $fileInfo->getFilename();
+            if ($name === '' || $name[0] === '.') continue;
+            if (!$includeVariations && preg_match(self::PAGE_ASSET_VARIATION_PATTERN, $name)) continue;
+
+            $rel = ltrim(str_replace($pageDir, '', $fileInfo->getPathname()), '/');
+            $entries[] = [
+                'relativePath' => $rel,
+                'size'         => (int) $fileInfo->getSize(),
+                'md5'          => md5_file($fileInfo->getPathname()),
+                'modified'     => gmdate('c', $fileInfo->getMTime()),
+            ];
+        }
+
+        usort($entries, fn($a, $b) => strcmp($a['relativePath'], $b['relativePath']));
+        return $entries;
+    }
+
+    /**
+     * Return one page asset's contents as base64. Used by the MCP server's
+     * remote→local pull path so a missing file can be fetched without
+     * needing SFTP credentials separate from PW_REMOTE_KEY.
+     *
+     * Refuses paths that escape the page directory (defence in depth — the
+     * caller already supplies a relative path, but realpath() is the
+     * authoritative check).
+     *
+     * @param string $pageRef
+     * @param string $filename Relative path under site/assets/files/{pageId}/
+     * @return array { pageId, pagePath, filename, size, md5, data (base64) } or { error }
+     */
+    private function pageAssetsDownload(string $pageRef, string $filename): array {
+        $resolved = $this->resolvePageRef($pageRef);
+        if (isset($resolved['_error'])) {
+            return ['error' => $resolved['_error']];
+        }
+
+        $rootPath = $this->wire->config->paths->root;
+        $pageDir  = realpath($rootPath . 'site/assets/files/' . $resolved['pageId']);
+        if ($pageDir === false) {
+            return ['error' => "No assets directory exists for page {$resolved['pageId']}"];
+        }
+
+        $candidate = $pageDir . DIRECTORY_SEPARATOR . ltrim($filename, '/');
+        $real      = realpath($candidate);
+        if ($real === false || strpos($real, $pageDir . DIRECTORY_SEPARATOR) !== 0) {
+            return ['error' => "Asset not found or outside page directory: {$filename}"];
+        }
+        if (!is_file($real)) {
+            return ['error' => "Asset is not a regular file: {$filename}"];
+        }
+
+        $contents = file_get_contents($real);
+        if ($contents === false) {
+            return ['error' => "Failed to read asset: {$filename}"];
+        }
+
+        return [
+            'pageId'   => $resolved['pageId'],
+            'pagePath' => $resolved['pagePath'],
+            'filename' => $filename,
+            'size'     => strlen($contents),
+            'md5'      => md5($contents),
+            'modified' => gmdate('c', filemtime($real)),
+            'data'     => base64_encode($contents),
+        ];
+    }
+
     /**
      * Show help information
      * 
@@ -3374,7 +3640,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.9.3',
+            'version' => '1.10.0',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
@@ -3421,6 +3687,8 @@ class CommandRouter {
                 'users:list' => 'List users with roles and member_* fields (--include=all to widen to every non-system field)',
                 'resolve' => 'Bulk-resolve names to ids (--type=field|template|page|role|permission|user|module --names=foo,bar OR --input=\'{"type":"field","names":["foo"]}\')',
                 'template:inspect' => 'Inspect a template with rich field info ({name,type,label} per field) for fieldgroup-diff workflows',
+                'page-assets:inventory [id|path]' => 'List on-disk assets in site/assets/files/{pageId}/ for a single page (--include-variations to keep PW image variations; --all-pages --exclude-templates=user,role for site-wide inventory)',
+                'page-assets:download [id|path] --filename=NAME' => 'Return one page asset as base64. Used by remote→local sync so the MCP server can fetch missing files over the same authenticated channel as the rest of the API.',
                 'help' => 'Show this help',
             ],
             'flags' => [
