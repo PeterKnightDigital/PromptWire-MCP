@@ -841,6 +841,14 @@ if ($command === 'page-assets:upload') {
         exit;
     }
 
+    // Cross-environment safety: page-assets:upload/delete are reached via the
+    // remote API, but the MCP-side syncPageAssets() always passes the
+    // CANONICAL PW PATH here (e.g. "/about/"), not a numeric id, so the
+    // remote side resolves to its own page id and writes into its own
+    // site/assets/files/{remoteId}/ directory. Numeric ids are accepted only
+    // as a convenience for direct curl-style debugging — in production
+    // workflows the path-based form is what gets hit, so id drift between
+    // local and remote auto-increment sequences is a non-issue.
     $page = ctype_digit((string) $pageRef)
         ? $wire->pages->get((int) $pageRef)
         : $wire->pages->get($pageRef);
@@ -955,6 +963,10 @@ if ($command === 'page-assets:delete') {
         exit;
     }
 
+    // Same cross-environment note as page-assets:upload above — production
+    // callers pass the canonical PW path so the remote resolves to its own
+    // page id, sidestepping any local↔remote auto-increment drift. Numeric
+    // ids are accepted for ad-hoc debugging only.
     $page = ctype_digit((string) $pageRef)
         ? $wire->pages->get((int) $pageRef)
         : $wire->pages->get($pageRef);

@@ -267,7 +267,7 @@ const tools = [
   },
   {
     name: 'pw_page_assets',
-    description: 'Synchronise the on-disk asset directory for a page (site/assets/files/{pageId}/) between local and remote. Catches both standard FieldtypeFile/FieldtypeImage uploads AND module-managed files (e.g. MediaHub) that live in the same per-page directory but are not exposed via fieldgroup iteration. Supports both directions (local-to-remote and remote-to-local). Dry-run by default. PW image variations (name.WxH[-suffix].ext) are filtered by default.',
+    description: 'Synchronise the on-disk asset directory for a page (site/assets/files/{pageId}/) between local and remote. Catches both standard FieldtypeFile/FieldtypeImage uploads AND module-managed files (e.g. MediaHub) that live in the same per-page directory but are not exposed via fieldgroup iteration. Supports both directions (local-to-remote and remote-to-local). Dry-run by default. PW image variations (name.WxH[-suffix].ext) are filtered by default. PAGE ID DRIFT IS HANDLED: pages are matched by canonical PW path, and each side resolves its own pageId before walking its own site/assets/files/{pageId}/ directory. Local 1234 and remote 5678 may both legitimately resolve to /about/ — this is normal for two sites that started from independent fresh installs rather than a DB clone. The result payload reports localPageId, remotePageId, and an idDrift boolean so operators can see at a glance which physical disk directory was read or written on each environment.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -278,7 +278,7 @@ const tools = [
         },
         pageRef: {
           type: 'string',
-          description: 'Page id or PW path (e.g. "/about/"). Required for all actions except site-wide compare.',
+          description: 'Page id or PW path (e.g. "/about/"). Required for all actions except site-wide compare. Note: numeric ids are resolved on the LOCAL site first, then translated to the corresponding remote page via canonical path — so a numeric id never accidentally addresses the wrong remote page when local/remote auto-increment sequences have diverged. If you only know the remote id, look up its path with pw_get_page first.',
         },
         site: {
           type: 'string',
@@ -1313,12 +1313,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const localData  = localResult.data  as { pageId?: number; pagePath?: string; assets?: Array<{ relativePath: string; md5: string; size: number }> };
         const remoteData = remoteResult.data as { pageId?: number; pagePath?: string; assets?: Array<{ relativePath: string; md5: string; size: number }> };
         const diff = diffAssets(localData.assets ?? [], remoteData.assets ?? []);
+
+        // Each side resolves its OWN pageId from the canonical PW path,
+        // so two sites started from independent fresh installs (rather
+        // than a DB clone) will legitimately have different ids for the
+        // same page. Surface both ids and a single idDrift flag so the
+        // operator can see immediately whether the diff is "different
+        // page on each side" (would mean the path-resolution went wrong
+        // somewhere) or "same page, different auto-increment history".
+        const localPageId  = typeof localData.pageId  === 'number' ? localData.pageId  : undefined;
+        const remotePageId = typeof remoteData.pageId === 'number' ? remoteData.pageId : undefined;
+        const idDrift = localPageId !== undefined
+          && remotePageId !== undefined
+          && localPageId !== remotePageId;
+
         return formatToolResponse({
           success: true,
           data: {
             pagePath: localData.pagePath ?? remoteData.pagePath ?? pageRef,
-            local:  { pageId: localData.pageId,  count: (localData.assets  ?? []).length },
-            remote: { pageId: remoteData.pageId, count: (remoteData.assets ?? []).length },
+            local:  { pageId: localPageId,  count: (localData.assets  ?? []).length },
+            remote: { pageId: remotePageId, count: (remoteData.assets ?? []).length },
+            idDrift,
             summary: {
               unchanged:  diff.unchanged,
               changed:    diff.changed.length,
