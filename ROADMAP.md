@@ -8,6 +8,26 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.9.3 — `filesInventory` prunes `.git` / IDE / build directories at the iterator level (2026-04-30)
+
+Sister patch to v1.9.2. Where v1.9.2 stopped the *deploy script* from uploading repo docs, v1.9.3 stops the *file inventory* itself from ever surfacing version-control metadata or IDE state as deployable files. Discovered during the peterknight.digital v1.9.2 deploy when a `pw_site_sync scope:"files" dryRun:true` plan included `site/modules/MediaHub/.git/cursor/crepe/<sha>/metadata.json` — a Cursor IDE Composer artifact stored *inside* the `.git/` directory of a checked-out module repo, with a `.json` extension that happened to match the inventory's default extension whitelist.
+
+Root cause: `filesInventory()` in `src/Cli/CommandRouter.php` walks every directory under the requested roots and only filters files at the *per-file* exclude-pattern check. Nothing prevented descent into `.git/`, `.cursor/`, `node_modules/`, `.idea/`, etc. Any file under those that matched the extension whitelist would slip through unless the operator remembered to pass `excludeFilePatterns: ["**/.git/**", ...]` on every call. They wouldn't.
+
+Two consequences in practice:
+
+1. **Correctness / safety**: VCS internals and IDE state could be queued for production push by `pw_site_sync` and `pw_pages_push`, surfaced by `pw_site_compare` as legitimate diffs, and returned by `pw_search_files`. Anyone running PromptWire against a site that has `git clone`-style modules — very common with developer-installed third-party modules — was exposed.
+2. **Performance**: even when files *were* eventually filtered, the iterator still walked every byte of every `.git/objects/pack/*` and `node_modules/` tree. Inventory generation was O(noise) instead of O(deployable files).
+
+Fix is `RecursiveCallbackFilterIterator` between the `RecursiveDirectoryIterator` and the `RecursiveIteratorIterator`, plus a hardcoded `INVENTORY_PRUNE_DIRS` constant on `CommandRouter`. Pruning happens before descent, so the contents of those directories are not touched at all.
+
+- **`INVENTORY_PRUNE_DIRS` constant**: `.git`, `.svn`, `.hg`, `.cursor`, `.vscode`, `.idea`, `node_modules`, `__pycache__`, `.next`, `.cache`. Pruned at the directory-iterator level, regardless of caller-supplied `excludePatterns`. The existing `excludePatterns` parameter still works for finer-grained per-call excludes on top.
+- **`vendor/` is intentionally NOT in the prune list.** Some sites rely on file sync to ship Composer dependencies to production; excluding it by default would silently break those workflows. If you need to skip `vendor/` on a per-site basis, pass it via `excludePatterns`.
+
+Migration impact: zero. The fix is strictly subtractive on the inventory output (fewer entries, never more), so nothing that relied on `filesInventory` returning a larger set will break. Anyone explicitly passing `excludeFilePatterns: ["**/.git/**"]` as a workaround can keep doing so — the duplicate exclusion is harmless. Downstream tools (`pw_site_compare`, `pw_site_sync`, `pw_search_files`) inherit the fix automatically with no signature changes.
+
+---
+
 ### v1.9.2 — `push-self-to-remote.mjs` stops shipping repo docs to production (2026-04-30)
 
 Hygiene patch. The deploy script's allowed-extensions list included `.md`, which meant every release pushed `ROADMAP.md`, `README.md`, `CHANGELOG.md`, and `SESSION-NEXT.md` to `site/modules/PromptWire/` on the remote — even though ProcessWire reads none of them at runtime. Most importantly, `SESSION-NEXT.md` is `.gitignore`d precisely because it holds internal infra notes (file paths, MCP server names, next-session implementation plans), but the deploy script ignored `.gitignore` and uploaded it to a public URL anyway.

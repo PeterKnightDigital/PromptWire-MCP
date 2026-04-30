@@ -32,7 +32,31 @@ namespace PromptWire\Cli;
  *   - help           : Show available commands
  */
 class CommandRouter {
-    
+
+    /**
+     * Directory names that filesInventory() never descends into, regardless
+     * of caller-supplied exclude patterns. Contains VCS metadata, IDE state,
+     * and dependency caches that should never participate in a ProcessWire
+     * site sync, file comparison, or file search. Pruned at the iterator
+     * level so the contents are not walked at all.
+     *
+     * Note: vendor/ is intentionally NOT in this list. Some sites rely on
+     * file sync to ship Composer dependencies to production. If you need to
+     * exclude vendor/ on a per-site basis, pass it via excludePatterns.
+     */
+    private const INVENTORY_PRUNE_DIRS = [
+        '.git',
+        '.svn',
+        '.hg',
+        '.cursor',
+        '.vscode',
+        '.idea',
+        'node_modules',
+        '__pycache__',
+        '.next',
+        '.cache',
+    ];
+
     /**
      * ProcessWire instance
      * 
@@ -2993,8 +3017,20 @@ class CommandRouter {
                 continue;
             }
 
+            $baseIterator = new \RecursiveDirectoryIterator($absDir, $iteratorFlags);
+
+            $prunedIterator = new \RecursiveCallbackFilterIterator(
+                $baseIterator,
+                function ($current) {
+                    if ($current->isDir()) {
+                        return !in_array($current->getFilename(), self::INVENTORY_PRUNE_DIRS, true);
+                    }
+                    return true;
+                }
+            );
+
             $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($absDir, $iteratorFlags),
+                $prunedIterator,
                 \RecursiveIteratorIterator::SELF_FIRST
             );
 
@@ -3338,7 +3374,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.9.2',
+            'version' => '1.9.3',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
