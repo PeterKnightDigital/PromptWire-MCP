@@ -3651,7 +3651,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.10.0',
+            'version' => '1.10.1',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',

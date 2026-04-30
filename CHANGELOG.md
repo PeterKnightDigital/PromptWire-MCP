@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.1 (30 April 2026)
+
+- **New `ids` block in `page.meta.json`.** Per-environment `pageId` record alongside the existing top-level `pageId` (kept as a back-compat mirror): `ids: { local: { id, lastSeenAt }, remote: { id, lastSeenAt } }`. Each pull populates only its own slot; the other side's slot is preserved verbatim. Closes the v1.10.0 gap where re-pulling from the other environment silently overwrote `meta.pageId` and made `pushPage` address the wrong page.
+- **`SyncManager::pushPage` now resolves pages by canonical path with id verification.** `$wire->pages->get($meta['canonicalPath'])` is the primary lookup; the legacy `pageId` is the fallback for older metas without `canonicalPath`. The last-seen `ids.local.id` in the meta is then used as a sanity check — if the path now resolves to a different id (page deleted and recreated, slug rebound, meta from a different site), the push is refused with a structured error (`expectedId`, `currentId`, `canonicalPath`) and a hint to use `force:true` if the operator really means to push to the new id. Same path-first cross-environment safety the page-assets work in v1.10.0 already has, applied uniformly to page content.
+- **`getPageSyncStatus` and `sync:reconcile` updated to the same path-first / id-fallback rule** so `pw_sync_status` and `pw_sync_reconcile` give identical results regardless of which side last wrote the meta. `pw_sync_status` results now also include the per-environment `ids` block when present.
+- **MCP-side `pullPageFromRemote` merges the remote payload with the existing local meta** instead of overwriting it. Preserves `ids.local`, strips any stray `ids.local` an older payload might include, and promotes legacy top-level `pageId` to `ids.local` for pre-v1.10.1 metas.
+- **MCP-side `pushPage` and `publishPage` now record `ids.remote` after a successful live remote operation.** Reads the `pageId` from the API response and writes it into the local meta, best-effort and dry-run-aware. The local meta now learns the remote id from a remote push without needing a follow-up pull.
+- **Module + MCP server version bumped to 1.10.1.**
+- **Migration impact: zero for callers.** Older metas keep working; the first write on v1.10.1+ adds the `ids` block. Any caller that was passing a misaddressed `meta.pageId` and getting "Page not found" will instead get a successful path-based resolution or a clear id-mismatch diagnostic.
+
 ## 1.10.0 (30 April 2026)
 
 - **New:** `pw_page_assets` — sync the on-disk asset directory for a page (`site/assets/files/{pageId}/`) between local and remote. Catches both standard `FieldtypeFile` / `FieldtypeImage` uploads AND module-managed files (notably MediaHub, plus any other custom module that stores files keyed by page id). The previous `pw_file_sync` only iterated a page's fieldgroup, so files placed in the page-asset directory by modules outside the normal field flow were silently missed. Supports both directions (`push` and `pull`); dry-run by default. PW image variations (`name.WxH[-suffix].ext`) are filtered by default because they're regenerated on demand.
