@@ -37,28 +37,55 @@ v1.10.0 fixes both by treating the page-asset directory as a first-class sync su
 
 Migration impact: zero for callers. `pw_page_assets` is new; `pw_site_compare` gains an additive `pageAssets` field; `pw_site_sync` swaps its `page-files` step for `page-assets` but keeps the same overall step ordering and the same "non-fatal: page content already pushed" failure semantics. The remote API needs the v1.10.0 endpoint deployed for the new commands; older endpoints surface as a `pageAssets.warning` rather than breaking the rest of the compare/sync. Existing `page.meta.json` files keep working unchanged — re-pulling refreshes them with the new `pageAssets` snapshot block.
 
-#### Follow-up (planned, not in this release): per-environment `ids` in `page.meta.json`
+Both `PromptWire.module.php` and `mcp-server/package.json` are bumped to 1.10.0 so the version Cursor reports matches the feature set.
 
-`page.meta.json` currently has a single `pageId` field. Whatever side you last pulled from, that side's id wins — pull from local then re-pull from remote and `meta.pageId` silently switches from the local id to the remote one. The push side (`SyncManager::pushPage`) reads `meta.pageId` and looks it up via `$wire->pages->get($meta['pageId'])`, so a meta that was last refreshed from the remote will silently address the wrong page on local (or fail with "Page not found"). Conversely the meta — which is your *persistent record* of the page — has nowhere to record the local id and the remote id side by side, so an at-a-glance "which physical id corresponds to this page on each environment?" question requires re-resolving on both sides every time.
+---
 
-The fix is a new `ids` block alongside the existing top-level `pageId` (kept for back-compat):
+### v1.10.1 — Per-environment `ids` block in `page.meta.json` + path-first `pushPage` (2026-04-30)
+
+Closes the meta format gap left explicitly open in v1.10.0. Prior to v1.10.1, `page.meta.json` had a single top-level `pageId` slot. Whatever side last wrote the meta — a local pull, or a remote-pull payload mirrored into the local sync tree — won. The other side's id was lost, and `SyncManager::pushPage`'s `$wire->pages->get($meta['pageId'])` could silently address the wrong page after a re-pull from the other environment.
+
+**The format change.** `page.meta.json` gains an `ids` block alongside the existing top-level `pageId` (kept as a back-compat mirror so anything reading `meta.pageId` directly keeps working):
 
 ```json
 {
-  "pageId": 1234,                  // back-compat mirror of ids.local
+  "pageId": 1234,
   "canonicalPath": "/about/",
   "ids": {
     "local":  { "id": 1234, "lastSeenAt": "2026-04-30T15:00:00+00:00" },
-    "remote": { "id": 5678, "lastSeenAt": "2026-04-30T15:00:30+00:00" }
+    "remote": { "id": 5678, "lastSeenAt": "2026-04-30T15:30:00+00:00" }
   }
 }
 ```
 
-Each pull populates *its own* slot without overwriting the other. `pushPage` resolves the page by canonical path (matching what `pw_page_assets` and the rest of v1.10.0 already do) and uses the appropriate `ids.<env>.id` purely as a sanity check — refusing to push if the path resolves to a page with a different id than last seen. Same path-first cross-environment safety the page-assets work has, applied uniformly to page content.
+Each meta-write site populates only its own slot. The other side's slot is preserved verbatim. Three write paths cover every code route in / out of the meta:
 
-Deferring this from v1.10.0 because it's a real refactor of an existing critical write path (`pushPage` is the most-used write tool in the suite) and deserves its own PR with focused testing. Tracking as v1.10.1.
+- **`SyncManager::pullPage`** (local pull): writes `ids.local`, preserves any pre-existing `ids.remote`. Reads any pre-existing meta first to do the merge.
+- **`SyncManager::exportPageYaml`** (the remote-pull payload returned over HTTP): emits its own id under `ids.remote`. From the receiver's perspective this id IS the remote id — labelling it correctly at source means the receiver doesn't need to know which environment it pulled from.
+- **MCP-side `pullPageFromRemote`** (`mcp-server/src/pages/puller.ts`): merges the remote-emitted payload with any existing local meta, preserving `ids.local` and stripping any stray `ids.local` that an older or misconfigured payload might have included. Also handles the legacy upgrade path: if the existing meta has only top-level `pageId` (pre-v1.10.1 layout), it's promoted to `ids.local` so the value isn't lost on this remote pull.
 
-Both `PromptWire.module.php` and `mcp-server/package.json` are bumped to 1.10.0 so the version Cursor reports matches the feature set.
+Two more write paths handle the closing-the-loop case for remote pushes:
+
+- **MCP-side `pushPage`** (`mcp-server/src/pages/pusher.ts`): after a successful live remote push, reads the `pageId` from the API response and writes `ids.remote` into the local meta. Best-effort, dry-run-aware, never fails the push.
+- **MCP-side `publishPage`** remote branch: same recording for `page:create` responses.
+
+**The `pushPage` refactor.** This is the critical write-path change v1.10.0 deliberately deferred:
+
+- Lookup is **path-first**. `pushPage` calls `$wire->pages->get($meta['canonicalPath'])` first, falling back to id only when a path lookup fails (covers legacy metas without `canonicalPath`).
+- Id is then a **sanity check**, not a primary key. If the canonical path now resolves to a different id than the last-seen `ids.local.id` in the meta, the push is refused with a structured error explaining the mismatch (`expectedId`, `currentId`, `canonicalPath`) and pointing the operator at `force:true` if they really do mean to push to the new id. Catches: page deleted-and-recreated at the same path, slug rebound to an unrelated page, meta from a different site entirely.
+- `getPageSyncStatus` (powering `pw_sync_status`) and `sync:reconcile` are updated with the same path-first / id-fallback rule so all three read sites give identical results regardless of which side last wrote the meta.
+
+**The legacy migration is automatic and additive.** Older `page.meta.json` files without the `ids` block keep working: `readEnvId()` falls back to the top-level `pageId` and treats it as the local id (the dominant historical case). The first write to the meta on v1.10.1+ adds the `ids` block; remote pulls promote any pre-existing top-level `pageId` to `ids.local` before merging. No manual migration step.
+
+**Validation.**
+
+- 16 unit-style PHP tests (executed under reflection against the new helpers): `buildIdsBlock` writes only the targeted slot, preserves the other side, defaults bad env names; `readEnvId` reads new-format ids, falls back to legacy `pageId` for local, returns null for remote when only legacy data exists, handles empty / zero / malformed meta gracefully.
+- 9 Node tests covering the TS merge logic in `pullPageFromRemote`: no-existing-meta passes payload through; existing v1.10.1 `ids.local` is preserved; legacy top-level `pageId` is promoted to `ids.local`; stray payload `ids.local` is stripped; the no-local-available case leaves `ids.local` absent rather than guessing.
+- `npm run build` (TypeScript strict) and `php -l` clean on every modified file.
+
+**Migration impact.** Zero for callers. The new `ids` block, the per-environment `lastSeenAt` field, the path-first `pushPage` lookup, and the new id-mismatch error are all additive or strictly more accurate than what v1.10.0 did. Any caller that was passing a now-misaddressed `meta.pageId` and getting "Page not found" will instead get a successful push (resolved by canonical path) or a clear id-mismatch diagnostic — both improvements over silent breakage.
+
+Both `PromptWire.module.php` and `mcp-server/package.json` are bumped to 1.10.1.
 
 ---
 
