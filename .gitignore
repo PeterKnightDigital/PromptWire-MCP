@@ -16,6 +16,10 @@ mcp-server/dist/
 *.swo
 .DS_Store
 
+# Cursor — workspace-local MCP config holds the production PromptWire API key
+# and a developer-specific PW_PATH. Each contributor maintains their own.
+.cursor/
+
 # Logs
 *.log
 npm-debug.log*
