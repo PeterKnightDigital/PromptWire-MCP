@@ -350,9 +350,10 @@ class CommandRouter {
 
             case 'files:inventory':
                 $dirs = $flags['directories'] ?? 'site/templates,site/modules';
-                $extensions = $flags['extensions'] ?? 'php,js,css,json,latte,twig';
+                $extensions = $flags['extensions'] ?? 'php,js,css,json,latte,twig,module';
                 $excludePatterns = $flags['exclude-patterns'] ?? '';
-                return $this->filesInventory($dirs, $extensions, $excludePatterns);
+                $followSymlinks = !(isset($flags['no-follow-symlinks']) && $flags['no-follow-symlinks']);
+                return $this->filesInventory($dirs, $extensions, $excludePatterns, $followSymlinks);
 
             case 'help':
             default:
@@ -2794,12 +2795,18 @@ class CommandRouter {
      * @param string $directories      Comma-separated directory paths
      * @param string $extensions       Comma-separated file extensions to include
      * @param string $excludePatterns  Comma-separated glob patterns to skip
+     * @param bool   $followSymlinks   Whether to follow symlinked directories (default true).
+     *                                 Symlinked module folders (e.g. shared modules under
+     *                                 development) appear as their own physical files in the
+     *                                 inventory; without this flag they were silently skipped
+     *                                 in v1.7.x and earlier.
      * @return array File inventory manifest
      */
     private function filesInventory(
         string $directories = 'site/templates,site/modules',
-        string $extensions = 'php,js,css,json,latte,twig',
-        string $excludePatterns = ''
+        string $extensions = 'php,js,css,json,latte,twig,module',
+        string $excludePatterns = '',
+        bool $followSymlinks = true
     ): array {
         $rootPath = $this->wire->config->paths->root;
         $dirList = array_filter(array_map('trim', explode(',', $directories)));
@@ -2807,6 +2814,12 @@ class CommandRouter {
         $excludes = array_filter(array_map('trim', explode(',', $excludePatterns)));
 
         $files = [];
+        $visitedRealPaths = []; // loop guard when following symlinks
+
+        $iteratorFlags = \RecursiveDirectoryIterator::SKIP_DOTS;
+        if ($followSymlinks) {
+            $iteratorFlags |= \RecursiveDirectoryIterator::FOLLOW_SYMLINKS;
+        }
 
         foreach ($dirList as $dir) {
             $absDir = $rootPath . ltrim($dir, '/');
@@ -2815,7 +2828,7 @@ class CommandRouter {
             }
 
             $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($absDir, \RecursiveDirectoryIterator::SKIP_DOTS),
+                new \RecursiveDirectoryIterator($absDir, $iteratorFlags),
                 \RecursiveIteratorIterator::SELF_FIRST
             );
 
@@ -2824,6 +2837,14 @@ class CommandRouter {
 
                 $ext = strtolower($fileInfo->getExtension());
                 if (!empty($extList) && !in_array($ext, $extList)) continue;
+
+                if ($followSymlinks) {
+                    $real = $fileInfo->getRealPath();
+                    if ($real !== false) {
+                        if (isset($visitedRealPaths[$real])) continue;
+                        $visitedRealPaths[$real] = true;
+                    }
+                }
 
                 $relativePath = $dir . '/' . ltrim(
                     str_replace($absDir, '', $fileInfo->getPathname()),
@@ -2844,12 +2865,13 @@ class CommandRouter {
         usort($files, fn($a, $b) => strcmp($a['relativePath'], $b['relativePath']));
 
         return [
-            'siteName'    => $this->wire->config->httpHost ?: basename($this->wire->config->paths->root),
-            'generatedAt' => date('c'),
-            'directories' => $dirList,
-            'extensions'  => $extList,
-            'fileCount'   => count($files),
-            'files'       => $files,
+            'siteName'       => $this->wire->config->httpHost ?: basename($this->wire->config->paths->root),
+            'generatedAt'    => date('c'),
+            'directories'    => $dirList,
+            'extensions'     => $extList,
+            'followSymlinks' => $followSymlinks,
+            'fileCount'      => count($files),
+            'files'          => $files,
         ];
     }
 
@@ -2928,7 +2950,7 @@ class CommandRouter {
                 'backup:delete <filename|timestamp>' => 'Delete a backup (DB + files)',
                 'files:push' => 'Push files to site (--files=JSON --confirm for live)',
                 'site:inventory' => 'Page inventory with content hashes (--exclude-templates=user,role --include-system)',
-                'files:inventory' => 'File inventory with MD5 hashes (--directories=site/templates,site/modules --extensions=php,js)',
+                'files:inventory' => 'File inventory with MD5 hashes (--directories=site/templates,site/modules --extensions=php,js,css,json,latte,twig,module --no-follow-symlinks)',
                 'help' => 'Show this help',
             ],
             'flags' => [

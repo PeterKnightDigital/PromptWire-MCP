@@ -6,9 +6,25 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ---
 
-## v1.8.0 — Module-aware Site Sync (Modules, Users, Custom Tables)
+## Releases
+
+### v1.8.0 — `filesInventory` correctness (2026-04-30)
+
+The first of the v1.8.x bug-fix series shipped ahead of the larger module-aware sync work (now planned for v1.9.0–v1.14.0). All low-risk, all backward compatible.
+
+- **`.module` files are now included in `files:inventory` by default.** FormBuilder and LoginRegisterPro both ship core files with the bare `.module` extension; previously `pw_site_sync scope: "files"` silently omitted them, requiring the operator to create temporary `.module.php` sibling files before each push. Default `--extensions` is now `php,js,css,json,latte,twig,module`.
+- **Symlinked module directories are now followed by default.** Symlinked modules (e.g. StemplatesPro / SeoNeo when developed in sibling repos) are walked into, with a `realpath()`-based loop guard so the same physical file is never reported twice. New `--no-follow-symlinks` flag preserves the v1.7.x behaviour for callers that explicitly want it.
+- **MCP server version bumped from 1.6.0 → 1.8.0** to match the ProcessWire module version (the 1.7.0 release missed `mcp-server/package.json`).
+
+Migration impact: zero. No tool signatures changed; defaults expanded what's included in inventories. A re-run of `pw_site_compare` may surface previously hidden file deltas — these are real and were silently absent before.
+
+---
+
+## Planned: Module-aware Site Sync (v1.9.0 – v1.14.0)
 
 A second-generation site sync that handles ProcessWire data living **outside** the page tree: module configs, module install state, user accounts, and custom module-owned database tables (e.g. FormBuilder forms). Closes the gap revealed by deploying a multi-module site to production for the first time using v1.7.0.
+
+Originally scoped as a single v1.8.0 release; broken into per-feature minor versions (v1.9.0 – v1.14.0) for incremental release and rollback safety. v1.8.x is reserved for the bug-fix series feeding the same migration use case (see "Pre-existing PromptWire bugs" below — `filesInventory` items shipped in v1.8.0; remaining items in v1.8.1 – v1.8.4).
 
 ### The problem
 
@@ -145,8 +161,8 @@ Each phase respects the same `excludeTemplates`, `backup`, `maintenance`, and `d
 Items worth pulling forward into v1.8.0 because they were hit during the same session:
 
 - **`pw_db_query --site=remote` silently runs against local DB.** The `--site` flag is consumed but not honoured. **This was the single highest-cost bug** of the deployment — caused multiple hours of misdiagnosis where production was assumed to be in sync (or modules assumed installed) when neither was true. Fix priority should match the impact: route to the remote DB when `--site=remote` is passed, or remove the flag entirely so callers know they're getting local data and use a different mechanism for remote queries.
-- **`filesInventory` excludes files with `.module` extension.** FormBuilder and LoginRegisterPro both ship core files as `.module` (without `.php`), so they were silently omitted from `pw_site_sync`. Add `.module` to the default extension list.
-- **`filesInventory` does not follow symlinks.** SeoNeo and StemplatesPro were locally symlinked to sibling repos; sync silently skipped them. Either follow symlinks (and document) or warn loudly when a synced directory contains an unexpanded symlink.
+- ~~**`filesInventory` excludes files with `.module` extension.** FormBuilder and LoginRegisterPro both ship core files as `.module` (without `.php`), so they were silently omitted from `pw_site_sync`. Add `.module` to the default extension list.~~ **Shipped in v1.8.0.**
+- ~~**`filesInventory` does not follow symlinks.** SeoNeo and StemplatesPro were locally symlinked to sibling repos; sync silently skipped them. Either follow symlinks (and document) or warn loudly when a synced directory contains an unexpanded symlink.~~ **Shipped in v1.8.0** (with `--no-follow-symlinks` opt-out).
 - **`pw_health.writesEnabled` is hardcoded to `false`.** Confusing during incident response — operators see writes are blocked when they aren't. Wire it to a real config (e.g. `PROMPTWIRE_READ_ONLY` env var) or remove the field. Existing roadmap item #5 covers this.
 - **`pw_site_compare` and `pw_page_push` dry-run report phantom changes from value-format roundtripping.** After a successful page push, compare still flags the page as "modified" because the diff renderer normalises one side and not the other:
   - `blog_date` (datetime field): stored value reads back as epoch integer (`1775692800`) on one side and ISO string (`2026-04-09T00:00:00.000Z`) on the other. Same instant, different render → flagged different.
