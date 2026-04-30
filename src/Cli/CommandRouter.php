@@ -3089,10 +3089,14 @@ class CommandRouter {
         $modules = $this->wire->modules;
         $rootPath = $this->wire->config->paths->root;
 
-        // Default = every installed module. ProcessWire's $modules iterator
-        // yields installed module objects; getInstalled() returns class names.
+        // Default = every installed module. ProcessWire's getInstalled()
+        // returns [className => moduleObject] (or null for autoload-but-not-
+        // loaded entries) — the *keys* are the class names, not the values.
+        // v1.9.0 iterated the values and got module objects in $class, which
+        // silently failed downstream with "Unable to locate module" because
+        // $modules->isInstalled() needs a string. Fixed in v1.9.1.
         if (empty($classes)) {
-            $classes = $modules->getInstalled();
+            $classes = array_keys($modules->getInstalled());
             sort($classes);
         }
 
@@ -3334,7 +3338,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.9.0',
+            'version' => '1.9.1',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',

@@ -8,6 +8,18 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.9.1 — `pw_modules_list` returns class names (was returning null) (2026-04-30)
+
+Fix-forward for v1.9.0. The default `pw_modules_list` call (no `classes` filter) returned every entry with `class: null` and `installError: "Unable to locate module"`. Calls *with* an explicit `classes: [...]` filter were unaffected.
+
+Root cause: ProcessWire's `Modules::getInstalled()` returns `[$className => $moduleObject]` — the *keys* are the class names, not the values. v1.9.0 iterated the values, got module objects in `$class`, and every downstream `$modules->isInstalled($class)` / `getModuleFile($class)` silently failed because they expect a string. The PW Module objects then JSON-encoded as `null`.
+
+Fix is one line: `array_keys($modules->getInstalled())` instead of iterating values. Caught by the v1.9.0 release validation against `peterknight.digital` production, before the v1.9.0 tag reached GitHub.
+
+Migration impact: zero. The buggy v1.9.0 PHP that briefly lived on production for a few minutes is overwritten by this push; no data was affected because `pw_modules_list` is read-only.
+
+---
+
 ### v1.9.0 — Read-only diagnostic tools (`pw_modules_list`, `pw_users_list`, `pw_resolve`, `pw_inspect_template`) (2026-04-30)
 
 First feature release of the v1.9.x line. Ships the four read-only diagnostic tools that v1.10+ writeable workflows need (template fieldgroup pushes, additive user sync, module install state). All four are site-aware via `runOnSite` and additive — no existing tool signatures change.
