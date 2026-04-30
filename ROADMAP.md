@@ -8,6 +8,22 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.8.4 — `siteInventory` contentHash normalisation (kills phantom diffs) (2026-04-30)
+
+The final v1.8.x bug-fix release. After pushing 88 pages from peterknight.digital local to production, `pw_site_compare` still flagged 18 of them as "modified" — but the differences were all in how dates and PageArrays were rendered, not in the actual content. This release normalises the contentHash so identical content produces identical hashes regardless of which environment built the inventory.
+
+- **Datetime fields ISO 8601 UTC.** PW emits Datetime as either an integer epoch or a formatted string depending on each field's `outputFormat`. That single decision was responsible for ~half of the phantom diffs. Now always normalised to `gmdate('c', $ts)` before hashing.
+- **PageArray sorted + pipe-joined.** Previously emitted as an array of paths in PW's storage order — but two sites that pulled identical content can legitimately store it in different orders. Sorted by path so the hash only changes when the *set* of referenced pages changes.
+- **Pagefiles / Pageimages sorted by basename.** Same reasoning as PageArray; storage order is observable but not stable across reseeds or admin re-uploads.
+- **Field key order normalised** with `ksort($fieldData)` before JSON encoding, so two sites whose field positions differ in the admin still produce the same hash.
+- **`modified` and `created` timestamps emitted as UTC ISO 8601** so a local box on BST and a production server on UTC stop phantom-flagging every page as modified.
+- **Pages sorted by path** in the inventory output for deterministic ordering.
+- **Extracted `normaliseValueForHash()`** as a single dedicated helper so future field types (FieldtypeOptions, FieldtypeRepeater, etc.) can be added in one place without touching the core hash logic.
+
+Migration impact: **all sites must upgrade together for hashes to match.** v1.8.3 and earlier produce different contentHashes for the same content; v1.8.4 will surface a one-time wave of "modified" pages on the first compare after upgrade. After both ends are on v1.8.4 the phantom diffs disappear and any remaining diffs are real.
+
+---
+
 ### v1.8.3 — `pw_page_pull source: local | remote` + `page:export-yaml` (2026-04-30)
 
 Closes the "production-edit drift" gap that surfaced when the operator edited a remote page directly in the production admin (removed images from a TinyMCE field) and then needed to bring those changes back to local. Previously this required a temporary `_init.php` endpoint to fetch the field over `curl`. Now it's one tool call.

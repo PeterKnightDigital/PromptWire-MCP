@@ -2731,6 +2731,89 @@ class CommandRouter {
      * @param bool   $includeSystem     Include system pages (admin, trash)
      * @return array Page inventory manifest
      */
+    /**
+     * Normalise a field value for inclusion in the content hash.
+     *
+     * Goals (in order of priority):
+     *   1. Same logical content → same hash, regardless of which site it
+     *      came from. PW's internal ordering, output formatters, and
+     *      database row positions must NOT leak into the hash.
+     *   2. Cheap to compute (siteInventory walks every page in the site;
+     *      anything more expensive than O(n) per field would dominate
+     *      the request).
+     *   3. Forward-compatible. Add new field-type branches here without
+     *      changing existing branches' output, so previously-stable
+     *      hashes don't shift between releases.
+     *
+     * Normalisations applied:
+     *   - PageArray         → sorted, pipe-joined paths (was: array of
+     *                         paths in PW storage order, which differs
+     *                         between sites that pulled the same content).
+     *   - Pagefiles/images  → sorted "basename:size" pairs (was:
+     *                         storage-order array; storage order is
+     *                         observable in some queries but not stable
+     *                         across reseeds or admin re-uploads).
+     *   - Datetime fields   → ISO 8601 UTC string. PW emits dates as
+     *                         either Unix epoch ints OR formatted
+     *                         strings depending on the field's
+     *                         outputFormat — that single decision was
+     *                         responsible for ~half the phantom diffs
+     *                         seen during the peterknight.digital
+     *                         migration.
+     *   - Boolean ints      → preserved as 0/1 (don't coerce, keeps
+     *                         existing hashes stable for non-affected
+     *                         field types).
+     *
+     * @param \ProcessWire\Field $field The field metadata (used to detect
+     *                                  Datetime so we don't incorrectly
+     *                                  ISO-format an integer Page reference).
+     * @param mixed              $value Raw value from $page->get($name).
+     * @return mixed Hash-stable representation.
+     */
+    private function normaliseValueForHash(\ProcessWire\Field $field, $value) {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        // Datetime: always normalise to ISO 8601 UTC. PW returns these as
+        // either an integer epoch or a formatted string depending on the
+        // field's outputFormat — both are valid and produce different
+        // hashes from each other for the same logical timestamp.
+        if ($field->type instanceof \ProcessWire\FieldtypeDatetime) {
+            $ts = is_numeric($value) ? (int) $value : strtotime((string) $value);
+            return $ts > 0 ? gmdate('c', $ts) : (string) $value;
+        }
+
+        // PageArray: sort by path and pipe-join. Pipe is illegal in PW
+        // page paths so it's a safe separator. Sort is critical:
+        // PageArray storage order is set by the underlying selector or
+        // sort field, and two sites that pulled the same content can
+        // legitimately store it in different orders.
+        if ($value instanceof \ProcessWire\PageArray) {
+            $paths = $value->explode('path');
+            sort($paths, SORT_STRING);
+            return implode('|', $paths);
+        }
+
+        // Pagefiles / Pageimages: sort by basename for determinism.
+        // basename:size still detects content changes but no longer
+        // depends on upload order or PW's internal sort field.
+        if ($value instanceof \ProcessWire\Pagefiles || $value instanceof \ProcessWire\Pageimages) {
+            $entries = [];
+            foreach ($value as $f) {
+                $entries[] = $f->basename . ':' . $f->filesize();
+            }
+            sort($entries, SORT_STRING);
+            return $entries;
+        }
+
+        if (is_object($value)) {
+            return (string) $value;
+        }
+
+        return $value;
+    }
+
     private function siteInventory(string $excludeTemplates = '', bool $includeSystem = false): array {
         $excludeList = array_filter(array_map('trim', explode(',', $excludeTemplates)));
 
@@ -2753,7 +2836,16 @@ class CommandRouter {
                 continue;
             }
 
-            // Build a content hash from all custom field values
+            // Build a content hash from all custom field values.
+            //
+            // v1.8.4 — every value is normalised to a representation that is
+            // (a) deterministic (no internal ordering leaks), (b) timezone- &
+            // outputFormat-agnostic, and (c) stable across PW point releases.
+            // Without these normalisations identical pages on two sites can
+            // produce different hashes purely because of date output format
+            // or PageArray storage order — that's the "phantom diff" bug
+            // the operator hit while comparing peterknight.digital local vs
+            // production after a fresh sync.
             $fieldData = [];
             foreach ($page->template->fieldgroup as $field) {
                 if ($field->name === 'title') {
@@ -2761,37 +2853,46 @@ class CommandRouter {
                     continue;
                 }
                 $value = $page->get($field->name);
-                if ($value instanceof \ProcessWire\PageArray) {
-                    $fieldData[$field->name] = $value->explode('path');
-                } elseif ($value instanceof \ProcessWire\Pagefiles || $value instanceof \ProcessWire\Pageimages) {
-                    $fileArr = [];
-                    foreach ($value as $f) {
-                        $fileArr[] = $f->basename . ':' . $f->filesize();
-                    }
-                    $fieldData[$field->name] = $fileArr;
-                } elseif (is_object($value)) {
-                    $fieldData[$field->name] = (string) $value;
-                } else {
-                    $fieldData[$field->name] = $value;
-                }
+                $fieldData[$field->name] = $this->normaliseValueForHash($field, $value);
             }
 
-            $contentHash = md5(json_encode($fieldData, JSON_UNESCAPED_UNICODE));
+            // Stable key order so two sites whose field positions differ
+            // (e.g. one has been re-ordered in the admin) still hash the
+            // same content to the same value.
+            ksort($fieldData);
 
+            $contentHash = md5(json_encode(
+                $fieldData,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            ));
+
+            // v1.8.4 — modified / created emitted as UTC ISO 8601 so two
+            // sites with different server timezones produce identical
+            // strings for the same physical timestamp. The diff engine
+            // compares strings; without UTC normalisation, a local box on
+            // BST and a production server on UTC would phantom-flag every
+            // page as "modified" purely due to formatting.
             $pages[] = [
                 'id'          => $page->id,
                 'path'        => $page->path,
                 'template'    => $templateName,
                 'status'      => $page->status,
-                'modified'    => date('c', $page->modified),
-                'created'     => date('c', $page->created),
+                'modified'    => gmdate('c', $page->modified),
+                'created'     => gmdate('c', $page->created),
                 'contentHash' => $contentHash,
             ];
         }
 
+        // Stable page order so two inventories taken back-to-back from the
+        // same site (or one local + one remote) produce a deterministic
+        // ordering for downstream diff tools that don't sort themselves.
+        usort($pages, function ($a, $b) {
+            return strcmp($a['path'], $b['path']);
+        });
+
         return [
             'siteName'    => $this->wire->config->httpHost ?: basename($this->wire->config->paths->root),
-            'generatedAt' => date('c'),
+            'generatedAt' => gmdate('c'),
             'pageCount'   => count($pages),
             'excluded'    => $excludeList,
             'pages'       => $pages,
