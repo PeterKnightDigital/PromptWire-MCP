@@ -88,7 +88,11 @@ export async function runRemoteCommand(
         'X-PromptWire-Client': 'cursor-mcp/1.0',
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(command.startsWith('file:') ? 120_000 : 60_000),
+      signal: AbortSignal.timeout(
+        command.startsWith('file:') || command.startsWith('page-assets:')
+          ? 120_000
+          : 60_000,
+      ),
     });
 
     // Handle HTTP error codes with helpful messages
@@ -150,9 +154,11 @@ export async function runRemoteCommand(
     if (error instanceof Error) {
       // AbortSignal timeout
       if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+        const timeoutSeconds =
+          command.startsWith('file:') || command.startsWith('page-assets:') ? 120 : 60;
         return {
           success: false,
-          error: `Remote request timed out after 60s — is ${remoteUrl} reachable?`,
+          error: `Remote request timed out after ${timeoutSeconds}s — is ${remoteUrl} reachable?`,
         };
       }
       // Network errors (DNS, connection refused, etc.)
