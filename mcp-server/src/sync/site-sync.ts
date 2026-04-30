@@ -22,8 +22,8 @@ import { runPwCommand, type PwCommandResult } from '../cli/runner.js';
 import { runRemoteCommand } from '../remote/client.js';
 import { compareSites, type SiteCompareResult, type FileDiffItem, type PageDiffItem } from './site-compare.js';
 import { schemaPush } from '../schema/sync.js';
-import { syncFiles } from '../pages/file-sync.js';
 import { publishPage, pushPage } from '../pages/pusher.js';
+import { syncPageAssets } from './page-assets.js';
 
 // ============================================================================
 // TYPES
@@ -135,8 +135,23 @@ export async function syncSites(options: SiteSyncOptions): Promise<PwCommandResu
       plan.pages = {
         toUpdate: diff.pages.modified.map(p => p.path),
         toCreate: diff.pages.localOnly.map(p => p.path),
-        note: 'File/image assets for synced pages will also be transferred.',
       };
+
+      // Page-asset drift is reported independently of page-content drift —
+      // a page can have unchanged content but new uploaded files (or vice
+      // versa). Surface both so the operator can see exactly what would
+      // move during the sync.
+      const assetPaths = (diff.pageAssets?.diffs ?? []).map(d => d.pagePath);
+      plan.pageAssets = {
+        pagesAffected: assetPaths,
+        totals:        diff.pageAssets?.totals ?? { changed: 0, localOnly: 0, remoteOnly: 0 },
+        note:
+          'Catches both standard file/image field uploads and module-managed files (MediaHub, etc.) in site/assets/files/{pageId}/. ' +
+          'Orphan deletion is disabled by default — use pw_page_assets directly with deleteOrphans:true if needed.',
+      };
+      if (diff.pageAssets?.warning) {
+        (plan.pageAssets as Record<string, unknown>).warning = diff.pageAssets.warning;
+      }
     }
 
     if (options.scope === 'all' || options.scope === 'files') {
@@ -243,40 +258,73 @@ export async function syncSites(options: SiteSyncOptions): Promise<PwCommandResu
     }
   }
 
-  // ── Step 6: Sync page file/image assets ──────────────────────────────────
+  // ── Step 6: Sync on-disk page assets (site/assets/files/{pageId}/) ──────
+  //
+  // Replaces the old "sync files for pulled pages" logic with a directory-
+  // walking variant that:
+  //
+  //   1. Picks up files placed in site/assets/files/{pageId}/ by modules
+  //      that don't expose them on the page's fieldgroup (most notably
+  //      MediaHub). The previous step iterated $page->template->fieldgroup,
+  //      so any file/image stored outside a Pagefiles field was silently
+  //      missed.
+  //
+  //   2. Acts on every page that has asset drift, not just pages that
+  //      happen to have a local sync directory under site/assets/pw-mcp/.
+  //      If the user pushed page CONTENT for a page they had never pulled,
+  //      the old path skipped the assets entirely.
+  //
+  //   3. Supports both directions. Remote → local was previously a no-op
+  //      with a "use SFTP" warning; now it pulls each missing/changed file
+  //      via the page-assets:download API, no SFTP required.
+  //
+  // Source of truth for "which pages have asset drift" is the pageAssets
+  // section of the comparison report (built by compareSiteAssets), which
+  // walks both sides' site/assets/files/ trees. This is independent of the
+  // page-content modified/localOnly lists used for step 5.
   if (options.scope === 'all' || options.scope === 'pages') {
-    const pagesWithFiles = [
-      ...diff.pages.modified,
-      ...diff.pages.localOnly,
-    ];
+    const assetDiffs = diff.pageAssets?.diffs ?? [];
+    const pagesWithAssetDrift = assetDiffs.map(d => d.pagePath);
 
-    if (pagesWithFiles.length > 0 && options.direction === 'local-to-remote') {
-      const fileSyncResults = await syncPageFiles(pagesWithFiles, pwPath);
+    if (pagesWithAssetDrift.length > 0) {
+      const assetSyncResults = await syncPageAssetsForPaths(pagesWithAssetDrift, options.direction);
 
-      const synced = fileSyncResults.filter(r => r.success);
-      const skipped = fileSyncResults.filter(r => r.skipped);
-      const failed = fileSyncResults.filter(r => !r.success && !r.skipped);
+      const synced  = assetSyncResults.filter(r => r.success).length;
+      const failed  = assetSyncResults.filter(r => !r.success);
 
       result.steps.push({
-        step: 'page-files',
+        step: 'page-assets',
         success: failed.length === 0,
         detail: {
-          total:   pagesWithFiles.length,
-          synced:  synced.length,
-          skipped: skipped.length,
-          failed:  failed.length,
+          total:    pagesWithAssetDrift.length,
+          synced,
+          failed:   failed.length,
           failures: failed.map(f => ({ path: f.path, error: f.error })),
         },
       });
 
-      // File sync failures are non-fatal — the page content is already pushed
+      // Asset failures are non-fatal — page content was already synced.
       if (failed.length > 0) {
         result.steps.push({
-          step: 'page-files-warning',
+          step: 'page-assets-warning',
           success: true,
-          detail: { note: `${failed.length} page file sync(s) failed. Page content was synced. Use pw_file_sync to retry individual pages.` },
+          detail: {
+            note:
+              `${failed.length} page-asset sync(s) failed. ` +
+              'Page content was synced. Use pw_page_assets action="push"/"pull" to retry individual pages.',
+          },
         });
       }
+    } else if (diff.pageAssets?.warning) {
+      // The compare itself couldn't gather page-asset inventory — usually
+      // because the remote PromptWire predates v1.10.0. Surface this so the
+      // operator knows assets weren't checked rather than silently
+      // assuming they were in sync.
+      result.steps.push({
+        step: 'page-assets-skipped',
+        success: true,
+        detail: { note: diff.pageAssets.warning },
+      });
     }
   }
 
@@ -454,66 +502,51 @@ interface FilePushResult {
   detail:  Record<string, unknown>;
 }
 
-interface PageFileSyncResult {
+interface PageAssetSyncResult {
   path:     string;
   success:  boolean;
-  skipped:  boolean;
   error?:   string;
   detail?:  Record<string, unknown>;
 }
 
-async function syncPageFiles(
-  pages: PageDiffItem[],
-  pwPath: string,
-): Promise<PageFileSyncResult[]> {
-  const results: PageFileSyncResult[] = [];
+/**
+ * Sync the on-disk assets directory for each page that the comparison
+ * reported as differing. Routes through syncPageAssets, which talks
+ * directly to site/assets/files/{pageId}/ and so picks up MediaHub-style
+ * files and any other module-managed assets that the field-aware sync
+ * would miss.
+ *
+ * Pages are processed serially to keep memory bounded for sites with
+ * heavy media (a single page can hold dozens of MB of PDFs / images;
+ * parallelising would multiply that by the worker count for no benefit).
+ */
+async function syncPageAssetsForPaths(
+  pagePaths: string[],
+  direction: 'local-to-remote' | 'remote-to-local',
+): Promise<PageAssetSyncResult[]> {
+  const results: PageAssetSyncResult[] = [];
 
-  for (const page of pages) {
-    // Check if the page has been pulled (has a sync directory)
-    const syncDir = path.join(pwPath, 'site', 'assets', 'pw-mcp', page.path.replace(/^\/|\/$/g, '').replace(/\//g, '/'));
-    const metaPath = path.join(pwPath, 'site', 'assets', 'pw-mcp', page.path.slice(1), 'page.meta.json');
-
-    if (!fs.existsSync(metaPath)) {
-      results.push({ path: page.path, success: true, skipped: true });
-      continue;
-    }
-
+  for (const pagePath of pagePaths) {
     try {
-      const localPath = path.join(pwPath, 'site', 'assets', 'pw-mcp', page.path.slice(1));
-      const fileSyncResult = await syncFiles({
-        localPath,
-        targets: 'remote',
+      const syncResult = await syncPageAssets({
+        pageRef: pagePath,
+        direction,
         dryRun: false,
-        deleteRemoteOrphans: false,
+        // Don't delete orphans by default — site-sync is mass-action and
+        // accidental orphan deletion is hard to undo. Operators who want
+        // that should call pw_page_assets directly with deleteOrphans:true.
+        deleteOrphans: false,
+        includeVariations: false,
       });
 
-      if (fileSyncResult.success) {
-        const data = fileSyncResult.data as Record<string, unknown>;
-        const remoteResult = data?.results as Record<string, Record<string, unknown>> | undefined;
-        const summary = remoteResult?.remote?.summary as Record<string, unknown> | undefined;
-        const noFiles = data?.message && String(data.message).includes('no files');
-
-        results.push({
-          path: page.path,
-          success: true,
-          skipped: !!noFiles,
-          detail: summary ?? undefined,
-        });
+      if (syncResult.success) {
+        const data = syncResult.data as { summary?: Record<string, unknown> } | undefined;
+        results.push({ path: pagePath, success: true, detail: data?.summary });
       } else {
-        results.push({
-          path: page.path,
-          success: false,
-          skipped: false,
-          error: fileSyncResult.error,
-        });
+        results.push({ path: pagePath, success: false, error: syncResult.error });
       }
     } catch (err) {
-      results.push({
-        path: page.path,
-        success: false,
-        skipped: false,
-        error: (err as Error).message,
-      });
+      results.push({ path: pagePath, success: false, error: (err as Error).message });
     }
   }
 
