@@ -8,6 +8,20 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.8.2 — `pw_pages_push` gains `targets: local | remote | both` (2026-04-30)
+
+Removes the manual page-by-page loop the operator had to run during the peterknight.digital migration to push 88 pages to production (because `pw_pages_push` was local-only). The bulk pusher now reuses the proven `pushPage()` per-page logic so every page benefits from path-based lookup and `_pageRef` resolution.
+
+- **`pw_pages_push` accepts `targets` and `publish`** (defaults preserve v1.7.x behaviour). `targets: "local"` continues to call the PHP CLI's `pages:push` so existing local workflows are byte-identical. `targets: "remote"` and `targets: "both"` walk the tree in TypeScript and call `pushPage()` per page.
+- **Pages pushed in parent-first order** (sorted by canonical PW path) so newly-created parents exist before their children try to attach. Serial, not parallel — pushing in parallel would race on the remote page tree mutex and surface confusing "page already exists" errors.
+- **New `pushPagesBulk()` export in `mcp-server/src/pages/pusher.ts`.** Single shared implementation; no second walker to drift away from `pushPage`.
+- **Aggregated result payload** lists every page with success/failure plus the per-page push result, so when one page fails the rest of the batch is still visible.
+- **Pre-flight env check** for `PW_REMOTE_URL` + `PW_REMOTE_KEY` so a missing remote configuration fails before walking the directory rather than per page.
+
+Migration impact: zero. `targets` defaults to `"local"`; existing tool calls go through the unchanged PHP CLI path.
+
+---
+
 ### v1.8.1 — Site-aware diagnostics (`site: local | remote | both`) (2026-04-30)
 
 Closes the diagnostic-blindness gap exposed during the peterknight.digital migration: `pw_db_query --site=remote` silently queried the local database, which forced the operator to build temporary PHP endpoints in `_init.php` to inspect the live ProcessWire runtime. The fix is small, backward compatible, and also unlocks side-by-side `local` + `remote` comparisons in a single tool call.

@@ -15,7 +15,7 @@
  * @license     MIT
  */
 
-import { readFile, access } from 'fs/promises';
+import { readFile, access, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { load as yamlLoad } from 'js-yaml';
@@ -426,4 +426,160 @@ function isFileRef(value: unknown): boolean {
     !Array.isArray(value) &&
     '_file' in value
   );
+}
+
+// ============================================================================
+// BULK PUSH (v1.8.2+)
+// ============================================================================
+
+export interface PushPagesBulkOptions {
+  directory: string;
+  dryRun?:   boolean;
+  force?:    boolean;
+  targets?:  PushTarget;
+  publish?:  boolean;
+}
+
+interface BulkPushItem {
+  syncDir: string;
+  pagePath: string;
+  success: boolean;
+  error?: string;
+  result?: unknown;
+}
+
+/**
+ * Walk a sync directory tree, find every page.yaml, and push each page to the
+ * chosen target(s). Reuses the proven per-page pushPage() logic so all the
+ * cross-environment safeguards (path-based page lookup, _pageRef resolution,
+ * file refs) apply uniformly to every page in the tree.
+ *
+ * Sorts by canonical PW path so parents are pushed before children, which
+ * matters when child pages are new and need a parent that was just created.
+ *
+ * Pages are pushed serially. Pushing in parallel would race on the remote
+ * page tree mutex and produce confusing "page already exists" errors.
+ */
+export async function pushPagesBulk(opts: PushPagesBulkOptions): Promise<PwCommandResult> {
+  const {
+    directory,
+    dryRun  = true,
+    force   = false,
+    targets = 'remote',
+    publish = false,
+  } = opts;
+
+  if (!existsSync(directory)) {
+    return { success: false, error: `Directory not found: ${directory}` };
+  }
+
+  if (targets === 'remote' || targets === 'both') {
+    const remoteUrl = process.env.PW_REMOTE_URL;
+    const remoteKey = process.env.PW_REMOTE_KEY;
+    if (!remoteUrl || !remoteKey) {
+      return {
+        success: false,
+        error:
+          'Bulk remote push requires PW_REMOTE_URL and PW_REMOTE_KEY in this MCP server\'s env. ' +
+          'Add them to the local MCP server entry in .cursor/mcp.json.',
+      };
+    }
+  }
+
+  // Discover all page.yaml files under the directory.
+  const yamlPaths: string[] = [];
+  await walkForYaml(directory, yamlPaths);
+
+  if (yamlPaths.length === 0) {
+    return {
+      success: true,
+      data: {
+        directory,
+        targets,
+        dryRun,
+        pushed: 0,
+        message: 'No page.yaml files found under directory.',
+      },
+    };
+  }
+
+  // Read meta to derive canonical path for ordering.
+  const candidates: { syncDir: string; pagePath: string }[] = [];
+  for (const yamlPath of yamlPaths) {
+    const syncDir = path.dirname(yamlPath);
+    const metaPath = path.join(syncDir, 'page.meta.json');
+    let pagePath = syncDir;
+    if (existsSync(metaPath)) {
+      try {
+        const meta = JSON.parse(await readFile(metaPath, 'utf-8')) as PageMeta;
+        pagePath = meta.canonicalPath ?? meta.path ?? syncDir;
+      } catch {
+        // Fall back to syncDir for ordering — pushPage will surface the error.
+      }
+    }
+    candidates.push({ syncDir, pagePath });
+  }
+
+  // Parents before children so newly-created parents exist when their kids push.
+  candidates.sort((a, b) => a.pagePath.localeCompare(b.pagePath));
+
+  const items: BulkPushItem[] = [];
+  let succeeded = 0;
+  let failed    = 0;
+
+  for (const { syncDir, pagePath } of candidates) {
+    const pushResult = await pushPage({
+      localPath: syncDir,
+      dryRun,
+      force,
+      targets,
+      publish,
+    });
+
+    if (pushResult.success) succeeded++; else failed++;
+
+    items.push({
+      syncDir,
+      pagePath,
+      success: pushResult.success,
+      ...(pushResult.success ? { result: pushResult.data } : { error: pushResult.error }),
+    });
+  }
+
+  return {
+    success: failed === 0,
+    ...(failed > 0 ? { error: `${failed} of ${items.length} pages failed to push — check items[] for details` } : {}),
+    data: {
+      directory,
+      targets,
+      dryRun,
+      total:     items.length,
+      succeeded,
+      failed,
+      items,
+    },
+  };
+}
+
+/**
+ * Recursively collect all page.yaml file paths under `dir`.
+ * Skips hidden directories (.git, .DS_Store) and node_modules for safety.
+ */
+async function walkForYaml(dir: string, out: string[]): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      await walkForYaml(full, out);
+    } else if (entry.isFile() && entry.name === 'page.yaml') {
+      out.push(full);
+    }
+  }
 }

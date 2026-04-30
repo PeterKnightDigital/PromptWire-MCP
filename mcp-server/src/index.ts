@@ -31,7 +31,7 @@ import {
 import { runPwCommand, runOnSite, formatToolResponse, type Site } from './cli/runner.js';
 import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
 import { compareSites as compareSchemas, listSiteConfigs } from './schema/compare.js';
-import { pushPage, publishPage } from './pages/pusher.js';
+import { pushPage, publishPage, pushPagesBulk } from './pages/pusher.js';
 import { syncFiles } from './pages/file-sync.js';
 import { validateRefs } from './pages/validator.js';
 import { compareSites as compareSiteFull } from './sync/site-compare.js';
@@ -313,13 +313,13 @@ const tools = [
   },
   {
     name: 'pw_pages_push',
-    description: 'Bulk push all local changes in a sync directory tree. Shows preview by default (dry-run). Set dryRun=false to apply.',
+    description: 'Bulk push every page.yaml under a sync directory tree to local PW, remote PW, or both. Pages are pushed serially in parent-first order so newly-created parents exist before their children. Dry-run by default. Set dryRun=false to apply.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         directory: {
           type: 'string',
-          description: 'Sync directory to push (e.g., "site/syncs/services" or "site/syncs" for all)',
+          description: 'Sync directory to push (e.g., "site/assets/pw-mcp/services" or "site/assets/pw-mcp" for everything).',
         },
         dryRun: {
           type: 'boolean',
@@ -328,7 +328,18 @@ const tools = [
         },
         force: {
           type: 'boolean',
-          description: 'Force push even if remote pages have changed (dangerous)',
+          description: 'Force push even if the target page has changed since last pull (dangerous).',
+          default: false,
+        },
+        targets: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Where to push. Defaults to "local" (preserves v1.7.x behaviour, uses the PHP CLI). "remote" and "both" walk the tree in TS and call pushPage per page so each push gets full path-based page lookup + _pageRef resolution.',
+          default: 'local',
+        },
+        publish: {
+          type: 'boolean',
+          description: 'Also publish each page (remove unpublished status). Only applies to targets "remote"/"both". Useful for taking a batch of drafts live.',
           default: false,
         },
       },
@@ -1109,21 +1120,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return formatToolResponse(result);
     }
 
-    // Bulk push all changes in a directory tree
+    // Bulk push all changes in a directory tree (local, remote, or both)
     case 'pw_pages_push': {
-      const { directory, dryRun, force } = args as {
+      const { directory, dryRun, force, targets, publish } = args as {
         directory: string;
         dryRun?: boolean;
         force?: boolean;
+        targets?: 'local' | 'remote' | 'both';
+        publish?: boolean;
       };
-      const cmdArgs = [directory];
-      if (dryRun === false) {
-        cmdArgs.push('--dry-run=0');
+
+      const resolvedTargets = targets ?? 'local';
+      const resolvedDryRun  = dryRun !== false;
+
+      // Local-only path keeps the v1.7.x behaviour: hand off to the PHP CLI's
+      // pages:push, which already walks the tree and handles dry-run/force.
+      // Switching this to the TS walker would change report format and risk
+      // regressions for existing local workflows.
+      if (resolvedTargets === 'local') {
+        const cmdArgs = [directory];
+        if (!resolvedDryRun) cmdArgs.push('--dry-run=0');
+        if (force) cmdArgs.push('--force');
+        const result = await runPwCommand('pages:push', cmdArgs);
+        return formatToolResponse(result);
       }
-      if (force) {
-        cmdArgs.push('--force');
-      }
-      const result = await runPwCommand('pages:push', cmdArgs);
+
+      // Remote and both go through the TS bulk pusher so each page benefits
+      // from pushPage's path-based page lookup, _pageRef resolution, and
+      // file-ref handling — no separate code path to drift.
+      const result = await pushPagesBulk({
+        directory,
+        dryRun:  resolvedDryRun,
+        force:   force ?? false,
+        targets: resolvedTargets,
+        publish: publish ?? false,
+      });
       return formatToolResponse(result);
     }
 
