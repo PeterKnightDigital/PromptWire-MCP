@@ -21,7 +21,8 @@
  * @license     MIT
  */
 
-import { mkdir, writeFile } from 'fs/promises';
+import { mkdir, readFile, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import { runRemoteCommand } from '../remote/client.js';
@@ -129,12 +130,68 @@ export async function pullPageFromRemote(
   }
 
   // 3. Write page.yaml and page.meta.json, exactly mirroring local pullPage.
+  //
+  // v1.10.1: MERGE the remote-emitted meta with any pre-existing local
+  // meta so the local-id slot (ids.local) survives a remote pull. Without
+  // this merge a `pw_page_pull source: "remote"` would wipe the local
+  // id record from a previous local pull, defeating the whole point of
+  // the per-environment ids block.
+  //
+  // The merge rule is intentionally narrow: the remote payload wins for
+  // every field EXCEPT the ids.local slot, which is taken from the
+  // existing meta when present. Other local-only fields the receiving
+  // side might want to preserve (e.g. local lastPushedAt timestamps) are
+  // handled individually if they ever come up — for v1.10.1 the only
+  // protected slot is ids.local.
   const yamlPath = path.join(localPagePath, 'page.yaml');
   const metaPath = path.join(localPagePath, 'page.meta.json');
 
+  let mergedMeta: Record<string, unknown> = { ...payload.meta };
+  if (existsSync(metaPath)) {
+    try {
+      const existingRaw = await readFile(metaPath, 'utf8');
+      const existing    = JSON.parse(existingRaw) as Record<string, unknown>;
+
+      const existingIds = (existing.ids && typeof existing.ids === 'object')
+        ? existing.ids as Record<string, unknown>
+        : {};
+      const incomingIds = (mergedMeta.ids && typeof mergedMeta.ids === 'object')
+        ? mergedMeta.ids as Record<string, unknown>
+        : {};
+
+      // Preserve ids.local from the existing meta. The remote payload
+      // shouldn't have one (page:export-yaml only writes ids.remote on
+      // v1.10.1+), but we strip it defensively in case an older payload
+      // or a misconfigured endpoint sent one.
+      const mergedIds: Record<string, unknown> = { ...incomingIds };
+      delete mergedIds.local;
+      if (existingIds.local) {
+        mergedIds.local = existingIds.local;
+      }
+
+      // Back-compat fallback: if the existing meta only had a top-level
+      // `pageId` (pre-v1.10.1 layout), promote it to ids.local so it
+      // doesn't get lost on this remote pull.
+      if (!mergedIds.local && typeof existing.pageId === 'number' && existing.pageId > 0) {
+        mergedIds.local = {
+          id:         existing.pageId,
+          lastSeenAt: typeof existing.pulledAt === 'string'
+            ? existing.pulledAt
+            : new Date().toISOString(),
+        };
+      }
+
+      mergedMeta.ids = mergedIds;
+    } catch {
+      // Couldn't parse existing meta — fall through to writing the
+      // remote payload as-is. Better to have a working remote-pulled
+      // meta than to fail the pull because a stale meta was malformed.
+    }
+  }
+
   try {
     await writeFile(yamlPath, payload.yaml, 'utf8');
-    await writeFile(metaPath, JSON.stringify(payload.meta, null, 2), 'utf8');
+    await writeFile(metaPath, JSON.stringify(mergedMeta, null, 2), 'utf8');
   } catch (err) {
     return {
       success: false,
