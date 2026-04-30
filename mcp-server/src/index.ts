@@ -1027,7 +1027,7 @@ const tools = [
 const server = new Server(
   {
     name: 'promptwire',
-    version: '1.9.1',
+    version: '1.9.2',
   },
   {
     capabilities: {

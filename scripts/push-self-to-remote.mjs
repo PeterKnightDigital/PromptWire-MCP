@@ -42,6 +42,16 @@ const SKIP_DIRS = new Set([
 
 const SKIP_EXACT_FILES = new Set([
   '.DS_Store', 'package-lock.json',
+  // v1.9.2 — Repo docs are tracked for GitHub readers but ProcessWire does
+  // not load any of them at runtime. Keeping them out of the production push
+  // (a) shrinks each deploy from ~556KB to ~470KB and (b) closes the
+  // SESSION-NEXT.md disclosure: that file is gitignored precisely because
+  // it holds internal infra notes, but earlier versions of this script
+  // ignored .gitignore entirely and pushed it anyway, leaving it readable
+  // at site/modules/PromptWire/SESSION-NEXT.md on the remote. The existing
+  // file on production must be deleted manually (FTP / hosting panel) —
+  // skipping it here only prevents future deploys from re-uploading it.
+  'ROADMAP.md', 'README.md', 'CHANGELOG.md', 'SESSION-NEXT.md',
 ]);
 
 const ALLOWED_EXTENSIONS = new Set([

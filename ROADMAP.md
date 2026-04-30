@@ -8,6 +8,17 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.9.2 — `push-self-to-remote.mjs` stops shipping repo docs to production (2026-04-30)
+
+Hygiene patch. The deploy script's allowed-extensions list included `.md`, which meant every release pushed `ROADMAP.md`, `README.md`, `CHANGELOG.md`, and `SESSION-NEXT.md` to `site/modules/PromptWire/` on the remote — even though ProcessWire reads none of them at runtime. Most importantly, `SESSION-NEXT.md` is `.gitignore`d precisely because it holds internal infra notes (file paths, MCP server names, next-session implementation plans), but the deploy script ignored `.gitignore` and uploaded it to a public URL anyway.
+
+- **`scripts/push-self-to-remote.mjs` skips four doc files** by adding them to `SKIP_EXACT_FILES`: `ROADMAP.md`, `README.md`, `CHANGELOG.md`, `SESSION-NEXT.md`. Push payload shrinks from ~556 KB to ~470 KB per release as a side benefit.
+- **No code change** to the PHP module itself or to the MCP server. The PromptWire runtime is unaffected.
+
+Migration impact: zero for the runtime. **Operators with existing prod deploys should manually delete `site/modules/PromptWire/SESSION-NEXT.md` on the remote** (via FTP, hosting panel, or SSH) — this patch only prevents future re-uploads, it does not delete files already pushed by earlier scripts. `ROADMAP.md` / `README.md` / `CHANGELOG.md` are intentionally public elsewhere (GitHub) so leaving them on prod is harmless; remove them too if you want a clean module directory.
+
+---
+
 ### v1.9.1 — `pw_modules_list` returns class names (was returning null) (2026-04-30)
 
 Fix-forward for v1.9.0. The default `pw_modules_list` call (no `classes` filter) returned every entry with `class: null` and `installError: "Unable to locate module"`. Calls *with* an explicit `classes: [...]` filter were unaffected.
