@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.0 (30 April 2026)
+
+- **New:** `pw_page_assets` — sync the on-disk asset directory for a page (`site/assets/files/{pageId}/`) between local and remote. Catches both standard `FieldtypeFile` / `FieldtypeImage` uploads AND module-managed files (notably MediaHub, plus any other custom module that stores files keyed by page id). The previous `pw_file_sync` only iterated a page's fieldgroup, so files placed in the page-asset directory by modules outside the normal field flow were silently missed. Supports both directions (`push` and `pull`); dry-run by default. PW image variations (`name.WxH[-suffix].ext`) are filtered by default because they're regenerated on demand.
+- **New:** `page-assets:inventory`, `page-assets:download`, `page-assets:upload`, `page-assets:delete` PHP commands (CLI + remote API). Inventory walks `site/assets/files/{pageId}/` directly rather than going through field iteration; download/upload/delete operate on raw filenames within the page directory (with realpath sandboxing). Inventory has a site-wide `--all-pages` mode used by `pw_site_compare` to fetch the page-assets diff for every page in one round-trip.
+- **Changed:** `pw_site_compare` now reports a `pageAssets` section alongside pages/schema/files. Per-page summary of `changed` / `localOnly` / `remoteOnly` files. When the remote PromptWire predates v1.10.0 (so `page-assets:inventory` is missing), the section carries a `warning` instead of failing the whole compare.
+- **Changed:** `pw_site_sync` now syncs page assets for every page that has on-disk drift, not just pages that happen to have a local sync directory under `site/assets/pw-mcp/`. Replaces the old `page-files` step (which iterated fieldgroups and required a prior `pw_page_pull`) with a directory-walking variant that catches MediaHub-style files. Also closes the remote-to-local gap — that direction was previously a no-op with a "use SFTP" warning; now it pulls each missing/changed file via `page-assets:download`. Orphan deletion is intentionally OFF for site-sync (use `pw_page_assets` directly with `deleteOrphans:true` for that).
+- **Module + MCP server version bumped to 1.10.0.**
+
 ## 1.7.0 (21 April 2026)
 
 - **New:** `pw_site_compare` — compare local and remote sites across pages, schema, and template/module files. Pages are matched by path, not ID, so comparison works across environments with different auto-increment sequences.

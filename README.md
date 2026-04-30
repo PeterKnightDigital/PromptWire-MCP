@@ -6,7 +6,7 @@ ProcessWire ↔ Cursor MCP Bridge for AI-assisted development.
 
 ## Introduction
 
-PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 40 specialised tools for site inspection, content sync, schema management, page creation, database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
+PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 41 specialised tools for site inspection, content sync, schema management, page creation, database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
 
 **Just describe what you want in plain language:**
 
@@ -143,9 +143,10 @@ Content is synced to `site/assets/pw-mcp/` — editable YAML files that you can 
 
 ### File sync
 
-| Tool           | Description                                                      |
-| -------------- | ---------------------------------------------------------------- |
-| `pw_file_sync` | Sync file/image field content between local and remote           |
+| Tool             | Description                                                                                                                                                                                                             |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pw_file_sync`   | Sync file/image field content between local and remote (iterates the page's fieldgroup)                                                                                                                                  |
+| `pw_page_assets` | Sync the on-disk asset directory for a page (`site/assets/files/{pageId}/`). Catches both standard file/image field uploads and module-managed files (e.g. MediaHub) keyed by page id. Supports both directions, dry-run by default. |
 
 ### Repeater Matrix
 
@@ -203,7 +204,7 @@ For a full walkthrough, see the [Admin dashboard guide](https://www.peterknight.
 - [**Schema sync**](https://www.peterknight.digital/docs/promptwire/v1/schema-sync/) — Synchronising fields and templates between sites
 - [**Admin dashboard**](https://www.peterknight.digital/docs/promptwire/v1/admin-dashboard/) — Visual sync UI walkthrough
 - [**Prompt recipes**](https://www.peterknight.digital/docs/promptwire/v1/prompt-recipes/) — Natural language prompts for common workflows
-- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 40 tools with parameters and examples
+- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 41 tools with parameters and examples
 - [**Environment variables**](https://www.peterknight.digital/docs/promptwire/v1/environment-variables/) — Configuration reference
 - [**Security**](https://www.peterknight.digital/docs/promptwire/v1/security/) — HTTPS enforcement, API authentication, backup protection, and best practices
 - [**Changelog**](https://www.peterknight.digital/docs/promptwire/v1/changelog/) — Version history

@@ -8,6 +8,35 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.10.0 — `pw_page_assets` + page-assets in `pw_site_compare` / `pw_site_sync` (2026-04-30)
+
+Closes the gap that surfaced once PromptWire's site-compare and site-sync workflows hit a real production migration of a media-heavy site: the page push/pull pipeline shipped page CONTENT but not the on-disk files attached to those pages. The default `FieldtypeFile` / `FieldtypeImage` widgets store uploads in `site/assets/files/{pageId}/`, and the existing `pw_file_sync` already covered those *when* iterated through a page's fieldgroup. But two cases were missing:
+
+1. **Module-managed files** (notably MediaHub) also store files in `site/assets/files/{pageId}/` — keyed by page id — but expose them through their own admin UI rather than as a regular `Pagefiles` value on the page's fieldgroup. The field-aware `pw_file_sync` walked `$page->template->fieldgroup`, never saw those files, and silently shipped pages to production with broken media references.
+2. **`pw_site_sync`'s page-files step required a prior `pw_page_pull`** — it only synced files when a local sync directory under `site/assets/pw-mcp/` already existed. Pushing page content for a page the operator had never pulled left the assets behind on local. The remote→local direction was an explicit no-op (`"Remote-to-local file sync is not yet implemented. Use SFTP to pull files."`).
+
+v1.10.0 fixes both by treating the page-asset directory as a first-class sync surface, walked directly from disk rather than via PW field iteration.
+
+- **New PHP command `page-assets:inventory`** (CLI + remote API). Two modes:
+  - Per-page: `page-assets:inventory <pageId|/path/>` returns `{ pageId, pagePath, assets: [{relativePath, size, md5, modified}] }`. Walks the page directory recursively (some modules nest one level — MediaHub uses `variants/`); the `relativePath` is the stable cross-environment identity used for diffing.
+  - Site-wide: `page-assets:inventory --all-pages [--exclude-templates=user,role]` returns every page that has an asset directory, keyed by canonical PW path. One round-trip feeds the full site comparison.
+  - PW image variations (`name.WIDTHxHEIGHT[-suffix].ext`) are filtered by default — they're regenerated on demand and would otherwise produce noisy diffs purely from cache-state drift between environments. `--include-variations` opts back in.
+- **New PHP commands `page-assets:download` / `page-assets:upload` / `page-assets:delete`** (the latter two via the API endpoint, since they take base64 payloads). All three sandbox the target via `realpath()` so a malicious or malformed `filename` cannot escape the page directory. `page-assets:delete` also removes any PW image variations that share the original's basename, so a deleted JPEG doesn't leave its 480x270 cache file behind.
+- **New MCP tool `pw_page_assets { action, pageRef, site?, dryRun?, deleteOrphans?, includeVariations? }`**. Actions: `inventory` (one side), `compare` (both sides for one page, or site-wide if `pageRef` omitted), `push` (local → remote), `pull` (remote → local). Dry-run is the default for `push` / `pull` and produces the per-file plan before the operator confirms.
+- **`pw_site_compare` gains a `pageAssets` section.** Per-page summary of changed / localOnly / remoteOnly files. The compare attempts the assets diff in parallel with pages/schema/files, so the extra round-trip doesn't dominate compare latency. When the remote site is on an older PromptWire that doesn't ship `page-assets:inventory`, the section carries a `warning` field instead of failing the whole compare — backward-compatible with mixed-version deployments.
+- **`pw_site_sync` syncs page assets for every page with on-disk drift.** Replaces the old `page-files` step (which required `site/assets/pw-mcp/<path>/page.meta.json` to exist locally) with a directory-walker that uses the comparison's `pageAssets.diffs` as the source of truth. Works in both directions — the remote→local "use SFTP" message is gone. Orphan deletion is intentionally OFF for the orchestrated sync (use `pw_page_assets deleteOrphans:true` directly for that — accidental orphan deletion is hard to undo).
+- **Per-direction safety guarantees for `pw_page_assets`:**
+  - Pages are matched by canonical PW path so local and remote `pageId` can differ — only the pageId on the side being read/written is used to resolve the on-disk directory. Same cross-environment safety the rest of PromptWire already gives page content.
+  - File transfers are serial. Sites with heavy media (a single page can hold dozens of MB of PDFs and images) would otherwise multiply memory by the worker count for no real benefit.
+  - Transfer failures are reported per file, not as a single binary success/failure, so the operator can see which assets need a retry.
+- **MCP server timeout extended to 120s for `page-assets:*` commands** (matching the existing `file:*` handling). Some uploads — especially bulk MediaHub directories with high-res originals — can run past the default 60s.
+
+Migration impact: zero for callers. `pw_page_assets` is new; `pw_site_compare` gains an additive `pageAssets` field; `pw_site_sync` swaps its `page-files` step for `page-assets` but keeps the same overall step ordering and the same "non-fatal: page content already pushed" failure semantics. The remote API needs the v1.10.0 endpoint deployed for the new commands; older endpoints surface as a `pageAssets.warning` rather than breaking the rest of the compare/sync.
+
+Both `PromptWire.module.php` and `mcp-server/package.json` are bumped to 1.10.0 so the version Cursor reports matches the feature set.
+
+---
+
 ### v1.9.3 — `filesInventory` prunes `.git` / IDE / build directories at the iterator level (2026-04-30)
 
 Sister patch to v1.9.2. Where v1.9.2 stopped the *deploy script* from uploading repo docs, v1.9.3 stops the *file inventory* itself from ever surfacing version-control metadata or IDE state as deployable files. Discovered during the peterknight.digital v1.9.2 deploy when a `pw_site_sync scope:"files" dryRun:true` plan included `site/modules/MediaHub/.git/cursor/crepe/<sha>/metadata.json` — a Cursor IDE Composer artifact stored *inside* the `.git/` directory of a checked-out module repo, with a `.json` extension that happened to match the inventory's default extension whitelist.
