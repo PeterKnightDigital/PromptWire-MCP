@@ -836,6 +836,101 @@ const tools = [
       required: ['action'],
     },
   },
+  // ========================================================================
+  // v1.9.0 — READ-ONLY DIAGNOSTIC TOOLS
+  // ========================================================================
+  // All four are site-aware via runOnSite() and additive (no existing tool
+  // signatures change). They feed v1.10+ writeable tools (template fieldgroup
+  // pushes, user sync) by giving the operator one round-trip to inspect
+  // module install state, resolve names → ids on either side, or compare a
+  // single template across local/remote before committing to a push.
+  {
+    name: 'pw_modules_list',
+    description: 'List ProcessWire modules with install state, file path, and version. Defaults to every installed module; pass classes=[...] to inspect specific module classes (installed or not — useful for "is FormBuilder present on prod?" checks). Use site="both" to compare local vs remote install state side-by-side.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        classes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional list of module class names to inspect (e.g. ["FormBuilder", "SeoNeo"]). Omit to list every installed module.',
+        },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local".',
+          default: 'local',
+        },
+      },
+    },
+  },
+  {
+    name: 'pw_users_list',
+    description: 'List ProcessWire users with id, name, email, roles, and member_* fields. Pass includeAll=true to widen the projection to every non-system field on the user template. Pass site="remote" to inspect production users (e.g. verify the manually-pushed users from a migration are present).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        includeAll: {
+          type: 'boolean',
+          description: 'Include every non-system field on the user template, not just member_* fields. Defaults to false.',
+          default: false,
+        },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to query. Defaults to "local".',
+          default: 'local',
+        },
+      },
+    },
+  },
+  {
+    name: 'pw_resolve',
+    description: 'Bulk-resolve names to ProcessWire ids on the chosen site. Returns a {name → id|null} mapping plus a list of names that were not found. Used before a push to translate local field/template names into the equivalent ids on the remote, without one HTTP round-trip per name.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        type: {
+          type: 'string',
+          enum: ['field', 'template', 'page', 'role', 'permission', 'user', 'module'],
+          description: 'Type of object to resolve. "page" looks up by path (e.g. "/about/"); the others by name.',
+        },
+        names: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Names (or paths, for type="page") to resolve.',
+          minItems: 1,
+        },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to resolve against. Defaults to "local". Use "remote" before a push to learn the production ids.',
+          default: 'local',
+        },
+      },
+      required: ['type', 'names'],
+    },
+  },
+  {
+    name: 'pw_inspect_template',
+    description: 'Inspect a single template with rich field info — each field returned as {name, type, label} rather than just a name. Companion to pw_get_template, sized for fieldgroup-diff workflows. Use site="both" to see exactly which fields differ between local and remote before planning a v1.10 fieldgroup push.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Template name (e.g. "blog_post").',
+        },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to inspect. Defaults to "local".',
+          default: 'local',
+        },
+      },
+      required: ['name'],
+    },
+  },
   {
     name: 'pw_site_compare',
     description: 'Compare local and remote ProcessWire sites across pages, schema, and files. Pages are matched by path (not ID). Returns a structured report of what differs, what exists only on one side, and what is identical. Requires both PW_PATH (local) and PW_REMOTE_URL (remote).',
@@ -932,7 +1027,7 @@ const tools = [
 const server = new Server(
   {
     name: 'promptwire',
-    version: '1.6.0',
+    version: '1.9.0',
   },
   {
     capabilities: {
@@ -1533,6 +1628,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       const result = await runPwCommand(command, positionalArgs);
+      return formatToolResponse(result);
+    }
+
+    // ========================================================================
+    // v1.9.0 — READ-ONLY DIAGNOSTIC TOOLS
+    // ========================================================================
+
+    case 'pw_modules_list': {
+      const { classes, site } = args as { classes?: string[]; site?: Site };
+      const cmdArgs: string[] = [];
+      if (classes && classes.length > 0) {
+        cmdArgs.push(`--classes=${classes.join(',')}`);
+      }
+      const result = await runOnSite(site, 'modules:list', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_users_list': {
+      const { includeAll, site } = args as { includeAll?: boolean; site?: Site };
+      const cmdArgs = includeAll ? ['--include=all'] : [];
+      const result = await runOnSite(site, 'users:list', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_resolve': {
+      const { type, names, site } = args as {
+        type: string;
+        names: string[];
+        site?: Site;
+      };
+      // Pack the request as a single JSON --input arg. This sidesteps OS argv
+      // length limits for very long name lists and keeps the CLI surface
+      // identical regardless of name count.
+      const cmdArgs = [`--input=${JSON.stringify({ type, names })}`];
+      const result = await runOnSite(site, 'resolve', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_inspect_template': {
+      const { name: templateName, site } = args as { name: string; site?: Site };
+      const result = await runOnSite(site, 'template:inspect', [templateName]);
       return formatToolResponse(result);
     }
 

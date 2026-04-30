@@ -368,6 +368,58 @@ class CommandRouter {
                 $followSymlinks = !(isset($flags['no-follow-symlinks']) && $flags['no-follow-symlinks']);
                 return $this->filesInventory($dirs, $extensions, $excludePatterns, $followSymlinks);
 
+            // ================================================================
+            // v1.9.0 — READ-ONLY DIAGNOSTIC TOOLS
+            // ================================================================
+            // All four are site-aware via runOnSite() on the MCP side and
+            // backward compatible (additive only). They feed v1.10+ writeable
+            // tools (template fieldgroup pushes, user sync, etc.) by giving
+            // the operator a single round-trip to inspect module install
+            // state, resolve names → ids, or compare a template across
+            // local/remote before deciding to push.
+
+            case 'modules:list':
+                $classes = isset($flags['classes']) && $flags['classes'] !== ''
+                    ? array_map('trim', explode(',', $flags['classes']))
+                    : [];
+                return $this->modulesList($classes);
+
+            case 'users:list':
+                $includeAll = in_array('all', $flags['include'] ?? [], true);
+                return $this->usersList($includeAll);
+
+            case 'resolve':
+                // Accept either flag form (--type --names) or a JSON blob via
+                // --input. JSON wins when both are present so callers can pass
+                // very long name lists without hitting OS argv limits.
+                if (isset($flags['input']) && $flags['input'] !== '') {
+                    $payload = json_decode($flags['input'], true);
+                    if (!is_array($payload)) {
+                        return ['error' => 'resolve: --input must be a JSON object like {"type":"field","names":["a","b"]}'];
+                    }
+                    $type  = $payload['type']  ?? null;
+                    $names = $payload['names'] ?? [];
+                } else {
+                    $type  = $flags['type'] ?? null;
+                    $names = isset($flags['names']) && $flags['names'] !== ''
+                        ? array_map('trim', explode(',', $flags['names']))
+                        : [];
+                }
+                if (!$type) {
+                    return ['error' => 'resolve: --type required (field|template|page|role|permission|user|module)'];
+                }
+                if (empty($names)) {
+                    return ['error' => 'resolve: --names (or --input.names) required and must be non-empty'];
+                }
+                return $this->resolve($type, $names);
+
+            case 'template:inspect':
+                $name = $positional[0] ?? null;
+                if (!$name) {
+                    return ['error' => 'Template name required'];
+                }
+                return $this->templateInspect($name);
+
             case 'help':
             default:
                 return $this->help();
@@ -3013,6 +3065,265 @@ class CommandRouter {
         return false;
     }
 
+    // ========================================================================
+    // v1.9.0 — READ-ONLY DIAGNOSTIC HANDLERS
+    // ========================================================================
+
+    /**
+     * List ProcessWire modules with install state and file location.
+     *
+     * Default behaviour returns every currently-installed module. Pass an
+     * explicit class list to inspect specific modules (installed or not) —
+     * useful for "is FormBuilder present on prod?" checks before a deploy.
+     *
+     * Each entry intentionally exposes only what's needed for a deploy
+     * decision: install state, whether the file is on disk, the file path
+     * (relative to PW root for portability), and the module's reported
+     * version. installError is set when the modules registry knows about a
+     * module file that won't load (corrupt, missing dependency, etc.).
+     *
+     * @param string[] $classes Optional filter — module class names. Empty = all installed.
+     * @return array Modules array under 'modules' key.
+     */
+    private function modulesList(array $classes = []): array {
+        $modules = $this->wire->modules;
+        $rootPath = $this->wire->config->paths->root;
+
+        // Default = every installed module. ProcessWire's $modules iterator
+        // yields installed module objects; getInstalled() returns class names.
+        if (empty($classes)) {
+            $classes = $modules->getInstalled();
+            sort($classes);
+        }
+
+        $results = [];
+        foreach ($classes as $class) {
+            $isInstalled = $modules->isInstalled($class);
+            $filePath    = $modules->getModuleFile($class);
+            $fileExists  = $filePath && file_exists($filePath);
+
+            // Best-effort version lookup. getModuleInfo() returns a packed int
+            // (e.g. 184 for "1.8.4") which formatVersion() unpacks to a dotted
+            // string. If the module is uninstallable or info is missing we
+            // surface that as installError rather than failing the whole call.
+            $version = null;
+            $installError = null;
+            try {
+                $info = $modules->getModuleInfo($class);
+                if (isset($info['version'])) {
+                    $version = is_numeric($info['version'])
+                        ? $modules->formatVersion((int) $info['version'])
+                        : (string) $info['version'];
+                }
+                if (!empty($info['error'])) {
+                    $installError = $info['error'];
+                }
+            } catch (\Throwable $e) {
+                $installError = $e->getMessage();
+            }
+
+            $entry = [
+                'class'       => $class,
+                'isInstalled' => $isInstalled,
+                'fileExists'  => (bool) $fileExists,
+                'filePath'    => $filePath
+                    ? ltrim(str_replace($rootPath, '', $filePath), '/')
+                    : null,
+                'version'     => $version,
+            ];
+            if ($installError !== null) {
+                $entry['installError'] = $installError;
+            }
+
+            $results[] = $entry;
+        }
+
+        return ['modules' => $results, 'count' => count($results)];
+    }
+
+    /**
+     * List ProcessWire users with roles and (by default) member_* fields.
+     *
+     * The default field projection is deliberately narrow: id, name, email,
+     * roles, plus any field starting with `member_`. That covers the
+     * "additive user sync" use case planned for v1.12 without spilling
+     * arbitrary profile data into MCP responses.
+     *
+     * Pass --include=all to widen to every non-system field on the user
+     * template (still skips password / hash columns — those never leave
+     * PW's Password fieldtype, which won't serialise to plain JSON anyway).
+     *
+     * @param bool $includeAll Include every non-system field, not just member_*.
+     * @return array Users array under 'users' key.
+     */
+    private function usersList(bool $includeAll = false): array {
+        $results = [];
+
+        // Walk the user PageArray (include=all so unpublished/superuser-only
+        // users are visible — same default as listTemplates etc.).
+        foreach ($this->wire->users->find('include=all') as $user) {
+            $roles = [];
+            foreach ($user->roles as $role) {
+                $roles[] = $role->name;
+            }
+
+            $entry = [
+                'id'    => $user->id,
+                'name'  => $user->name,
+                'email' => (string) $user->email,
+                'roles' => $roles,
+            ];
+
+            // Project user template fields into the entry. Password fields
+            // never serialise cleanly so we skip them up front.
+            foreach ($user->template->fields as $field) {
+                $name = $field->name;
+                if ($name === 'pass' || $name === 'roles' || $name === 'email') {
+                    continue;
+                }
+                $isMember = strncmp($name, 'member_', 7) === 0;
+                if (!$includeAll && !$isMember) {
+                    continue;
+                }
+                $entry[$name] = $this->formatFieldValue($field, $user->get($name));
+            }
+
+            $results[] = $entry;
+        }
+
+        return ['users' => $results, 'count' => count($results)];
+    }
+
+    /**
+     * Bulk-resolve names to ids for a single PW object type.
+     *
+     * Returns a name → id mapping (or null if the name doesn't exist on this
+     * site). The mapping is keyed by the input name verbatim so callers can
+     * round-trip easily — even when ProcessWire would normalise the name
+     * differently internally.
+     *
+     * Used by v1.10+ fieldgroup pushes to translate a local field/template
+     * name list into the equivalent ids on the remote, without making one
+     * HTTP round-trip per name.
+     *
+     * @param string   $type  One of: field|template|page|role|permission|user|module
+     * @param string[] $names Names to resolve.
+     * @return array { type, mapping: { name: id|null }, count, missing[] }
+     */
+    private function resolve(string $type, array $names): array {
+        $mapping = [];
+        $missing = [];
+
+        foreach ($names as $name) {
+            $id = null;
+
+            switch ($type) {
+                case 'field':
+                    $obj = $this->wire->fields->get($name);
+                    $id = $obj ? (int) $obj->id : null;
+                    break;
+
+                case 'template':
+                    $obj = $this->wire->templates->get($name);
+                    $id = $obj ? (int) $obj->id : null;
+                    break;
+
+                case 'page':
+                    // Names for pages are paths (or numeric ids round-tripping
+                    // back). Use ->get() which accepts either.
+                    $obj = $this->wire->pages->get($name);
+                    $id = ($obj && $obj->id) ? (int) $obj->id : null;
+                    break;
+
+                case 'role':
+                    $obj = $this->wire->roles->get($name);
+                    $id = ($obj && $obj->id) ? (int) $obj->id : null;
+                    break;
+
+                case 'permission':
+                    $obj = $this->wire->permissions->get($name);
+                    $id = ($obj && $obj->id) ? (int) $obj->id : null;
+                    break;
+
+                case 'user':
+                    $obj = $this->wire->users->get($name);
+                    $id = ($obj && $obj->id) ? (int) $obj->id : null;
+                    break;
+
+                case 'module':
+                    // Modules don't really have ids the way pages do, but the
+                    // modules table has an id column. Returning that id keeps
+                    // the response shape identical across types.
+                    $isInstalled = $this->wire->modules->isInstalled($name);
+                    if ($isInstalled) {
+                        $info = $this->wire->modules->getModuleInfo($name);
+                        $id = isset($info['id']) ? (int) $info['id'] : 0;
+                    }
+                    break;
+
+                default:
+                    return ['error' => "resolve: unknown type '{$type}' (expected field|template|page|role|permission|user|module)"];
+            }
+
+            $mapping[$name] = $id;
+            if ($id === null) {
+                $missing[] = $name;
+            }
+        }
+
+        return [
+            'type'    => $type,
+            'mapping' => $mapping,
+            'count'   => count($mapping),
+            'missing' => $missing,
+        ];
+    }
+
+    /**
+     * Inspect a single template with rich field info.
+     *
+     * Companion to get-template that returns each field as
+     * {name, type, label} instead of just a name string. v1.10's
+     * pw_template_fields_push will diff two of these to compute the additive
+     * fieldgroup edits required to bring a remote template in line with
+     * local.
+     *
+     * @param string $name Template name.
+     * @return array Template details or error.
+     */
+    private function templateInspect(string $name): array {
+        $template = $this->wire->templates->get($name);
+
+        if (!$template) {
+            return ['error' => "Template not found: $name"];
+        }
+
+        $fields = [];
+        foreach ($template->fields as $field) {
+            $fields[] = [
+                'name'  => $field->name,
+                'type'  => $field->type->className(),
+                'label' => $field->label ?: $field->name,
+            ];
+        }
+
+        return [
+            'name'   => $template->name,
+            'label'  => $template->label ?: $template->name,
+            'fields' => $fields,
+            'family' => [
+                'allowPageNum'    => (bool) $template->allowPageNum,
+                'allowChildren'   => $template->noChildren ? false : true,
+                'childTemplates'  => $template->childTemplates ?: [],
+                'parentTemplates' => $template->parentTemplates ?: [],
+            ],
+            'access' => [
+                'useRoles' => (bool) $template->useRoles,
+                'roles'    => $template->useRoles ? $this->getTemplateRoles($template) : [],
+            ],
+        ];
+    }
+
     /**
      * Show help information
      * 
@@ -3023,7 +3334,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.6.0',
+            'version' => '1.9.0',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
@@ -3066,6 +3377,10 @@ class CommandRouter {
                 'files:push' => 'Push files to site (--files=JSON --confirm for live)',
                 'site:inventory' => 'Page inventory with content hashes (--exclude-templates=user,role --include-system)',
                 'files:inventory' => 'File inventory with MD5 hashes (--directories=site/templates,site/modules --extensions=php,js,css,json,latte,twig,module --no-follow-symlinks)',
+                'modules:list' => 'List installed modules with version + file path (--classes=Foo,Bar to inspect specific classes)',
+                'users:list' => 'List users with roles and member_* fields (--include=all to widen to every non-system field)',
+                'resolve' => 'Bulk-resolve names to ids (--type=field|template|page|role|permission|user|module --names=foo,bar OR --input=\'{"type":"field","names":["foo"]}\')',
+                'template:inspect' => 'Inspect a template with rich field info ({name,type,label} per field) for fieldgroup-diff workflows',
                 'help' => 'Show this help',
             ],
             'flags' => [
@@ -3084,6 +3399,11 @@ class CommandRouter {
                 '--title="Title"' => 'Page title (page:new)',
                 '--published' => 'Create page as published instead of unpublished',
                 '--content=\'{"field":"value"}\'' => 'JSON content for matrix item (matrix:add)',
+                '--classes=Foo,Bar' => 'Comma-separated module class list (modules:list)',
+                '--include=all' => 'Widen user projection to every non-system field (users:list)',
+                '--type=field|template|page|role|permission|user|module' => 'Object type to resolve (resolve)',
+                '--names=foo,bar' => 'Comma-separated names to resolve (resolve)',
+                '--input=\'{"type":"...","names":[...]}\'' => 'JSON alternative to --type/--names for very long lists (resolve)',
             ],
         ];
     }

@@ -8,6 +8,25 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.9.0 — Read-only diagnostic tools (`pw_modules_list`, `pw_users_list`, `pw_resolve`, `pw_inspect_template`) (2026-04-30)
+
+First feature release of the v1.9.x line. Ships the four read-only diagnostic tools that v1.10+ writeable workflows need (template fieldgroup pushes, additive user sync, module install state). All four are site-aware via `runOnSite` and additive — no existing tool signatures change.
+
+- **`pw_modules_list { classes?, site? }`** — returns `[{class, isInstalled, fileExists, filePath, version, installError?}]`. Defaults to every installed module; pass `classes: ["FormBuilder", "SeoNeo"]` to inspect specific module classes (installed or not). Use `site: "both"` to compare local vs remote install state side-by-side. `filePath` is relative to the PW root for portability.
+- **`pw_users_list { includeAll?, site? }`** — returns `[{id, name, email, roles[], member_*}]`. The default projection is deliberately narrow (id, name, email, roles, plus any `member_*` fields) so the tool is safe to call repeatedly without leaking arbitrary profile data. `includeAll: true` widens to every non-system field; `pass` is always skipped.
+- **`pw_resolve { type, names[], site? }`** — bulk-resolves names → ids on the chosen site. Types: `field|template|page|role|permission|user|module`. Returns `{type, mapping: {name: id|null}, count, missing[]}`. Used before a push to translate local field/template names into the equivalent remote ids without one HTTP round-trip per name. The MCP server packs the request as a single JSON `--input` arg so very long name lists don't hit OS argv limits.
+- **`pw_inspect_template { name, site? }`** — companion to `pw_get_template` that returns each field as `{name, type, label}` rather than a name string. Sized for fieldgroup-diff workflows: `site: "both"` shows exactly which fields differ between local and prod before planning a v1.10 fieldgroup push.
+
+Implementation notes:
+
+- New PHP commands `modules:list`, `users:list`, `resolve`, `template:inspect` in `src/Cli/CommandRouter.php`. All four reuse existing helpers (`formatFieldValue`, `getTemplateRoles`) so format and projection rules stay consistent with `get-page`/`get-template`.
+- All four MCP tools route through `runOnSite()` — no handler decides routing for itself. Same site-aware contract as the v1.8.1 db/log/cache tools.
+- MCP server `Server` version bumped from stale `1.6.0` → `1.9.0` so the version Cursor reports matches `mcp-server/package.json`.
+
+Migration impact: zero. All four tools are new and additive; no existing signatures changed. The MCP server version bump is internal (only affects the identification string Cursor logs).
+
+---
+
 ### v1.8.4 — `siteInventory` contentHash normalisation (kills phantom diffs) (2026-04-30)
 
 The final v1.8.x bug-fix release. After pushing 88 pages from peterknight.digital local to production, `pw_site_compare` still flagged 18 of them as "modified" — but the differences were all in how dates and PageArrays were rendered, not in the actual content. This release normalises the contentHash so identical content produces identical hashes regardless of which environment built the inventory.
