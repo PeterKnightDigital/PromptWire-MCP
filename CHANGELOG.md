@@ -21,6 +21,74 @@
 - **Changed:** `pw_site_sync` now syncs page assets for every page that has on-disk drift, not just pages that happen to have a local sync directory under `site/assets/pw-mcp/`. Replaces the old `page-files` step (which iterated fieldgroups and required a prior `pw_page_pull`) with a directory-walking variant that catches MediaHub-style files. Also closes the remote-to-local gap — that direction was previously a no-op with a "use SFTP" warning; now it pulls each missing/changed file via `page-assets:download`. Orphan deletion is intentionally OFF for site-sync (use `pw_page_assets` directly with `deleteOrphans:true` for that).
 - **Module + MCP server version bumped to 1.10.0.**
 
+## 1.9.3 (30 April 2026)
+
+- **Fixed:** `filesInventory` now prunes `.git`, `.svn`, `.hg`, `.cursor`, `.vscode`, `.idea`, `node_modules`, `__pycache__`, `.next`, and `.cache` directories at the iterator level — before descent — so version-control internals and IDE state never appear in `pw_site_sync`, `pw_site_compare`, or `pw_search_files` output, regardless of caller-supplied `excludePatterns`. Discovered when a `pw_site_sync scope:"files"` plan included a Cursor IDE artifact stored inside a checked-out module's `.git/` directory. `vendor/` is intentionally NOT in the prune list — some sites rely on file sync to ship Composer dependencies.
+- **Performance:** inventory generation no longer walks every byte of `.git/objects/pack/*` and `node_modules/` trees on its way to filtering them out.
+- **Migration impact: zero.** Strictly subtractive on inventory output.
+
+## 1.9.2 (30 April 2026)
+
+- **Fixed:** `scripts/push-self-to-remote.mjs` no longer ships `ROADMAP.md`, `README.md`, `CHANGELOG.md`, or `SESSION-NEXT.md` to production. Most importantly, `SESSION-NEXT.md` is `.gitignore`d precisely because it holds internal infra notes (file paths, MCP server names, next-session implementation plans), but the deploy script ignored `.gitignore` and uploaded it to a public URL. Push payload shrinks from ~556 KB to ~470 KB per release as a side benefit.
+- **Operators with existing prod deploys should manually delete `site/modules/PromptWire/SESSION-NEXT.md`** on the remote (via FTP, hosting panel, or SSH) — this patch only prevents future re-uploads, it does not delete files already pushed. The other doc files are intentionally public elsewhere (GitHub) so leaving them on prod is harmless.
+- **No code change** to the PHP module or MCP server.
+
+## 1.9.1 (30 April 2026)
+
+- **Fixed:** `pw_modules_list` (without an explicit `classes` filter) returned every entry with `class: null` and `installError: "Unable to locate module"`. Calls *with* an explicit `classes: [...]` filter were unaffected. Root cause was iterating the values of `Modules::getInstalled()` instead of the keys (the keys are the class names; the values are module objects that JSON-encode as `null`). One-line fix.
+- **Migration impact: zero.** Read-only tool; no data was affected.
+
+## 1.9.0 (30 April 2026)
+
+- **New:** `pw_modules_list` — list ProcessWire modules with install state, file path, and version. Defaults to every installed module; pass `classes: ["FormBuilder", "SeoNeo"]` to inspect specific module classes (installed or not). Use `site: "both"` to compare local vs remote install state side-by-side.
+- **New:** `pw_users_list` — list users with id, name, email, roles, and `member_*` fields. Pass `includeAll: true` to widen to every non-system field. `pass` is always skipped.
+- **New:** `pw_resolve` — bulk-resolve names to ProcessWire ids on the chosen site. Types: `field|template|page|role|permission|user|module`. Returns `{ type, mapping: { name: id|null }, count, missing[] }`. Used before a push to translate local field/template names into the equivalent remote ids without one HTTP round-trip per name.
+- **New:** `pw_inspect_template` — companion to `pw_get_template` that returns each field as `{ name, type, label }` rather than just a name. Sized for fieldgroup-diff workflows: `site: "both"` shows exactly which fields differ between local and prod before planning a fieldgroup push.
+- **Changed:** MCP server version bumped from stale 1.6.0 → 1.9.0 so the version Cursor reports matches `mcp-server/package.json`.
+- **Migration impact: zero.** All four tools are new and additive; no existing signatures changed.
+
+## 1.8.4 (30 April 2026)
+
+- **Fixed:** `siteInventory` `contentHash` is now deterministic across environments. After pushing 88 pages from local to production, `pw_site_compare` was still flagging 18 of them as "modified" — but the differences were all in how dates and PageArrays were rendered, not in the actual content. Five normalisations applied before hashing:
+  - **Datetime fields** always emitted as ISO 8601 UTC (was: integer epoch OR formatted string depending on each field's `outputFormat` — responsible for ~half the phantom diffs).
+  - **PageArray** sorted by path and pipe-joined (was: storage order, which two sites can legitimately differ on).
+  - **Pagefiles / Pageimages** sorted by basename (same reasoning).
+  - **Field key order** normalised with `ksort` (so two sites whose field positions differ in admin still hash the same content the same).
+  - **`modified` and `created` timestamps** emitted as UTC ISO 8601 (so a local box on BST and a production server on UTC stop phantom-flagging every page as modified).
+- **Changed:** pages sorted by path in inventory output for deterministic ordering.
+- **Migration impact: all sites must upgrade together for hashes to match.** v1.8.3 and earlier produce different `contentHash` values for the same content; v1.8.4 will surface a one-time wave of "modified" pages on the first compare after upgrade. After both ends are on v1.8.4 the phantom diffs disappear and any remaining diffs are real.
+
+## 1.8.3 (30 April 2026)
+
+- **New:** `page:export-yaml` CLI command — returns a self-contained JSON payload (`yaml` + `meta` + page identity) with **no filesystem writes on the exporting side**. Production stays clean, no stray sync directories left behind.
+- **Changed:** `pw_page_pull` accepts `source: "local" | "remote"` (default `"local"` — fully backward compatible). `source: "remote"` calls the new endpoint over HTTP and writes the payload into the *local* sync tree at `site/assets/pw-mcp/<canonical-path>/`, mirroring the layout that local `page:pull` produces. Closes the "production-edit drift" gap that previously required a temporary `_init.php` endpoint and a six-step `curl` workaround.
+- **Round-trip integrity check:** the MCP server re-hashes the YAML it wrote to disk and compares against the remote `contentHash`. Mismatches are surfaced as a non-fatal warning.
+- **Path-based routing**, not ID-based — the local directory is derived from `canonicalPath` so cross-environment pulls land in the right place even when DB IDs differ.
+- **Migration impact: zero.** `source` defaults to `"local"`; existing tool calls behave exactly as before.
+
+## 1.8.2 (30 April 2026)
+
+- **Changed:** `pw_pages_push` accepts `targets` and `publish` arguments (defaults preserve v1.7.x behaviour). `targets: "local"` continues to call the PHP CLI's `pages:push` so existing local workflows are byte-identical. `targets: "remote"` and `targets: "both"` walk the tree in TypeScript and call `pushPage()` per page — so every page benefits from path-based lookup and `_pageRef` resolution.
+- Pages pushed in **parent-first order** (sorted by canonical PW path) so newly-created parents exist before their children try to attach. Serial, not parallel, to avoid racing on the remote page tree mutex.
+- **Aggregated result payload** lists every page with success/failure plus the per-page push result, so when one page fails the rest of the batch is still visible.
+- **Pre-flight env check** for `PW_REMOTE_URL` + `PW_REMOTE_KEY` so a missing remote configuration fails before walking the directory rather than per page.
+- **Migration impact: zero.** `targets` defaults to `"local"`; existing tool calls go through the unchanged PHP CLI path.
+
+## 1.8.1 (30 April 2026)
+
+- **Fixed:** `pw_db_query --site=remote` no longer silently runs against the local database. Previously the `--site` flag was passed to the local PHP CLI, which ignored it. **This was the single highest-cost bug** of the v1.7.x release line — caused multiple hours of misdiagnosis where production was assumed to be in sync (or modules assumed installed) when neither was true.
+- **Changed:** Eight read tools gain a `site` argument (`local | remote | both`, default `local`, fully backward compatible): `pw_health`, `pw_db_schema`, `pw_db_query`, `pw_db_explain`, `pw_db_counts`, `pw_logs`, `pw_last_error`, `pw_clear_cache`. New `runOnSite()` helper in `mcp-server/src/cli/runner.ts` is the single source of truth for site routing.
+- **`site: "both"`** returns `{ local, remote }` in parallel for drift inspection (e.g. compare row counts, last error, or whether a query returns the same result on both sides). Each side carries its own success/error so partial results are still rendered when one environment is unreachable.
+- **`pw_clear_cache` now works against production** — useful immediately after a file push when ProcessWire's module registry needs a kick.
+- **Migration impact: zero.** `site` defaults to `local` everywhere; new behaviour is opt-in.
+
+## 1.8.0 (30 April 2026)
+
+- **Fixed:** `.module` files are now included in `files:inventory` by default. FormBuilder and LoginRegisterPro both ship core files with the bare `.module` extension; previously `pw_site_sync scope: "files"` silently omitted them, requiring the operator to create temporary `.module.php` sibling files before each push. Default `--extensions` is now `php,js,css,json,latte,twig,module`.
+- **Fixed:** Symlinked module directories are now followed by default. Symlinked modules (e.g. StemplatesPro / SeoNeo when developed in sibling repos) are walked into, with a `realpath()`-based loop guard so the same physical file is never reported twice. New `--no-follow-symlinks` flag preserves the v1.7.x behaviour for callers that explicitly want it.
+- **Changed:** MCP server version bumped from stale 1.6.0 → 1.8.0 to match the ProcessWire module version (the 1.7.0 release missed `mcp-server/package.json`).
+- **Migration impact: zero.** No tool signatures changed; defaults expanded what's included in inventories. A re-run of `pw_site_compare` may surface previously hidden file deltas — these are real and were silently absent before.
+
 ## 1.7.0 (21 April 2026)
 
 - **New:** `pw_site_compare` — compare local and remote sites across pages, schema, and template/module files. Pages are matched by path, not ID, so comparison works across environments with different auto-increment sequences.
