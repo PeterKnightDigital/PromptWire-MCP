@@ -149,13 +149,24 @@ class SyncManager {
         $revisionHash = $this->generateRevisionHash($fields);
         $fieldLabels  = $this->getFieldLabelsForTemplate($page->template);
 
-        $content = ['fields' => $fields];
-        $yaml    = $this->arrayToYamlWithLabels($content, $fieldLabels);
+        // Build the asset snapshot once, used both as the YAML header
+        // summary and as meta.pageAssets — same source-of-truth pattern
+        // pullPage() uses, so export and local pull produce structurally
+        // identical files on the receiving side.
+        $assetSnap = $this->buildPageAssetSnapshot($page);
+
+        $content    = ['fields' => $fields];
+        $yamlBody   = $this->arrayToYamlWithLabels($content, $fieldLabels);
+        $yamlHeader = $this->buildYamlHeaderComment($page, $assetSnap, 'page:export-yaml');
+        $yaml       = $yamlHeader . $yamlBody;
 
         // contentHash = md5 of the inline YAML the receiver will write. The
         // receiver re-hashes after writing to disk to confirm bit-identical
         // arrival. (pullPage() hashes after writing because it may emit
         // additional external files; export is single-payload so this is safe.)
+        // Header is included in the hash so any drift in the rendered file is
+        // caught — the contentHash describes the exact bytes on disk, not the
+        // logical field content (revisionHash already covers that separately).
         $contentHash = md5($yaml);
 
         // Asset snapshot is included in the export payload so the receiving
@@ -177,7 +188,7 @@ class SyncManager {
             'contentHash'   => $contentHash,
             'status'        => 'clean',
             'exportedFrom'  => 'page:export-yaml',
-            'pageAssets'    => $this->buildPageAssetSnapshot($page),
+            'pageAssets'    => $assetSnap,
         ];
 
         return [
@@ -223,16 +234,49 @@ class SyncManager {
         // Build field labels map for YAML comments
         $fieldLabels = $this->getFieldLabelsForTemplate($page->template);
         
+        // Build the asset snapshot once — used both as the YAML header
+        // summary (human-readable) and as the meta.pageAssets block
+        // (machine-readable). Single source of truth so the two
+        // presentations can never disagree.
+        $assetSnap = $this->buildPageAssetSnapshot($page);
+
         // Create content file first so we can hash it
         $content = ['fields' => $fields];
-        
+
         if ($format === 'yaml') {
             $contentPath = $localPath . '/page.yaml';
-            $yamlContent = $this->arrayToYamlWithLabels($content, $fieldLabels);
-            file_put_contents($contentPath, $yamlContent);
+            $yamlBody    = $this->arrayToYamlWithLabels($content, $fieldLabels);
+            $yamlHeader  = $this->buildYamlHeaderComment($page, $assetSnap, 'page:pull');
+            file_put_contents($contentPath, $yamlHeader . $yamlBody);
         } else {
             $contentPath = $localPath . '/page.json';
-            $jsonContent = json_encode($content, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            // page.json gets the same identity + asset summary as the YAML
+            // header, but as a top-level `_meta` object so it stays valid
+            // JSON. Comments aren't allowed in JSON, and parsers that
+            // don't recognise `_meta` will simply ignore it (the existing
+            // pushPage path reads `content.fields` only, so this is a
+            // strictly additive change).
+            $jsonContent = json_encode([
+                '_meta' => [
+                    'page'       => [
+                        'id'       => (int) $page->id,
+                        'path'     => (string) $page->path,
+                        'title'    => (string) $page->title,
+                        'template' => $page->template->name,
+                        'status'   => $page->isUnpublished() ? 'unpublished' : 'published',
+                    ],
+                    'pulledAt'   => gmdate('c'),
+                    'source'     => 'page:pull',
+                    'pageAssets' => [
+                        'count'         => $assetSnap['assetCount'] ?? 0,
+                        'totalBytes'    => $assetSnap['totalBytes'] ?? 0,
+                        'directoryHash' => $assetSnap['directoryHash'] ?? null,
+                        'note'          => 'Full inventory in page.meta.json under `pageAssets`.',
+                    ],
+                    '_readme'    => 'This _meta block is informational. Edit only the `fields` block.',
+                ],
+                'fields' => $fields,
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
             file_put_contents($contentPath, $jsonContent);
         }
         
@@ -260,7 +304,7 @@ class SyncManager {
             'revisionHash' => $revisionHash,
             'contentHash' => $contentHash, // Hash of the actual file content
             'status' => 'clean',
-            'pageAssets' => $this->buildPageAssetSnapshot($page),
+            'pageAssets' => $assetSnap,
         ];
         
         $metaPath = $localPath . '/page.meta.json';
@@ -563,14 +607,43 @@ class SyncManager {
         $newHash = $this->generateRevisionHash($fieldsForHash);
         
         $newContent = ['fields' => $newFields];
-        
+
+        // Refresh the asset snapshot — the push may have changed the page's
+        // file/image fields, which reshapes site/assets/files/{pageId}/.
+        // Without this refresh the snapshot would be stale immediately
+        // after a successful push, breaking driftSinceLastPull on the
+        // very next sync call.
+        $newAssetSnap = $this->buildPageAssetSnapshot($page);
+
         // Determine format and update content file
         $isYaml = file_exists($contentPath) && str_ends_with($contentPath, '.yaml');
         if ($isYaml) {
-            $fieldLabels = $this->getFieldLabelsForTemplate($page->template);
-            $newFileContent = $this->arrayToYamlWithLabels($newContent, $fieldLabels);
+            $fieldLabels    = $this->getFieldLabelsForTemplate($page->template);
+            $yamlBody       = $this->arrayToYamlWithLabels($newContent, $fieldLabels);
+            $yamlHeader     = $this->buildYamlHeaderComment($page, $newAssetSnap, 'page:push');
+            $newFileContent = $yamlHeader . $yamlBody;
         } else {
-            $newFileContent = json_encode($newContent, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            $newFileContent = json_encode([
+                '_meta' => [
+                    'page'       => [
+                        'id'       => (int) $page->id,
+                        'path'     => (string) $page->path,
+                        'title'    => (string) $page->title,
+                        'template' => $page->template->name,
+                        'status'   => $page->isUnpublished() ? 'unpublished' : 'published',
+                    ],
+                    'lastPushedAt' => gmdate('c'),
+                    'source'       => 'page:push',
+                    'pageAssets'   => [
+                        'count'         => $newAssetSnap['assetCount'] ?? 0,
+                        'totalBytes'    => $newAssetSnap['totalBytes'] ?? 0,
+                        'directoryHash' => $newAssetSnap['directoryHash'] ?? null,
+                        'note'          => 'Full inventory in page.meta.json under `pageAssets`.',
+                    ],
+                    '_readme'      => 'This _meta block is informational. Edit only the `fields` block.',
+                ],
+                'fields' => $newFields,
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         }
         file_put_contents($contentPath, $newFileContent);
         
@@ -582,6 +655,7 @@ class SyncManager {
         $meta['revisionHash'] = $newHash;
         $meta['contentHash'] = $newContentHash;
         $meta['status'] = 'clean';
+        $meta['pageAssets'] = $newAssetSnap;
         
         file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         
@@ -2394,6 +2468,76 @@ class SyncManager {
         return $yaml;
     }
     
+    /**
+     * Build a human-readable header comment block for page.yaml.
+     *
+     * Renders at the very top of the file, before `fields:`. YAML parsers
+     * strip `#` comments so this has zero effect on push/pull semantics —
+     * it's purely for the operator opening the file in an editor (or
+     * handing it to an AI agent that benefits from concrete context about
+     * what they're looking at).
+     *
+     * Includes:
+     *   - Page identity (title, path, template, status)
+     *   - The pageId on THIS site (so the operator can correlate with
+     *     site/assets/files/{pageId}/ on disk; cross-environment ids are
+     *     handled by the path-based matching already used everywhere else,
+     *     but knowing "which physical id corresponds to this YAML" still
+     *     matters for inspecting the asset directory directly).
+     *   - Asset summary built from the snapshot we're about to embed in
+     *     page.meta.json — same source of truth, two presentations.
+     *   - A reminder that page.meta.json is auto-generated.
+     *
+     * @param Page  $page         Page being pulled / exported.
+     * @param array $assetSnap    Result of buildPageAssetSnapshot($page).
+     * @param string $sourceLabel Free-form label for where the YAML came
+     *                            from (e.g. "local pull", "page:export-yaml").
+     * @return string YAML-safe comment block ending in a single newline.
+     */
+    private function buildYamlHeaderComment(Page $page, array $assetSnap, string $sourceLabel = 'page:pull'): string {
+        $statusName  = $page->isUnpublished() ? 'unpublished' : 'published';
+        $assetCount  = (int) ($assetSnap['assetCount'] ?? 0);
+        $totalBytes  = (int) ($assetSnap['totalBytes'] ?? 0);
+
+        $lines = [
+            '# ' . str_repeat('=', 76),
+            '# Page:     ' . (string) $page->title . '  ·  ' . (string) $page->path,
+            '# Template: ' . $page->template->name . '  ·  Status: ' . $statusName,
+            '# Pulled:   ' . gmdate('c') . '  via ' . $sourceLabel . '  (pageId on this site: ' . (int) $page->id . ')',
+            '#',
+        ];
+
+        if ($assetCount > 0) {
+            $lines[] = '# Page assets (snapshot at pull time):';
+            $lines[] = '#   ' . $assetCount . ' file' . ($assetCount === 1 ? '' : 's') . ' · ' . $this->formatBytesForComment($totalBytes);
+            $lines[] = '#   On disk (this site): site/assets/files/' . (int) $page->id . '/';
+            $lines[] = '#   Full inventory in page.meta.json under `pageAssets` (sync with pw_page_assets).';
+        } elseif (isset($assetSnap['directoryExists']) && $assetSnap['directoryExists']) {
+            $lines[] = '# Page assets: directory site/assets/files/' . (int) $page->id . '/ exists but contains no original files.';
+        } else {
+            $lines[] = '# Page assets: none on this site (no site/assets/files/' . (int) $page->id . '/ directory).';
+        }
+
+        $lines[] = '#';
+        $lines[] = '# This file is hand-editable. page.meta.json is auto-generated — do not edit it.';
+        $lines[] = '# ' . str_repeat('=', 76);
+        $lines[] = '';
+
+        return implode("\n", $lines) . "\n";
+    }
+
+    /**
+     * Render a byte count as a short human string for the YAML header
+     * comment. Intentionally ASCII-only ('B', 'KB', 'MB', 'GB') so the
+     * comment block is safe in any editor encoding.
+     */
+    private function formatBytesForComment(int $bytes): string {
+        if ($bytes < 1024)            return $bytes . ' B';
+        if ($bytes < 1024 * 1024)     return number_format($bytes / 1024, 1) . ' KB';
+        if ($bytes < 1024 * 1024 * 1024) return number_format($bytes / (1024 * 1024), 1) . ' MB';
+        return number_format($bytes / (1024 * 1024 * 1024), 2) . ' GB';
+    }
+
     /**
      * Get field labels for a template
      * 
