@@ -244,9 +244,35 @@ export async function syncPageAssets(opts: PageAssetSyncOptions): Promise<PwComm
 
   // Resolve the local page so we have both id (for the on-disk dir) and
   // path (for the remote lookup, since ids don't match across envs).
+  //
+  // Cross-environment ID handling, in detail:
+  //   - The on-disk asset directory on each side is named by THAT side's
+  //     own pageId. Local 1234 and remote 5678 may both legitimately
+  //     resolve to the same canonical PW path (`/about/`) — this is the
+  //     normal state of any two sites that started from independent fresh
+  //     installs rather than a database clone.
+  //   - We resolve the local page first to learn the local id and the
+  //     canonical path. The remote inventory call uses the canonical
+  //     PATH (not the local id) so the remote side can resolve to ITS
+  //     own id and walk ITS own asset directory. Same way page content
+  //     sync already works.
+  //   - If the caller passed a numeric pageRef (e.g. `1234`), it is
+  //     resolved against the LOCAL site. That id is then translated to
+  //     the corresponding remote page via canonical path. This avoids the
+  //     trap where a numeric id passed by the operator silently picks up
+  //     the wrong page on the remote because the auto-increment sequences
+  //     diverged.
   const local = await resolveLocalPage(opts.pageRef);
   if (!local) {
-    return { success: false, error: `Page not found locally: ${opts.pageRef}` };
+    return {
+      success: false,
+      error:
+        `Page not found locally: ${opts.pageRef}. ` +
+        'pw_page_assets resolves the pageRef on the LOCAL site first, then ' +
+        'uses the canonical PW path to find the corresponding page on the remote ' +
+        '(so id drift between environments is handled automatically). If you only ' +
+        'know the remote id, look up its path on the remote with pw_get_page first.',
+    };
   }
 
   const localAssets  = await buildLocalInventory(pwPath, local.pageId, opts.includeVariations);
@@ -260,6 +286,14 @@ export async function syncPageAssets(opts: PageAssetSyncOptions): Promise<PwComm
         '(page-assets:inventory was added in that release).',
     };
   }
+
+  // Surface the per-side ids and the drift flag in every result so the
+  // operator can see at a glance which physical disk directory was read
+  // / written on each environment. Also catches the failure mode where
+  // the same path resolves to two unrelated pages (e.g. local /about/ is
+  // a basic-page but remote /about/ is a redirect template) — the asset
+  // diff will be huge and the id-drift line will explain why.
+  const idDrift = local.pageId !== remote.pageId;
 
   const diff = diffAssets(localAssets, remote.assets);
 
@@ -276,9 +310,12 @@ export async function syncPageAssets(opts: PageAssetSyncOptions): Promise<PwComm
     return {
       success: true,
       data: {
-        pagePath:  local.pagePath,
-        direction: opts.direction,
-        dryRun:    true,
+        pagePath:     local.pagePath,
+        localPageId:  local.pageId,
+        remotePageId: remote.pageId,
+        idDrift,
+        direction:    opts.direction,
+        dryRun:       true,
         summary: {
           unchanged:  diff.unchanged,
           changed:    diff.changed.length,
@@ -422,9 +459,12 @@ export async function syncPageAssets(opts: PageAssetSyncOptions): Promise<PwComm
       ? { error: `${transferFailed + deleteFailed} asset operation(s) failed — see details for which files.` }
       : {}),
     data: {
-      pagePath:  local.pagePath,
-      direction: opts.direction,
-      dryRun:    false,
+      pagePath:     local.pagePath,
+      localPageId:  local.pageId,
+      remotePageId: remote.pageId,
+      idDrift,
+      direction:    opts.direction,
+      dryRun:       false,
       summary: {
         unchanged:    diff.unchanged,
         transferred,
@@ -445,6 +485,18 @@ export async function syncPageAssets(opts: PageAssetSyncOptions): Promise<PwComm
 export interface SiteAssetCompareEntry {
   pagePath:   string;
   template?:  string;
+  /**
+   * The same canonical PW path is resolved independently on each side, so
+   * a page legitimately can have different DB ids on local vs remote (any
+   * site that was created from a fresh schema rather than a DB clone will
+   * have its own auto-increment sequence). Both ids are surfaced so the
+   * operator can see at a glance whether they match — and so any tooling
+   * downstream (logging, audit, on-disk path display) can render the
+   * correct id per side rather than guessing.
+   */
+  localPageId?:  number;
+  remotePageId?: number;
+  idDrift:        boolean;
   changed:    number;
   localOnly:  number;
   remoteOnly: number;
@@ -460,6 +512,15 @@ export interface SiteAssetCompareResult {
   pagesCompared:  number;
   pagesIdentical: number;
   pagesDiffer:    number;
+  /**
+   * Number of pages that exist on both sides but with different DB ids.
+   * Surfaced separately because the operator usually wants to know this
+   * up front — it tells them the two sites diverged from independent
+   * fresh installs rather than a DB clone, which has implications well
+   * beyond the page-assets feature (cross-site Page references, hardcoded
+   * page ids in template code, etc.).
+   */
+  pagesWithIdDrift: number;
   totals: {
     changed:    number;
     localOnly:  number;
@@ -515,6 +576,7 @@ export async function compareSiteAssets(
 
   const diffs: SiteAssetCompareEntry[] = [];
   let pagesIdentical = 0;
+  let pagesWithIdDrift = 0;
   let totalChanged = 0;
   let totalLocalOnly = 0;
   let totalRemoteOnly = 0;
@@ -524,6 +586,13 @@ export async function compareSiteAssets(
     const rp = remotePages[pagePath];
     const local  = lp?.assets ?? [];
     const remote = rp?.assets ?? [];
+
+    // A page is considered "drifted" only when both sides have it AND the
+    // ids differ. A page that exists on only one side is a different
+    // problem (page-content drift, not id drift) and is already reported
+    // by pw_site_compare's pages section.
+    const idDrift = !!(lp && rp && lp.pageId !== rp.pageId);
+    if (idDrift) pagesWithIdDrift++;
 
     const d = diffAssets(local, remote);
     if (d.changed.length === 0 && d.localOnly.length === 0 && d.remoteOnly.length === 0) {
@@ -537,7 +606,10 @@ export async function compareSiteAssets(
 
     diffs.push({
       pagePath,
-      template:   lp?.template ?? rp?.template,
+      template:     lp?.template ?? rp?.template,
+      localPageId:  lp?.pageId,
+      remotePageId: rp?.pageId,
+      idDrift,
       changed:    d.changed.length,
       localOnly:  d.localOnly.length,
       remoteOnly: d.remoteOnly.length,
@@ -554,6 +626,7 @@ export async function compareSiteAssets(
     pagesCompared:  allPaths.size,
     pagesIdentical,
     pagesDiffer:    diffs.length,
+    pagesWithIdDrift,
     totals: {
       changed:    totalChanged,
       localOnly:  totalLocalOnly,

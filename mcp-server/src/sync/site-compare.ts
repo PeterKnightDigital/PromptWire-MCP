@@ -414,12 +414,13 @@ export async function compareSites(options: {
       // even when only the assets compare failed (e.g. remote API hasn't
       // been upgraded to v1.10.0 yet so page-assets:inventory is missing).
       result.pageAssets = {
-        pagesCompared:  0,
-        pagesIdentical: 0,
-        pagesDiffer:    0,
-        totals:         { changed: 0, localOnly: 0, remoteOnly: 0 },
-        diffs:          [],
-        warning:        `Page-assets compare unavailable: ${pageAssetsResult.error}`,
+        pagesCompared:    0,
+        pagesIdentical:   0,
+        pagesDiffer:      0,
+        pagesWithIdDrift: 0,
+        totals:           { changed: 0, localOnly: 0, remoteOnly: 0 },
+        diffs:            [],
+        warning:          `Page-assets compare unavailable: ${pageAssetsResult.error}`,
       };
     }
   }

@@ -3428,6 +3428,17 @@ class CommandRouter {
      * Returns ['_error' => string] on failure (the underscore key keeps
      * the shape distinct from a real page-id payload).
      *
+     * Cross-environment note: this function only ever runs against the
+     * SITE IT IS ON. It does not — and cannot — translate ids between
+     * local and remote. The MCP server side (pages/page-assets.ts) takes
+     * care of that by always passing the canonical PW path to the remote
+     * inventory/upload/delete calls, so each side resolves the page on
+     * its own auto-increment sequence and walks its own
+     * site/assets/files/{ownId}/ directory. Numeric ids passed to this
+     * resolver are interpreted on THIS site only; if a caller hands a
+     * remote id to the local CLI they will get the wrong page (or a
+     * "Page not found" error if the id doesn't exist locally).
+     *
      * @param string $pageRef Numeric id, "/path/", or bare path
      * @return array{pageId:int, pagePath:string}|array{_error:string}
      */
