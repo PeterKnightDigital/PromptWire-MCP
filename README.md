@@ -6,7 +6,7 @@ ProcessWire ↔ Cursor MCP Bridge for AI-assisted development.
 
 ## Introduction
 
-PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 41 specialised tools for site inspection, content sync, schema management, page creation, database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
+PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 46 specialised tools for site inspection, content sync, schema management, page creation, schema-aware fieldgroup edits, page-asset sync (catches MediaHub-managed files), database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
 
 **Just describe what you want in plain language:**
 
@@ -95,18 +95,22 @@ See the [Remote setup guide](https://www.peterknight.digital/docs/promptwire/v1/
 
 ### Site inspection
 
-| Tool                | Description                                              |
-| ------------------- | -------------------------------------------------------- |
-| `pw_health`         | Check ProcessWire connection, version, and counts        |
-| `pw_list_templates` | List all templates                                       |
-| `pw_get_template`   | Get template details (fields, settings)                  |
-| `pw_list_fields`    | List all fields                                          |
-| `pw_get_field`      | Get field details (type, settings)                       |
-| `pw_get_page`       | Get a page by ID or path with full field content         |
-| `pw_query_pages`    | Query pages with ProcessWire selectors                   |
-| `pw_search`         | Search page content by keyword                           |
-| `pw_search_files`   | Search PHP/template files in the site directory          |
-| `pw_export_schema`  | Export the full site schema (templates + fields) as JSON |
+| Tool                  | Description                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------- |
+| `pw_health`           | Check ProcessWire connection, version, and counts                                                 |
+| `pw_list_templates`   | List all templates                                                                                |
+| `pw_get_template`     | Get template details (fields, settings)                                                           |
+| `pw_inspect_template` | Like `pw_get_template` but each field comes back as `{name, type, label}`, sized for fieldgroup-diff workflows across environments |
+| `pw_list_fields`      | List all fields                                                                                   |
+| `pw_get_field`        | Get field details (type, settings)                                                                |
+| `pw_get_page`         | Get a page by ID or path with full field content                                                  |
+| `pw_query_pages`      | Query pages with ProcessWire selectors                                                            |
+| `pw_search`           | Search page content by keyword                                                                    |
+| `pw_search_files`     | Search PHP/template files in the site directory                                                   |
+| `pw_modules_list`     | List installed modules with version, file path, and install state. Pass `site: "both"` to compare |
+| `pw_users_list`       | List users with id, name, email, roles, and any `member_*` fields. Password hashes are excluded   |
+| `pw_resolve`          | Bulk-resolve names to ProcessWire ids on the chosen site (fields, templates, pages, roles, users) |
+| `pw_export_schema`    | Export the full site schema (templates + fields) as JSON                                          |
 
 ### Content sync
 
@@ -133,20 +137,21 @@ Content is synced to `site/assets/pw-mcp/` — editable YAML files that you can 
 
 ### Schema sync
 
-| Tool                | Description                                                                 |
-| ------------------- | --------------------------------------------------------------------------- |
-| `pw_schema_pull`    | Pull field and template schema from a PW site into local files              |
-| `pw_schema_push`    | Push local schema files to a PW site (creates/updates fields and templates) |
-| `pw_schema_diff`    | Diff local schema files against the live site                               |
-| `pw_schema_compare` | Compare schemas between two sites (e.g. local vs production)                |
-| `pw_list_sites`     | List configured remote sites from `.pw-sync/sites/`                         |
+| Tool                       | Description                                                                                                                                                                                                                            |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pw_schema_pull`           | Pull field and template schema from a PW site into local files                                                                                                                                                                         |
+| `pw_schema_push`           | Push local schema files to a PW site (creates/updates fields and templates)                                                                                                                                                            |
+| `pw_schema_diff`           | Diff local schema files against the live site                                                                                                                                                                                          |
+| `pw_schema_compare`        | Compare schemas between two sites (e.g. local vs production)                                                                                                                                                                           |
+| `pw_template_fields_push`  | Add, remove, or reorder fields on a template's fieldgroup, with per-field context overrides. Includes a three-tier conflict classifier (safe / warning / danger), module-ownership awareness, and a frontend-usage scan on remove ops. |
+| `pw_list_sites`            | List configured remote sites from `.pw-sync/sites/`                                                                                                                                                                                    |
 
 ### File sync
 
-| Tool             | Description                                                                                                                                                                                                             |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pw_file_sync`   | Sync file/image field content between local and remote (iterates the page's fieldgroup)                                                                                                                                  |
-| `pw_page_assets` | Sync the on-disk asset directory for a page (`site/assets/files/{pageId}/`). Catches both standard file/image field uploads and module-managed files (e.g. MediaHub) keyed by page id. Supports both directions, dry-run by default. |
+| Tool             | Description                                                                                                                                                                                                                                                                              |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pw_page_assets` | Preferred path. Syncs the on-disk asset directory for a page (`site/assets/files/{pageId}/`) by walking the directory directly, so module-managed files (notably MediaHub) are picked up alongside standard file/image field uploads. Supports both directions, dry-run by default. |
+| `pw_file_sync`   | Legacy field-aware sync. Iterates the page's fieldgroup, so it sees standard file/image field uploads only. Kept for simpler cases; use `pw_page_assets` when modules outside the standard field flow are involved.                                                                  |
 
 ### Repeater Matrix
 
@@ -204,7 +209,7 @@ For a full walkthrough, see the [Admin dashboard guide](https://www.peterknight.
 - [**Schema sync**](https://www.peterknight.digital/docs/promptwire/v1/schema-sync/) — Synchronising fields and templates between sites
 - [**Admin dashboard**](https://www.peterknight.digital/docs/promptwire/v1/admin-dashboard/) — Visual sync UI walkthrough
 - [**Prompt recipes**](https://www.peterknight.digital/docs/promptwire/v1/prompt-recipes/) — Natural language prompts for common workflows
-- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 41 tools with parameters and examples
+- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 46 tools with parameters and examples
 - [**Environment variables**](https://www.peterknight.digital/docs/promptwire/v1/environment-variables/) — Configuration reference
 - [**Security**](https://www.peterknight.digital/docs/promptwire/v1/security/) — HTTPS enforcement, API authentication, backup protection, and best practices
 - [**Changelog**](https://www.peterknight.digital/docs/promptwire/v1/changelog/) — Version history
