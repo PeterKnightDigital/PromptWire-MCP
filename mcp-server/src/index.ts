@@ -972,6 +972,78 @@ const tools = [
       required: ['name'],
     },
   },
+  // ========================================================================
+  // v1.11.0 (WIP) — FIELDGROUP EDITS
+  // ========================================================================
+  // Additive edits to a template's fieldgroup (add/remove/reorder existing
+  // fields, plus per-fieldgroup context overrides). Explicitly NOT a
+  // field-definition editor — changing a field's fieldtype, parent picker,
+  // inputfield class, etc. is pw_field_push territory (v1.12+). This tool
+  // plans the change, classifies conflicts into {safe, warning, danger},
+  // and surfaces definition-level completeness warnings for the added
+  // fields so AI callers get told about the classic "Page reference with
+  // no parent picker" / "Textarea with no editor class" gotchas at plan
+  // time rather than in the admin UI after the push.
+  //
+  // Phase 2b: dry-run only. Write path ships in Phase 3.
+  {
+    name: 'pw_template_fields_push',
+    description:
+      'Plan (and eventually apply) additive edits to a template\'s fieldgroup: add existing fields, remove fields, reorder, and set per-fieldgroup context overrides (required, columnWidth, showIf, label override, etc.). Explicitly does NOT create fields or change field definitions — for that, wait for pw_field_push in v1.12+. ' +
+      '\n\n' +
+      'WHAT THIS TOOL CHECKS:\n' +
+      '- Add/remove/reorder ops against the current fieldgroup state on the target site.\n' +
+      '- Per-field context keys against an allow-list (unknown keys → warning; FieldtypePage-only keys on non-Page fields → danger).\n' +
+      '- Fieldset pair integrity — FieldsetOpen/TabOpen/Group without matching {name}_END close → danger; close without opener → danger; wrong order → danger.\n' +
+      '- Field-definition completeness warnings for added fields: Page refs with no template_id/parent_id/findPagesSelector; Textareas with no inputfieldClass; File/Image fields with no extensions; Repeaters with no repeater-pages config. Warnings, not blockers — the add can still proceed.\n' +
+      '\n' +
+      'The `add` array accepts either bare strings (field names) or {name, context} objects for per-fieldgroup overrides. Mixed in the same array is fine. Write path is not yet implemented — set dryRun=true (default) to get the plan; dryRun=false currently returns a clear "not yet implemented" error.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        template: {
+          type: 'string',
+          description: 'Template name whose fieldgroup to edit (e.g. "blog_post").',
+        },
+        add: {
+          type: 'array',
+          description:
+            'Fields to add to the fieldgroup. Each entry is either a string (field name) or {name: string, context?: {label?, description?, notes?, required?, columnWidth?, showIf?, requiredIf?, collapsed?, template_id?, parent_id?, findPagesSelector?, inputfield?}}. Context keys in the second group are FieldtypePage-only and surface as danger on non-Page fields. Fields must already exist on the target site — use pw_resolve to confirm before adding.',
+          items: {},
+        },
+        remove: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Field names to remove from the fieldgroup. Removing a field flagged required on the template is a danger unless force=true. Removing a fieldset opener without its matching close (or vice versa) is a danger regardless of force.',
+        },
+        reorder: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Desired full fieldgroup order after add/remove is applied. Fields not listed are appended in their current relative order. Names not on the projected post-push fieldgroup are a danger — drop them from reorder, or also include them in add.',
+        },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description:
+            'Which site to plan against. Defaults to "local". Use "both" to see the plan from each side independently — useful when fieldgroups have drifted between environments. (Cross-site fieldtype-drift detection is a Phase 2c / v1.11 refinement.)',
+          default: 'local',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), returns the plan without applying. Phase 2b: dryRun=false currently returns a "not yet implemented" error — write path ships in Phase 3.',
+          default: true,
+        },
+        force: {
+          type: 'boolean',
+          description: 'If true, bypasses danger-class conflicts on write. Has no effect in dry-run. Defaults to false.',
+          default: false,
+        },
+      },
+      required: ['template'],
+    },
+  },
   {
     name: 'pw_site_compare',
     description: 'Compare local and remote ProcessWire sites across pages, schema, template/module files, and per-page on-disk assets (site/assets/files/{pageId}/). Pages are matched by path (not ID). Returns a structured report of what differs, what exists only on one side, and what is identical. The page-assets section catches both standard file/image field uploads AND module-managed files (e.g. MediaHub) that field iteration would miss. Requires both PW_PATH (local) and PW_REMOTE_URL (remote).',
@@ -1833,6 +1905,55 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'pw_inspect_template': {
       const { name: templateName, site } = args as { name: string; site?: Site };
       const result = await runOnSite(site, 'template:inspect', [templateName]);
+      return formatToolResponse(result);
+    }
+
+    // v1.11.0 (WIP) — fieldgroup-only template edits.
+    //
+    // The PHP handler already speaks the rich JSON input shape (template
+    // + add<string|{name,context}>[] + remove + reorder + dryRun + force),
+    // so MCP wiring is a shell-through: pack the args as --input JSON and
+    // let CommandRouter do the classification. Dry-run is the only path
+    // Phase 2b exercises; dryRun=false returns a structured "not yet
+    // implemented" error from PHP, which surfaces unchanged here.
+    //
+    // site="both" returns `{ local, remote }` via runOnSite's built-in
+    // parallel fan-out — each side plans against its own catalog and
+    // fieldgroup. Cross-site fieldtype-drift detection (the merge post-
+    // pass described in SESSION-NEXT.md Phase 2c) is deliberately NOT
+    // done here; callers that need it can diff the two plans client-side
+    // until the TS classifier lands.
+    case 'pw_template_fields_push': {
+      const {
+        template,
+        add,
+        remove,
+        reorder,
+        site,
+        dryRun,
+        force,
+      } = args as {
+        template: string;
+        add?: Array<string | { name: string; context?: Record<string, unknown> }>;
+        remove?: string[];
+        reorder?: string[];
+        site?: Site;
+        dryRun?: boolean;
+        force?: boolean;
+      };
+      const payload = {
+        template,
+        add:     Array.isArray(add)     ? add     : [],
+        remove:  Array.isArray(remove)  ? remove  : [],
+        reorder: Array.isArray(reorder) ? reorder : [],
+        dryRun:  dryRun  ?? true,
+        force:   force   ?? false,
+      };
+      const result = await runOnSite(
+        site,
+        'template:fields-push',
+        [`--input=${JSON.stringify(payload)}`],
+      );
       return formatToolResponse(result);
     }
 
