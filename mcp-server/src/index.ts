@@ -1919,10 +1919,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     //
     // site="both" returns `{ local, remote }` via runOnSite's built-in
     // parallel fan-out — each side plans against its own catalog and
-    // fieldgroup. Cross-site fieldtype-drift detection (the merge post-
-    // pass described in SESSION-NEXT.md Phase 2c) is deliberately NOT
-    // done here; callers that need it can diff the two plans client-side
-    // until the TS classifier lands.
+    // fieldgroup. On top of that, Phase 2c-2 adds a cross-site merge:
+    // compare the two sides' `plannedFieldgroup` outputs and flag any
+    // field that exists on both with a different fieldtype class as a
+    // schema-drift danger. Covers the canonical blog_post.images case
+    // (local: FieldtypeCroppableImage3 vs remote: FieldtypeImage) that
+    // surfaced in Session 2 and is still open. The merge emits into a
+    // new top-level `crossSite` block so callers that already parse
+    // `data.local` / `data.remote` keep working unchanged.
     case 'pw_template_fields_push': {
       const {
         template,
@@ -1954,6 +1958,68 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         'template:fields-push',
         [`--input=${JSON.stringify(payload)}`],
       );
+
+      // Cross-site fieldtype drift detection: only meaningful when the
+      // caller asked for site="both" AND both sides returned a plan. We
+      // compare the projected post-push fieldgroups name-by-name and
+      // surface any field whose type disagrees across sides as a
+      // schema-drift danger. The v1.12 pw_field_push tool will act on
+      // these; v1.11 only reports them.
+      if (site === 'both' && result.success && result.data && typeof result.data === 'object') {
+        const data = result.data as {
+          local?:  { success?: boolean; data?: { plannedFieldgroup?: Array<{ name: string; type: string | null }> } };
+          remote?: { success?: boolean; data?: { plannedFieldgroup?: Array<{ name: string; type: string | null }> } };
+          crossSite?: unknown;
+        };
+        const localPlanned  = data.local?.success  ? (data.local.data?.plannedFieldgroup  ?? []) : [];
+        const remotePlanned = data.remote?.success ? (data.remote.data?.plannedFieldgroup ?? []) : [];
+
+        const remoteByName = new Map(
+          remotePlanned.map((f) => [f.name, f]),
+        );
+        const driftDangers: Array<{
+          op:     string;
+          field:  string;
+          why:    string;
+          scope:  string;
+          detail: { localType: string | null; remoteType: string | null };
+        }> = [];
+
+        for (const lf of localPlanned) {
+          const rf = remoteByName.get(lf.name);
+          if (!rf) continue;
+          if (lf.type && rf.type && lf.type !== rf.type) {
+            driftDangers.push({
+              op:    'cross-site-drift',
+              field: lf.name,
+              why:
+                `Field '${lf.name}' has different fieldtypes across sites: ` +
+                `local=${lf.type}, remote=${rf.type}. This is a field-definition drift, ` +
+                `not a fieldgroup edit. pw_template_fields_push cannot resolve it — ` +
+                `use pw_field_push (v1.12+) to align the field definition before ` +
+                `pushing fieldgroup edits, otherwise writes to either side will leave ` +
+                `the two environments' schemas further apart.`,
+              scope:  'schema-drift',
+              detail: { localType: lf.type, remoteType: rf.type },
+            });
+          }
+        }
+
+        data.crossSite = {
+          hasDrift: driftDangers.length > 0,
+          conflicts: {
+            safe:    [],
+            warning: [],
+            danger:  driftDangers,
+          },
+          conflictsSummary: {
+            safe:    0,
+            warning: 0,
+            danger:  driftDangers.length,
+          },
+        };
+      }
+
       return formatToolResponse(result);
     }
 
