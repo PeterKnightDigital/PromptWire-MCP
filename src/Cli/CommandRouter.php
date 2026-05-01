@@ -448,25 +448,49 @@ class CommandRouter {
             // only for now: computes the would-be operations, validates them
             // against current template state, returns the projected post-push
             // fieldgroup. Write path lands when conflict classification is in.
+            //
+            // Two input shapes supported:
+            //   1. Flag form  (simple):
+            //      --template=blog_post --add=a,b --remove=c --reorder=title,body
+            //      (strings only — no per-field context overrides)
+            //   2. --input JSON (rich):
+            //      --input='{"template":"blog_post","add":[{"name":"x","context":{"required":true,"columnWidth":50}}],"remove":["y"],"dryRun":true}'
+            //      (per-field context on adds; matches the MCP tool signature)
+            // When both are present --input wins (same rule as `resolve`).
             case 'template:fields-push':
-                $tname    = $flags['template'] ?? ($positional[0] ?? null);
-                $add      = isset($flags['add']) && $flags['add'] !== ''
-                    ? array_values(array_filter(array_map('trim', explode(',', $flags['add']))))
-                    : [];
-                $remove   = isset($flags['remove']) && $flags['remove'] !== ''
-                    ? array_values(array_filter(array_map('trim', explode(',', $flags['remove']))))
-                    : [];
-                $reorder  = isset($flags['reorder']) && $flags['reorder'] !== ''
-                    ? array_values(array_filter(array_map('trim', explode(',', $flags['reorder']))))
-                    : [];
-                $dryRunRaw = $flags['dry-run'] ?? '1';
-                $dryRun    = !in_array(strtolower((string) $dryRunRaw), ['0', 'false', 'no'], true);
-                $force     = in_array(strtolower((string) ($flags['force'] ?? '0')), ['1', 'true', 'yes'], true);
+                if (isset($flags['input']) && $flags['input'] !== '') {
+                    $payload = json_decode($flags['input'], true);
+                    if (!is_array($payload)) {
+                        return ['error' => 'template:fields-push: --input must be a JSON object'];
+                    }
+                    $tname   = $payload['template'] ?? null;
+                    $add     = is_array($payload['add']     ?? null) ? $payload['add']     : [];
+                    $remove  = is_array($payload['remove']  ?? null) ? $payload['remove']  : [];
+                    $reorder = is_array($payload['reorder'] ?? null) ? $payload['reorder'] : [];
+                    $dryRun  = array_key_exists('dryRun', $payload)
+                        ? (bool) $payload['dryRun']
+                        : true;
+                    $force   = !empty($payload['force']);
+                } else {
+                    $tname    = $flags['template'] ?? ($positional[0] ?? null);
+                    $add      = isset($flags['add']) && $flags['add'] !== ''
+                        ? array_values(array_filter(array_map('trim', explode(',', $flags['add']))))
+                        : [];
+                    $remove   = isset($flags['remove']) && $flags['remove'] !== ''
+                        ? array_values(array_filter(array_map('trim', explode(',', $flags['remove']))))
+                        : [];
+                    $reorder  = isset($flags['reorder']) && $flags['reorder'] !== ''
+                        ? array_values(array_filter(array_map('trim', explode(',', $flags['reorder']))))
+                        : [];
+                    $dryRunRaw = $flags['dry-run'] ?? '1';
+                    $dryRun    = !in_array(strtolower((string) $dryRunRaw), ['0', 'false', 'no'], true);
+                    $force     = in_array(strtolower((string) ($flags['force'] ?? '0')), ['1', 'true', 'yes'], true);
+                }
                 if (!$tname) {
-                    return ['error' => 'template:fields-push: --template required'];
+                    return ['error' => 'template:fields-push: --template (or --input.template) required'];
                 }
                 if (empty($add) && empty($remove) && empty($reorder)) {
-                    return ['error' => 'template:fields-push: at least one of --add, --remove, --reorder required'];
+                    return ['error' => 'template:fields-push: at least one of add, remove, reorder required'];
                 }
                 return $this->templateFieldsPush($tname, $add, $remove, $reorder, $dryRun, $force);
 
@@ -3433,6 +3457,27 @@ class CommandRouter {
     }
 
     /**
+     * Per-fieldgroup context settings that PW supports as overrides for a
+     * field within a specific template's fieldgroup. Anything NOT in this
+     * allow-list surfaces as a warning ("will be stored but may be ignored")
+     * rather than a hard failure, so AI callers that pass slightly wrong
+     * keys fail gracefully.
+     *
+     * `template_id`/`parent_id`/`findPagesSelector`/`inputfield` only make
+     * sense on FieldtypePage fields; passing them on any other type is a
+     * danger-class conflict.
+     */
+    private const TEMPLATE_FIELDS_PUSH_CONTEXT_KEYS = [
+        'label', 'description', 'notes',
+        'required',
+        'columnWidth',
+        'showIf', 'requiredIf',
+        'collapsed',
+        // FieldtypePage-only context overrides
+        'template_id', 'parent_id', 'findPagesSelector', 'inputfield',
+    ];
+
+    /**
      * v1.11.0 (WIP) — fieldgroup-only template edits.
      *
      * Plan/read phase: validates the requested add/remove/reorder operations
@@ -3440,6 +3485,14 @@ class CommandRouter {
      * and returns a structured plan. Fieldtype changes and field-definition
      * pushes are explicitly out of scope — those belong to `pw_field_push`
      * (v1.12+) and this handler rejects them with a clear pointer.
+     *
+     * Accepts two input shapes for `$add`:
+     *   - strings                         (simple — no context overrides)
+     *   - {name, context: {k: v, ...}}    (rich — per-fieldgroup overrides)
+     * Mixed in the same array is fine.
+     *
+     * `$remove` and `$reorder` are always string arrays; per-fieldgroup context
+     * is irrelevant to a remove/reorder.
      *
      * Write path is stubbed until the conflict classifier (mcp-server/src/
      * conflicts/) lands its full rule set; until then `--dry-run=0` still
@@ -3461,6 +3514,36 @@ class CommandRouter {
         $template = $templates->get($templateName);
         if (!$template || !$template->id) {
             return ['error' => "Template not found: {$templateName}"];
+        }
+
+        $conflicts = [
+            'safe'    => [],
+            'warning' => [],
+            'danger'  => [],
+        ];
+
+        // Normalise $add into [{name, context}]. Bare strings get a null
+        // context; object entries must have a `name`; anything else is a
+        // structural error that lands in the danger bucket without aborting.
+        $addNormalized = [];
+        foreach ($add as $entry) {
+            if (is_string($entry) && $entry !== '') {
+                $addNormalized[] = ['name' => $entry, 'context' => null];
+                continue;
+            }
+            if (is_array($entry) && isset($entry['name']) && is_string($entry['name']) && $entry['name'] !== '') {
+                $addNormalized[] = [
+                    'name'    => $entry['name'],
+                    'context' => (isset($entry['context']) && is_array($entry['context'])) ? $entry['context'] : null,
+                ];
+                continue;
+            }
+            $conflicts['danger'][] = [
+                'op'     => 'add',
+                'field'  => '(invalid entry)',
+                'why'    => 'Add entry must be either a string (field name) or {name, context?} object.',
+                'detail' => ['entry' => $entry],
+            ];
         }
 
         // Snapshot the current fieldgroup. Using `fieldgroup` (not `fields`)
@@ -3488,8 +3571,9 @@ class CommandRouter {
         $currentNames = array_column($currentFields, 'name');
 
         // Catalog of fields on this site — needed to validate adds against
-        // "does this field definition exist at all?" and to detect fieldtype
-        // mismatches on fields that appear on both sides.
+        // "does this field definition exist at all?" and to drive the
+        // per-field completeness pass (below) that surfaces "this field's
+        // definition is incomplete, editors will hit UX issues" warnings.
         $targetCatalog = [];
         foreach ($fields as $f) {
             $targetCatalog[$f->name] = [
@@ -3498,21 +3582,19 @@ class CommandRouter {
             ];
         }
 
-        // Classify every requested operation. This is the embryo of the
-        // conflict module — the safe/warning/danger split will move into
-        // mcp-server/src/conflicts/ once the MCP tool is wired up.
-        $conflicts = [
-            'safe'    => [],
-            'warning' => [],
-            'danger'  => [],
-        ];
+        // ================================================================
+        // ADD classification (per-field: exists? catalogued? complete?
+        // context valid? context keys in allow-list?)
+        // ================================================================
+        foreach ($addNormalized as $entry) {
+            $name    = $entry['name'];
+            $context = $entry['context'];
 
-        foreach ($add as $name) {
             if (in_array($name, $currentNames, true)) {
                 $conflicts['danger'][] = [
                     'op'    => 'add',
                     'field' => $name,
-                    'why'   => "Field '{$name}' is already on template '{$templateName}' — add is a no-op or you meant reorder.",
+                    'why'   => "Field '{$name}' is already on template '{$templateName}' — add is a no-op or you meant reorder/context-only update.",
                 ];
                 continue;
             }
@@ -3524,14 +3606,62 @@ class CommandRouter {
                 ];
                 continue;
             }
+
+            $field     = $fields->get($name);
+            $fieldType = $field && $field->type ? $field->type->className() : '';
+
+            // Definition-level completeness warnings. We can't FIX these
+            // from this tool (field-def editing is v1.12 territory), but
+            // we can surface them so the caller knows what editors will
+            // actually see once the field is in the fieldgroup.
+            foreach ($this->templateFieldsPushCompletenessWarnings($field) as $w) {
+                $conflicts['warning'][] = [
+                    'op'    => 'add',
+                    'field' => $name,
+                    'why'   => $w,
+                    'scope' => 'field-definition',
+                ];
+            }
+
+            // Per-fieldgroup context validation. Unknown keys → warning;
+            // FieldtypePage-only keys on non-Page fields → danger.
+            if (is_array($context)) {
+                foreach ($context as $k => $v) {
+                    if (!in_array($k, self::TEMPLATE_FIELDS_PUSH_CONTEXT_KEYS, true)) {
+                        $conflicts['warning'][] = [
+                            'op'    => 'add',
+                            'field' => $name,
+                            'why'   => "Unknown context key '{$k}' for field '{$name}' — PW will store it but it may not be honoured by any Inputfield.",
+                            'scope' => 'context',
+                        ];
+                        continue;
+                    }
+                    if (in_array($k, ['template_id', 'parent_id', 'findPagesSelector', 'inputfield'], true)
+                        && $fieldType !== 'FieldtypePage'
+                    ) {
+                        $conflicts['danger'][] = [
+                            'op'    => 'add',
+                            'field' => $name,
+                            'why'   => "Context key '{$k}' only applies to FieldtypePage fields; '{$name}' is {$fieldType}.",
+                            'scope' => 'context',
+                        ];
+                    }
+                }
+            }
+
             $conflicts['safe'][] = [
-                'op'    => 'add',
-                'field' => $name,
-                'type'  => $targetCatalog[$name]['type'],
+                'op'      => 'add',
+                'field'   => $name,
+                'type'    => $fieldType,
+                'context' => $context,
             ];
         }
 
+        // ================================================================
+        // REMOVE classification
+        // ================================================================
         foreach ($remove as $name) {
+            if (!is_string($name) || $name === '') continue;
             if (!in_array($name, $currentNames, true)) {
                 $conflicts['danger'][] = [
                     'op'    => 'remove',
@@ -3559,40 +3689,37 @@ class CommandRouter {
             ];
         }
 
+        // ================================================================
+        // REORDER classification
+        // ================================================================
         if (!empty($reorder)) {
-            // Reorder is the full desired fieldgroup order. Any field on the
-            // fieldgroup that is NOT listed is appended at the end in its
-            // current relative order; unknown names are treated as danger.
+            $addNames = array_map(fn($e) => $e['name'], $addNormalized);
             $currentAfterAddRemove = array_merge(
                 array_values(array_filter($currentNames, fn($n) => !in_array($n, $remove, true))),
-                array_values(array_filter($add, fn($n) => isset($targetCatalog[$n])))
+                array_values(array_filter($addNames, fn($n) => isset($targetCatalog[$n])))
             );
             foreach ($reorder as $name) {
+                if (!is_string($name) || $name === '') continue;
                 if (!in_array($name, $currentAfterAddRemove, true)) {
                     $conflicts['danger'][] = [
                         'op'    => 'reorder',
                         'field' => $name,
-                        'why'   => "Field '{$name}' is not on template '{$templateName}' (even after the requested add/remove). Drop it from --reorder or add it via --add.",
+                        'why'   => "Field '{$name}' is not on template '{$templateName}' (even after the requested add/remove). Drop it from reorder or add it via add.",
                     ];
                 }
             }
         }
 
-        // Fieldtype-drift check: any field name that exists on both sides
-        // but with different fieldtypes is a schema change, not a fieldgroup
-        // change. Surface as danger regardless of the add/remove/reorder ops
-        // so operators know the template diff is not what they think.
-        // The caller passes the remote's field catalog via --target-catalog
-        // (JSON map of {name: {type}}) so the check works when this handler
-        // runs on one site against a catalog fetched from the other.
-        // Left as a v1.11.0 "plan-v2" refinement — single-site runs skip it.
-
-        // Compute the projected post-push fieldgroup.
+        // ================================================================
+        // PROJECT post-push fieldgroup
+        // ================================================================
         $plannedNames = $currentNames;
         foreach ($remove as $name) {
+            if (!is_string($name) || $name === '') continue;
             $plannedNames = array_values(array_filter($plannedNames, fn($n) => $n !== $name));
         }
-        foreach ($add as $name) {
+        foreach ($addNormalized as $entry) {
+            $name = $entry['name'];
             if (!in_array($name, $plannedNames, true) && isset($targetCatalog[$name])) {
                 $plannedNames[] = $name;
             }
@@ -3600,6 +3727,7 @@ class CommandRouter {
         if (!empty($reorder)) {
             $reordered = [];
             foreach ($reorder as $name) {
+                if (!is_string($name) || $name === '') continue;
                 if (in_array($name, $plannedNames, true) && !in_array($name, $reordered, true)) {
                     $reordered[] = $name;
                 }
@@ -3610,10 +3738,15 @@ class CommandRouter {
             $plannedNames = $reordered;
         }
 
+        // Index the normalised adds by name so plannedFields can surface
+        // context in-line with the projected field entries.
+        $addByName = [];
+        foreach ($addNormalized as $entry) {
+            $addByName[$entry['name']] = $entry;
+        }
+
         $plannedFields = [];
         foreach ($plannedNames as $name) {
-            // Prefer the current template-bound field entry (has label, flags)
-            // over the catalog entry (which has only type + label).
             $src = null;
             foreach ($currentFields as $f) { if ($f['name'] === $name) { $src = $f; break; } }
             if ($src) {
@@ -3626,19 +3759,28 @@ class CommandRouter {
             }
             if (isset($targetCatalog[$name])) {
                 $plannedFields[] = [
-                    'name'  => $name,
-                    'type'  => $targetCatalog[$name]['type'],
-                    'label' => $targetCatalog[$name]['label'],
+                    'name'    => $name,
+                    'type'    => $targetCatalog[$name]['type'],
+                    'label'   => $targetCatalog[$name]['label'],
+                    'context' => $addByName[$name]['context'] ?? null,
                 ];
             }
+        }
+
+        // ================================================================
+        // FIELDSET pair integrity — run AFTER projection so the check sees
+        // the final planned ordering. A FieldsetTabOpen/FieldsetOpen/
+        // FieldsetGroup without its matching `{name}_END` close field (or
+        // vice versa) is a danger-class conflict because PW will render
+        // the admin UI broken until the pair is restored.
+        // ================================================================
+        foreach ($this->templateFieldsPushFieldsetPairIssues($plannedFields) as $issue) {
+            $conflicts['danger'][] = $issue;
         }
 
         $hasDanger = !empty($conflicts['danger']);
         $applied   = false;
 
-        // Write path is deferred until the conflict classifier is fully
-        // wired up. For now we refuse all writes, loudly, so nothing lands
-        // half-built on production.
         if (!$dryRun && $hasDanger && !$force) {
             return [
                 'error'     => 'template:fields-push has danger-class conflicts; dry-run only or pass --force=1 after reviewing.',
@@ -3646,23 +3788,28 @@ class CommandRouter {
             ];
         }
         if (!$dryRun) {
-            // TODO v1.11.0: apply the changes via
+            // TODO v1.11.0 Phase 3: apply via
             //   $template->fieldgroup->add($field) / ->remove($field)
-            //   ->save()
-            //   and re-fetch the post-push fieldgroup for the response.
+            //   $template->fieldgroup->setFieldContextArray($field->id, $context)
+            //   $template->fieldgroup->save()
             // Until then the handler stays read-only.
             return [
                 'error' => 'template:fields-push write path not yet implemented in this build (v1.11.0 WIP). Re-run with --dry-run=1 to get the plan.',
             ];
         }
 
+        // `operations` echoes back what the caller asked for in the
+        // normalised rich form so the MCP tool can display the plan
+        // without re-normalising.
+        $operationsEcho = [
+            'add'     => array_values($addNormalized),
+            'remove'  => array_values(array_filter($remove, fn($n) => is_string($n) && $n !== '')),
+            'reorder' => array_values(array_filter($reorder, fn($n) => is_string($n) && $n !== '')),
+        ];
+
         return [
             'template'            => $templateName,
-            'operations'          => [
-                'add'     => $add,
-                'remove'  => $remove,
-                'reorder' => $reorder,
-            ],
+            'operations'          => $operationsEcho,
             'currentFieldgroup'   => $currentFields,
             'plannedFieldgroup'   => $plannedFields,
             'conflicts'           => $conflicts,
@@ -3674,6 +3821,117 @@ class CommandRouter {
             'dryRun'              => true,
             'applied'             => $applied,
         ];
+    }
+
+    /**
+     * Definition-level completeness heuristics. These are warnings, not
+     * blockers — the field is already on the site (we confirmed it's in
+     * the catalog) so the add operation CAN proceed. The warnings exist
+     * so AI callers that create fields with missing dependencies (the
+     * classic "Page reference without a parent picker" failure) get told
+     * about the gap at plan time rather than discovering it in the admin
+     * UI after the push.
+     *
+     * Returns an array of human-readable warning strings. Empty array
+     * means the field looks complete for its fieldtype.
+     *
+     * This matrix is the v1.11.0 subset; v1.12+ `pw_field_push` will
+     * reuse the same rules at field-definition push time.
+     */
+    private function templateFieldsPushCompletenessWarnings(\ProcessWire\Field $field): array {
+        $warnings = [];
+        $type = $field->type ? $field->type->className() : '';
+
+        if ($type === 'FieldtypePage') {
+            if (empty($field->template_id) && empty($field->parent_id) && empty($field->findPagesSelector)) {
+                $warnings[] = "Page reference has no selectable-pages constraint (template_id, parent_id, and findPagesSelector all empty) — editors will see every page in the tree when picking.";
+            }
+            if (empty($field->inputfield)) {
+                $warnings[] = "Page reference has no Inputfield selected — PW will fall back to its default; confirm the picker type (PageListSelect, AsmSelect, etc.) matches your UX intent.";
+            }
+        }
+
+        if ($type === 'FieldtypeTextarea') {
+            if (empty($field->inputfieldClass)) {
+                $warnings[] = "Textarea has no Inputfield class set — will render as a plain <textarea>, not CKEditor / TinyMCE / etc.";
+            }
+        }
+
+        if ($type === 'FieldtypeImage' || $type === 'FieldtypeCroppableImage3' || $type === 'FieldtypeFile') {
+            if (empty($field->extensions)) {
+                $warnings[] = "File/Image field has no allowed extensions set — editors may be unable to upload anything, or the field may accept unintended file types.";
+            }
+        }
+
+        if ($type === 'FieldtypeRepeater' || $type === 'FieldtypeRepeaterMatrix') {
+            if (empty($field->template_id)) {
+                $warnings[] = "Repeater has no template_id set for its repeater pages — field will be non-functional until configured.";
+            }
+            if (empty($field->parent_id)) {
+                $warnings[] = "Repeater has no parent_id set for its repeater pages — field will be non-functional until configured.";
+            }
+        }
+
+        return $warnings;
+    }
+
+    /**
+     * Fieldset pair integrity check for the projected post-push fieldgroup.
+     *
+     * PW fieldsets follow a name convention: a `FieldsetTabOpen` /
+     * `FieldsetOpen` / `FieldsetGroup` field named `X` is closed by a
+     * `FieldsetClose` named `X_END`. Breaking the pair (either member
+     * present without the other, or close BEFORE open) leaves the admin
+     * UI rendering in an inconsistent state.
+     *
+     * Returns an array of issue objects (already in conflicts['danger']
+     * shape) — caller just appends.
+     */
+    private function templateFieldsPushFieldsetPairIssues(array $plannedFields): array {
+        $issues = [];
+        $names  = array_column($plannedFields, 'name');
+        $nameSet = array_flip($names);
+        $openerTypes = ['FieldtypeFieldsetOpen', 'FieldtypeFieldsetTabOpen', 'FieldtypeFieldsetGroup'];
+
+        foreach ($plannedFields as $idx => $f) {
+            $name = $f['name'] ?? '';
+            $type = $f['type'] ?? '';
+            if ($name === '' || $type === '') continue;
+
+            if (in_array($type, $openerTypes, true)) {
+                $expectedClose = $name . '_END';
+                if (!isset($nameSet[$expectedClose])) {
+                    $issues[] = [
+                        'op'    => 'fieldset-pair',
+                        'field' => $name,
+                        'why'   => "Fieldset opener '{$name}' ({$type}) has no matching '{$expectedClose}' in the planned fieldgroup. Template admin UI will be broken until the close is added.",
+                    ];
+                    continue;
+                }
+                $closeIdx = array_search($expectedClose, $names, true);
+                if ($closeIdx !== false && $closeIdx < $idx) {
+                    $issues[] = [
+                        'op'    => 'fieldset-pair',
+                        'field' => $name,
+                        'why'   => "Fieldset close '{$expectedClose}' appears BEFORE its opener '{$name}' in the planned fieldgroup. Reorder is broken — the close must come after the open.",
+                    ];
+                }
+            }
+
+            if ($type === 'FieldtypeFieldsetClose') {
+                if (substr($name, -4) !== '_END') continue;
+                $expectedOpen = substr($name, 0, -4);
+                if (!isset($nameSet[$expectedOpen])) {
+                    $issues[] = [
+                        'op'    => 'fieldset-pair',
+                        'field' => $name,
+                        'why'   => "Fieldset close '{$name}' has no matching opener '{$expectedOpen}' in the planned fieldgroup. Either also add the opener or remove the close.",
+                    ];
+                }
+            }
+        }
+
+        return $issues;
     }
 
     // ========================================================================
