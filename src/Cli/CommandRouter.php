@@ -3763,6 +3763,14 @@ class CommandRouter {
                     ];
                 }
             }
+
+            $frontendUsage = $this->templateFieldsPushFrontendUsageWarnings($name);
+            if ($frontendUsage !== null) {
+                $conflicts['warning'][] = array_merge(
+                    ['op' => 'remove', 'field' => $name],
+                    $frontendUsage
+                );
+            }
         }
 
         // ================================================================
@@ -4265,6 +4273,116 @@ class CommandRouter {
         return null;
     }
 
+    // ------------------------------------------------------------------------
+    // v1.11.1 — frontend-usage scan on remove ops
+    //
+    // Module-ownership awareness (v1.11.0) catches fields that BELONG to a
+    // known module (form_*, seoneo_*, mediahub_*, core flagged fields). It
+    // cannot catch the broader class of break: a field with no special
+    // naming convention (your_email, feedback, member_notes) that happens
+    // to be hardcoded in a frontend template's PHP. Removing such a field
+    // leaves ProcessWire perfectly healthy but silently breaks the form:
+    // $page->your_email = $input->post->your_email becomes a no-op, the
+    // assignment targets nothing, and the form "stops working" with no
+    // admin-side error and no log entry.
+    //
+    // This helper scans site/templates/ for references to the field name
+    // being removed and emits a warning (not danger) listing file paths,
+    // line numbers, and snippets so the operator can decide whether the
+    // removal is safe.
+    //
+    // Fail-open on every error path (missing dir, FS permission, iterator
+    // exception). Capped at 200 files and 2 seconds; additional matches
+    // beyond MAX_REFS are summarised in the count, not listed.
+    // ------------------------------------------------------------------------
+
+    private const TEMPLATE_FIELDS_PUSH_FRONTEND_SCAN_MAX_FILES = 200;
+    private const TEMPLATE_FIELDS_PUSH_FRONTEND_SCAN_MAX_TIME  = 2.0;
+    private const TEMPLATE_FIELDS_PUSH_FRONTEND_SCAN_MAX_REFS  = 10;
+
+    private function templateFieldsPushFrontendUsageWarnings(string $fieldName): ?array {
+        if ($fieldName === '') return null;
+        if (preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $fieldName) !== 1) return null;
+
+        $templatesDir = rtrim($this->wire->config->paths->site, '/') . '/templates';
+        if (!is_dir($templatesDir)) return null;
+
+        $start        = microtime(true);
+        $filesScanned = 0;
+        $totalHits    = 0;
+        $references   = [];
+        $timedOut     = false;
+        $hitFileCap   = false;
+        $pattern      = '/\b' . preg_quote($fieldName, '/') . '\b/';
+        $allowedExt   = ['php' => true, 'module' => true, 'inc' => true, 'html' => true];
+
+        try {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($templatesDir, \RecursiveDirectoryIterator::SKIP_DOTS)
+            );
+
+            foreach ($iterator as $file) {
+                if (!$file->isFile()) continue;
+                $ext = strtolower($file->getExtension());
+                if (!isset($allowedExt[$ext])) continue;
+
+                if ($filesScanned >= self::TEMPLATE_FIELDS_PUSH_FRONTEND_SCAN_MAX_FILES) {
+                    $hitFileCap = true;
+                    break;
+                }
+                if ((microtime(true) - $start) > self::TEMPLATE_FIELDS_PUSH_FRONTEND_SCAN_MAX_TIME) {
+                    $timedOut = true;
+                    break;
+                }
+
+                $filesScanned++;
+
+                $contents = @file_get_contents($file->getPathname());
+                if ($contents === false) continue;
+
+                if (!str_contains($contents, $fieldName)) continue;
+
+                $lines = explode("\n", $contents);
+                foreach ($lines as $i => $line) {
+                    if (preg_match($pattern, $line)) {
+                        $totalHits++;
+                        if (count($references) < self::TEMPLATE_FIELDS_PUSH_FRONTEND_SCAN_MAX_REFS) {
+                            $rel = ltrim(str_replace($templatesDir, 'site/templates', $file->getPathname()), '/');
+                            $references[] = [
+                                'file'    => $rel,
+                                'line'    => $i + 1,
+                                'snippet' => trim(substr($line, 0, 160)),
+                            ];
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            return null;
+        }
+
+        if (empty($references)) return null;
+
+        $more = $totalHits - count($references);
+        $moreNote = $more > 0 ? " (+ {$more} more occurrence" . ($more === 1 ? '' : 's') . " not listed)" : '';
+        $capNote  = ($hitFileCap || $timedOut)
+            ? ' Scan was capped at ' . self::TEMPLATE_FIELDS_PUSH_FRONTEND_SCAN_MAX_FILES . ' files / '
+              . self::TEMPLATE_FIELDS_PUSH_FRONTEND_SCAN_MAX_TIME . 's; more references may exist.'
+            : '';
+
+        return [
+            'scope'         => 'frontend-usage',
+            'why'           => "Field '{$fieldName}' is referenced in {$totalHits} location(s) across site/templates/{$moreNote}. "
+                             . "Removing it can silently break forms or templates that read/write this field — no ProcessWire error, just lost data. "
+                             . "Review the references before proceeding.{$capNote}",
+            'references'    => $references,
+            'totalHits'     => $totalHits,
+            'filesScanned'  => $filesScanned,
+            'scanTimedOut'  => $timedOut,
+            'scanHitFileCap'=> $hitFileCap,
+        ];
+    }
+
     // ========================================================================
     // v1.10.0 — PAGE ASSETS HANDLERS
     // ========================================================================
@@ -4510,7 +4628,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.11.0',
+            'version' => '1.11.1',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',

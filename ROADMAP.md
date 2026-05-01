@@ -8,6 +8,27 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.11.1 — Frontend-usage scan on remove ops (2026-05-01)
+
+First follow-up to v1.11.0. Closes a safety gap the operator surfaced immediately after v1.11.0 shipped: module-ownership awareness catches fields that *belong* to a known module, but not fields that simply happen to be hardcoded in a frontend template's PHP. A regular field like `your_email` on a contact template is at the same silent-breakage risk as a FormBuilder field — `$page->your_email = $input->post->your_email` silently no-ops if the field disappears, and there's no admin-side error to alert the operator.
+
+**New safety check.** Every `remove` op classified through `pw_template_fields_push` now triggers a scan of `site/templates/` for hardcoded references to the field name:
+
+- Scans `.php`, `.module`, `.inc`, `.html` files under `site/templates/` (recursive).
+- Word-boundary regex (`\bfieldname\b`) so substring collisions don't fire false positives (e.g. `blog_` searching doesn't match `blog_date`).
+- Capped at 200 files and 2.0s wallclock. Reports up to 10 specific `{file, line, snippet}` references plus a total-hits count.
+- Emitted as a warning (not danger) with scope `frontend-usage`. Non-blocking because scans have inherent false-positive risk (comments, string literals, similarly-named variables) and legitimate retirement workflows need to proceed.
+- Fail-open on every error path — missing dir, FS permission, iterator exception → returns `null`, never blocks the classifier.
+- Skipped when the op is already a danger (e.g. `title` removal is already blocked by core-flag detection) to keep responses uncluttered.
+
+**Real-world validation.** Removing `blog_date` from `blog_post` on peterknight.digital now surfaces 6 hardcoded references across 5 blog listing templates that all use `sort=-blog_date` — the exact set of pages that would have silently broken under a v1.11.0-only classifier.
+
+**Shared-helper design.** The helper takes a field name and returns a warning payload (or null). v1.12's `pw_field_push` — which deletes field *definitions* entirely, not just fieldgroup membership — will call the same helper in blocker mode. The classifier logic stays in PHP for now; when `pw_field_push` lands we'll evaluate whether to extract to a TS-side module (per the original v1.11 "conflicts module" plan that got deferred).
+
+**Migration impact: zero.** Strictly additive on the `conflicts.warning[]` array. Callers that filter warnings by `scope` can match on `'frontend-usage'`.
+
+**Version bumps.** Module + MCP server both bumped to 1.11.1. No other changes.
+
 ### v1.11.0 — `pw_template_fields_push` (fieldgroup edits + module-aware conflict classifier) (2026-05-01)
 
 Ships the deferred Session 3 feature that became Session 4: a tool that edits a template's fieldgroup — add, remove, reorder fields, and set per-fieldgroup context overrides — without touching field definitions. First user of the conflict-classification pattern that the later `pw_field_push` (v1.12+) and `pw_template_push` tools will build on.
