@@ -3856,23 +3856,6 @@ class CommandRouter {
         $hasDanger = !empty($conflicts['danger']);
         $applied   = false;
 
-        if (!$dryRun && $hasDanger && !$force) {
-            return [
-                'error'     => 'template:fields-push has danger-class conflicts; dry-run only or pass --force=1 after reviewing.',
-                'conflicts' => $conflicts,
-            ];
-        }
-        if (!$dryRun) {
-            // TODO v1.11.0 Phase 3: apply via
-            //   $template->fieldgroup->add($field) / ->remove($field)
-            //   $template->fieldgroup->setFieldContextArray($field->id, $context)
-            //   $template->fieldgroup->save()
-            // Until then the handler stays read-only.
-            return [
-                'error' => 'template:fields-push write path not yet implemented in this build (v1.11.0 WIP). Re-run with --dry-run=1 to get the plan.',
-            ];
-        }
-
         // `operations` echoes back what the caller asked for in the
         // normalised rich form so the MCP tool can display the plan
         // without re-normalising.
@@ -3882,10 +3865,182 @@ class CommandRouter {
             'reorder' => array_values(array_filter($reorder, fn($n) => is_string($n) && $n !== '')),
         ];
 
+        if ($dryRun) {
+            return [
+                'template'            => $templateName,
+                'operations'          => $operationsEcho,
+                'currentFieldgroup'   => $currentFields,
+                'plannedFieldgroup'   => $plannedFields,
+                'conflicts'           => $conflicts,
+                'conflictsSummary'    => [
+                    'safe'    => count($conflicts['safe']),
+                    'warning' => count($conflicts['warning']),
+                    'danger'  => count($conflicts['danger']),
+                ],
+                'dryRun'              => true,
+                'applied'             => $applied,
+            ];
+        }
+
+        // ================================================================
+        // WRITE PATH (Phase 3)
+        // ================================================================
+        //
+        // Danger conflicts block writes unless --force=1 is passed. This
+        // is the last line of defense before we mutate schema: core-flag
+        // dangers, template-ownership dangers, required-field-removal
+        // dangers, fieldset-pair dangers, and add-with-bad-context
+        // dangers all flow through the same gate.
+        if ($hasDanger && !$force) {
+            return [
+                'error'            => 'template:fields-push has danger-class conflicts; pass --force=1 to override after reviewing.',
+                'conflicts'        => $conflicts,
+                'conflictsSummary' => [
+                    'safe'    => count($conflicts['safe']),
+                    'warning' => count($conflicts['warning']),
+                    'danger'  => count($conflicts['danger']),
+                ],
+                'applied'          => false,
+            ];
+        }
+
+        // Execute in this order (matters for context-setter success and
+        // reorder correctness):
+        //   1. remove fields (frees up slots)
+        //   2. add fields   (uses the resolved Field objects)
+        //   3. save         (context-setter needs the field on the
+        //                   fieldgroup first, so save before step 4)
+        //   4. apply context overrides
+        //   5. save
+        //   6. reorder      (rebuilds the ordered list)
+        //   7. save
+        //
+        // Each step tracks what was actually applied so that if a later
+        // step throws, the response still shows the audit trail of
+        // completed writes. That makes recovery straightforward — the
+        // operator can see exactly where the failure occurred.
+
+        $audit = [
+            'removed'   => [],
+            'added'     => [],
+            'contextSet' => [],
+            'reordered' => false,
+            'saves'     => 0,
+        ];
+
+        try {
+            // 1. Remove
+            foreach ($remove as $name) {
+                if (!is_string($name) || $name === '') continue;
+                $f = $fieldgroup->getField($name);
+                if ($f) {
+                    $fieldgroup->remove($f);
+                    $audit['removed'][] = $name;
+                }
+            }
+
+            // 2. Add
+            $resolvedAdds = [];
+            foreach ($addNormalized as $entry) {
+                $name = $entry['name'];
+                $f = $fields->get($name);
+                if (!$f || !$f->id) continue;
+                if (!$fieldgroup->has($f)) {
+                    $fieldgroup->add($f);
+                    $audit['added'][] = $name;
+                }
+                $resolvedAdds[] = ['field' => $f, 'context' => $entry['context']];
+            }
+
+            // 3. First save — locks in add/remove before context setters
+            $fieldgroup->save();
+            $audit['saves']++;
+
+            // 4. Context overrides (only for new adds; existing-field
+            // context updates are out of scope for v1.11).
+            $contextDirty = false;
+            foreach ($resolvedAdds as $added) {
+                if (!is_array($added['context'])) continue;
+                $fieldgroup->setFieldContextArray($added['field']->id, $added['context']);
+                $audit['contextSet'][] = $added['field']->name;
+                $contextDirty = true;
+            }
+            if ($contextDirty) {
+                $fieldgroup->save();
+                $audit['saves']++;
+            }
+
+            // 5. Reorder — rearrange in place.
+            //
+            // The naive approach (remove every field, re-add in desired
+            // order) fails as soon as the fieldgroup contains any field
+            // flagged `flagGlobal` (4) — PW refuses to remove global
+            // fields from ANY fieldgroup, treating the removal as an
+            // attempt to detach a site-wide required field. `title` on
+            // blog_post is the canonical example (flags=13 = autojoin +
+            // global + system).
+            //
+            // Use WireArray::insertBefore instead. It repositions a
+            // member in place without flagging it for removal, so global
+            // fields pass through unchallenged. The trick is to iterate
+            // the reorder list in REVERSE and for each entry, move it
+            // to be before the current first member — after processing
+            // reorder[-1] → reorder[0] in order, the desired front-of-
+            // list matches the caller's spec. Unlisted fields stay in
+            // their current relative order, pushed to the back by the
+            // repeated "move to front" operations.
+            if (!empty($reorder)) {
+                $reverseOrder = array_reverse(array_values(array_filter(
+                    $reorder,
+                    fn($n) => is_string($n) && $n !== ''
+                )));
+                foreach ($reverseOrder as $name) {
+                    $f = $fieldgroup->getField($name);
+                    if (!$f || !$fieldgroup->has($f)) continue;
+
+                    $currentFirst = null;
+                    foreach ($fieldgroup as $x) { $currentFirst = $x; break; }
+                    if ($currentFirst && $currentFirst !== $f) {
+                        $fieldgroup->insertBefore($f, $currentFirst);
+                    }
+                }
+                $fieldgroup->save();
+                $audit['saves']++;
+                $audit['reordered'] = true;
+            }
+
+            $applied = true;
+        } catch (\Exception $e) {
+            return [
+                'error'   => 'template:fields-push write path failed mid-operation: ' . $e->getMessage(),
+                'audit'   => $audit,
+                'hint'    => 'Partial writes may have landed. Run template:fields-push --dry-run=1 against the target to inspect the current state before retrying.',
+                'applied' => false,
+            ];
+        }
+
+        // Re-snapshot the fieldgroup so the response shows the actual
+        // post-save state rather than trusting the projection.
+        $postFields = [];
+        $freshTemplate = $this->wire->templates->get($templateName);
+        $freshFg = $freshTemplate ? $freshTemplate->fieldgroup : $fieldgroup;
+        foreach ($freshFg as $f) {
+            $ctx = $freshFg->getFieldContextArray($f->id);
+            $postFields[] = [
+                'name'     => $f->name,
+                'type'     => $f->type ? $f->type->className() : null,
+                'label'    => $f->label ?: $f->name,
+                'flags'    => (int) $f->flags,
+                'required' => isset($ctx['required']) ? (bool) $ctx['required'] : (bool) $f->required,
+                'context'  => $ctx ?: null,
+            ];
+        }
+
         return [
             'template'            => $templateName,
             'operations'          => $operationsEcho,
-            'currentFieldgroup'   => $currentFields,
+            'beforeFieldgroup'    => $currentFields,
+            'afterFieldgroup'     => $postFields,
             'plannedFieldgroup'   => $plannedFields,
             'conflicts'           => $conflicts,
             'conflictsSummary'    => [
@@ -3893,7 +4048,8 @@ class CommandRouter {
                 'warning' => count($conflicts['warning']),
                 'danger'  => count($conflicts['danger']),
             ],
-            'dryRun'              => true,
+            'audit'               => $audit,
+            'dryRun'              => false,
             'applied'             => $applied,
         ];
     }
