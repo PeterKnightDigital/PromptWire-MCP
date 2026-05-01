@@ -444,6 +444,32 @@ class CommandRouter {
                 }
                 return $this->templateInspect($name);
 
+            // v1.11.0 (WIP) — fieldgroup-only template edits. Read/plan side
+            // only for now: computes the would-be operations, validates them
+            // against current template state, returns the projected post-push
+            // fieldgroup. Write path lands when conflict classification is in.
+            case 'template:fields-push':
+                $tname    = $flags['template'] ?? ($positional[0] ?? null);
+                $add      = isset($flags['add']) && $flags['add'] !== ''
+                    ? array_values(array_filter(array_map('trim', explode(',', $flags['add']))))
+                    : [];
+                $remove   = isset($flags['remove']) && $flags['remove'] !== ''
+                    ? array_values(array_filter(array_map('trim', explode(',', $flags['remove']))))
+                    : [];
+                $reorder  = isset($flags['reorder']) && $flags['reorder'] !== ''
+                    ? array_values(array_filter(array_map('trim', explode(',', $flags['reorder']))))
+                    : [];
+                $dryRunRaw = $flags['dry-run'] ?? '1';
+                $dryRun    = !in_array(strtolower((string) $dryRunRaw), ['0', 'false', 'no'], true);
+                $force     = in_array(strtolower((string) ($flags['force'] ?? '0')), ['1', 'true', 'yes'], true);
+                if (!$tname) {
+                    return ['error' => 'template:fields-push: --template required'];
+                }
+                if (empty($add) && empty($remove) && empty($reorder)) {
+                    return ['error' => 'template:fields-push: at least one of --add, --remove, --reorder required'];
+                }
+                return $this->templateFieldsPush($tname, $add, $remove, $reorder, $dryRun, $force);
+
             // ================================================================
             // v1.10.0 — PAGE ASSETS (site/assets/files/{pageId}/) SYNC
             // ================================================================
@@ -3403,6 +3429,250 @@ class CommandRouter {
                 'useRoles' => (bool) $template->useRoles,
                 'roles'    => $template->useRoles ? $this->getTemplateRoles($template) : [],
             ],
+        ];
+    }
+
+    /**
+     * v1.11.0 (WIP) — fieldgroup-only template edits.
+     *
+     * Plan/read phase: validates the requested add/remove/reorder operations
+     * against the live fieldgroup, computes the projected post-push fieldgroup,
+     * and returns a structured plan. Fieldtype changes and field-definition
+     * pushes are explicitly out of scope — those belong to `pw_field_push`
+     * (v1.12+) and this handler rejects them with a clear pointer.
+     *
+     * Write path is stubbed until the conflict classifier (mcp-server/src/
+     * conflicts/) lands its full rule set; until then `--dry-run=0` still
+     * only reports what would happen, and the `applied` flag in the result
+     * stays `false`. This keeps the scaffolding landable without any risk
+     * to production fieldgroups.
+     */
+    private function templateFieldsPush(
+        string $templateName,
+        array  $add,
+        array  $remove,
+        array  $reorder,
+        bool   $dryRun,
+        bool   $force
+    ): array {
+        $templates = $this->wire->templates;
+        $fields    = $this->wire->fields;
+
+        $template = $templates->get($templateName);
+        if (!$template || !$template->id) {
+            return ['error' => "Template not found: {$templateName}"];
+        }
+
+        // Snapshot the current fieldgroup. Using `fieldgroup` (not `fields`)
+        // so the returned order is the raw fieldgroup order rather than the
+        // admin-side sort, which matters for reorder operations.
+        //
+        // `required` in PW is a field/context property, not a Field::flag*
+        // constant. Checking it context-aware (per fieldgroup) because the
+        // same field can be required on one template and optional on another.
+        $currentFields = [];
+        $fieldgroup = $template->fieldgroup;
+        foreach ($fieldgroup as $field) {
+            $ctx = $fieldgroup->getFieldContextArray($field->id);
+            $required = isset($ctx['required'])
+                ? (bool) $ctx['required']
+                : (bool) $field->required;
+            $currentFields[] = [
+                'name'     => $field->name,
+                'type'     => $field->type ? $field->type->className() : null,
+                'label'    => $field->label ?: $field->name,
+                'flags'    => (int) $field->flags,
+                'required' => $required,
+            ];
+        }
+        $currentNames = array_column($currentFields, 'name');
+
+        // Catalog of fields on this site — needed to validate adds against
+        // "does this field definition exist at all?" and to detect fieldtype
+        // mismatches on fields that appear on both sides.
+        $targetCatalog = [];
+        foreach ($fields as $f) {
+            $targetCatalog[$f->name] = [
+                'type'  => $f->type ? $f->type->className() : null,
+                'label' => $f->label ?: $f->name,
+            ];
+        }
+
+        // Classify every requested operation. This is the embryo of the
+        // conflict module — the safe/warning/danger split will move into
+        // mcp-server/src/conflicts/ once the MCP tool is wired up.
+        $conflicts = [
+            'safe'    => [],
+            'warning' => [],
+            'danger'  => [],
+        ];
+
+        foreach ($add as $name) {
+            if (in_array($name, $currentNames, true)) {
+                $conflicts['danger'][] = [
+                    'op'    => 'add',
+                    'field' => $name,
+                    'why'   => "Field '{$name}' is already on template '{$templateName}' — add is a no-op or you meant reorder.",
+                ];
+                continue;
+            }
+            if (!isset($targetCatalog[$name])) {
+                $conflicts['danger'][] = [
+                    'op'    => 'add',
+                    'field' => $name,
+                    'why'   => "Field '{$name}' does not exist on this site. Run pw_field_push first (v1.12+) or create the field manually before re-running.",
+                ];
+                continue;
+            }
+            $conflicts['safe'][] = [
+                'op'    => 'add',
+                'field' => $name,
+                'type'  => $targetCatalog[$name]['type'],
+            ];
+        }
+
+        foreach ($remove as $name) {
+            if (!in_array($name, $currentNames, true)) {
+                $conflicts['danger'][] = [
+                    'op'    => 'remove',
+                    'field' => $name,
+                    'why'   => "Field '{$name}' is not on template '{$templateName}' — nothing to remove.",
+                ];
+                continue;
+            }
+            $entry = null;
+            foreach ($currentFields as $f) {
+                if ($f['name'] === $name) { $entry = $f; break; }
+            }
+            if ($entry && $entry['required']) {
+                $conflicts['danger'][] = [
+                    'op'    => 'remove',
+                    'field' => $name,
+                    'why'   => "Field '{$name}' is flagged required on template '{$templateName}'. Remove the required flag in the admin first, or pass --force=1.",
+                ];
+                continue;
+            }
+            $conflicts['warning'][] = [
+                'op'    => 'remove',
+                'field' => $name,
+                'why'   => "Removing '{$name}' will orphan any values stored on existing pages of template '{$templateName}'. The page-value data remains in the database but becomes unreachable via PW APIs.",
+            ];
+        }
+
+        if (!empty($reorder)) {
+            // Reorder is the full desired fieldgroup order. Any field on the
+            // fieldgroup that is NOT listed is appended at the end in its
+            // current relative order; unknown names are treated as danger.
+            $currentAfterAddRemove = array_merge(
+                array_values(array_filter($currentNames, fn($n) => !in_array($n, $remove, true))),
+                array_values(array_filter($add, fn($n) => isset($targetCatalog[$n])))
+            );
+            foreach ($reorder as $name) {
+                if (!in_array($name, $currentAfterAddRemove, true)) {
+                    $conflicts['danger'][] = [
+                        'op'    => 'reorder',
+                        'field' => $name,
+                        'why'   => "Field '{$name}' is not on template '{$templateName}' (even after the requested add/remove). Drop it from --reorder or add it via --add.",
+                    ];
+                }
+            }
+        }
+
+        // Fieldtype-drift check: any field name that exists on both sides
+        // but with different fieldtypes is a schema change, not a fieldgroup
+        // change. Surface as danger regardless of the add/remove/reorder ops
+        // so operators know the template diff is not what they think.
+        // The caller passes the remote's field catalog via --target-catalog
+        // (JSON map of {name: {type}}) so the check works when this handler
+        // runs on one site against a catalog fetched from the other.
+        // Left as a v1.11.0 "plan-v2" refinement — single-site runs skip it.
+
+        // Compute the projected post-push fieldgroup.
+        $plannedNames = $currentNames;
+        foreach ($remove as $name) {
+            $plannedNames = array_values(array_filter($plannedNames, fn($n) => $n !== $name));
+        }
+        foreach ($add as $name) {
+            if (!in_array($name, $plannedNames, true) && isset($targetCatalog[$name])) {
+                $plannedNames[] = $name;
+            }
+        }
+        if (!empty($reorder)) {
+            $reordered = [];
+            foreach ($reorder as $name) {
+                if (in_array($name, $plannedNames, true) && !in_array($name, $reordered, true)) {
+                    $reordered[] = $name;
+                }
+            }
+            foreach ($plannedNames as $name) {
+                if (!in_array($name, $reordered, true)) $reordered[] = $name;
+            }
+            $plannedNames = $reordered;
+        }
+
+        $plannedFields = [];
+        foreach ($plannedNames as $name) {
+            // Prefer the current template-bound field entry (has label, flags)
+            // over the catalog entry (which has only type + label).
+            $src = null;
+            foreach ($currentFields as $f) { if ($f['name'] === $name) { $src = $f; break; } }
+            if ($src) {
+                $plannedFields[] = [
+                    'name'  => $src['name'],
+                    'type'  => $src['type'],
+                    'label' => $src['label'],
+                ];
+                continue;
+            }
+            if (isset($targetCatalog[$name])) {
+                $plannedFields[] = [
+                    'name'  => $name,
+                    'type'  => $targetCatalog[$name]['type'],
+                    'label' => $targetCatalog[$name]['label'],
+                ];
+            }
+        }
+
+        $hasDanger = !empty($conflicts['danger']);
+        $applied   = false;
+
+        // Write path is deferred until the conflict classifier is fully
+        // wired up. For now we refuse all writes, loudly, so nothing lands
+        // half-built on production.
+        if (!$dryRun && $hasDanger && !$force) {
+            return [
+                'error'     => 'template:fields-push has danger-class conflicts; dry-run only or pass --force=1 after reviewing.',
+                'conflicts' => $conflicts,
+            ];
+        }
+        if (!$dryRun) {
+            // TODO v1.11.0: apply the changes via
+            //   $template->fieldgroup->add($field) / ->remove($field)
+            //   ->save()
+            //   and re-fetch the post-push fieldgroup for the response.
+            // Until then the handler stays read-only.
+            return [
+                'error' => 'template:fields-push write path not yet implemented in this build (v1.11.0 WIP). Re-run with --dry-run=1 to get the plan.',
+            ];
+        }
+
+        return [
+            'template'            => $templateName,
+            'operations'          => [
+                'add'     => $add,
+                'remove'  => $remove,
+                'reorder' => $reorder,
+            ],
+            'currentFieldgroup'   => $currentFields,
+            'plannedFieldgroup'   => $plannedFields,
+            'conflicts'           => $conflicts,
+            'conflictsSummary'    => [
+                'safe'    => count($conflicts['safe']),
+                'warning' => count($conflicts['warning']),
+                'danger'  => count($conflicts['danger']),
+            ],
+            'dryRun'              => true,
+            'applied'             => $applied,
         ];
     }
 
