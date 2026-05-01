@@ -418,6 +418,7 @@ export async function compareSites(options: {
         pagesIdentical:   0,
         pagesDiffer:      0,
         pagesWithIdDrift: 0,
+        idDriftPages:     [],
         totals:           { changed: 0, localOnly: 0, remoteOnly: 0 },
         diffs:            [],
         warning:          `Page-assets compare unavailable: ${pageAssetsResult.error}`,

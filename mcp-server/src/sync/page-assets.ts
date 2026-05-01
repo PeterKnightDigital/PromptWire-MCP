@@ -648,6 +648,19 @@ export interface SiteAssetCompareResult {
    * page ids in template code, etc.).
    */
   pagesWithIdDrift: number;
+  /**
+   * Per-page detail for every id-drifted page, regardless of whether
+   * that page also has asset-level differences. Surfaced because pages
+   * that are identical on disk but have different DB ids never appear
+   * in `diffs` (the early-continue path), so the `pagesWithIdDrift`
+   * counter was previously the only signal they existed at all.
+   */
+  idDriftPages: Array<{
+    pagePath:     string;
+    template?:    string;
+    localPageId:  number;
+    remotePageId: number;
+  }>;
   totals: {
     changed:    number;
     localOnly:  number;
@@ -702,6 +715,7 @@ export async function compareSiteAssets(
   const allPaths = new Set([...Object.keys(localPages), ...Object.keys(remotePages)]);
 
   const diffs: SiteAssetCompareEntry[] = [];
+  const idDriftPages: SiteAssetCompareResult['idDriftPages'] = [];
   let pagesIdentical = 0;
   let pagesWithIdDrift = 0;
   let totalChanged = 0;
@@ -719,7 +733,15 @@ export async function compareSiteAssets(
     // problem (page-content drift, not id drift) and is already reported
     // by pw_site_compare's pages section.
     const idDrift = !!(lp && rp && lp.pageId !== rp.pageId);
-    if (idDrift) pagesWithIdDrift++;
+    if (idDrift) {
+      pagesWithIdDrift++;
+      idDriftPages.push({
+        pagePath,
+        template:     lp.template ?? rp.template,
+        localPageId:  lp.pageId,
+        remotePageId: rp.pageId,
+      });
+    }
 
     const d = diffAssets(local, remote);
     if (d.changed.length === 0 && d.localOnly.length === 0 && d.remoteOnly.length === 0) {
@@ -754,6 +776,7 @@ export async function compareSiteAssets(
     pagesIdentical,
     pagesDiffer:    diffs.length,
     pagesWithIdDrift,
+    idDriftPages,
     totals: {
       changed:    totalChanged,
       localOnly:  totalLocalOnly,
