@@ -3583,6 +3583,34 @@ class CommandRouter {
         }
 
         // ================================================================
+        // TEMPLATE-LEVEL MODULE OWNERSHIP
+        //
+        // Fires ONCE per call when the target template is owned by a
+        // known module (FormBuilder `form-*`, PW core `admin`/`user`/
+        // `role`/`permission`, Repeater storage templates, MediaHub, etc.).
+        // Escalates every write op (add/remove/reorder) to danger because
+        // the owning module expects specific schema and will silently
+        // misbehave if the fieldgroup drifts out-of-band:
+        //   - FormBuilder: submissions may drop fields or fail validation
+        //   - Repeater: storage pages lose their value scaffolding
+        //   - PW core: admin UI breaks, auth breaks, etc.
+        // The operator's escape hatches are (a) change the module's
+        // settings instead of editing the template directly, or (b)
+        // pass --force=1 after confirming the change is safe.
+        // ================================================================
+        $templateOwner = $this->templateFieldsPushInferTemplateModule($templateName);
+        $hasWrites = !empty($addNormalized) || !empty($remove) || !empty($reorder);
+        if ($templateOwner !== null && $hasWrites) {
+            $conflicts['danger'][] = [
+                'op'     => 'template-ownership',
+                'field'  => $templateName,
+                'why'    => "Template '{$templateName}' is managed by the {$templateOwner} module. Editing its fieldgroup directly may silently break {$templateOwner} — form submissions, repeater storage, admin UI, or module state can all fail without obvious error. Change the module's settings instead, or pass --force=1 after confirming the change is safe.",
+                'scope'  => 'module-ownership',
+                'module' => $templateOwner,
+            ];
+        }
+
+        // ================================================================
         // ADD classification (per-field: exists? catalogued? complete?
         // context valid? context keys in allow-list?)
         // ================================================================
@@ -3659,6 +3687,25 @@ class CommandRouter {
 
         // ================================================================
         // REMOVE classification
+        //
+        // Severity ladder (first match wins for the danger cases):
+        //   1. Not on template                              → danger
+        //   2. flagSystem / flagPermanent (PW core field)   → danger
+        //   3. Template itself is module-owned (form-*,
+        //      repeater_*, etc.)                            → danger
+        //   4. Field is flagged required on this template   → danger
+        //   5. Field name prefix matches a known module     → warning
+        //      (e.g. seoneo_*, form_*) — operator may be
+        //      intentionally uninstalling SEOneo or similar,
+        //      so not a blocker, but they get told
+        //   6. Default                                       → warning
+        //      ("will orphan any values stored on existing pages")
+        //
+        // Module-ownership and core-flag checks exist specifically to
+        // protect against silent breakage: FormBuilder form submission,
+        // core PW auth, repeater storage, etc. can all fail silently if
+        // their backing fields disappear. We escalate to danger so the
+        // --force=1 pathway is the only way through.
         // ================================================================
         foreach ($remove as $name) {
             if (!is_string($name) || $name === '') continue;
@@ -3670,10 +3717,24 @@ class CommandRouter {
                 ];
                 continue;
             }
+
+            $field = $fields->get($name);
             $entry = null;
             foreach ($currentFields as $f) {
                 if ($f['name'] === $name) { $entry = $f; break; }
             }
+
+            if ($field && $entry) {
+                $flagDanger = $this->templateFieldsPushCoreFlagDanger($field, $entry);
+                if ($flagDanger !== null) {
+                    $conflicts['danger'][] = array_merge(
+                        ['op' => 'remove', 'field' => $name],
+                        $flagDanger
+                    );
+                    continue;
+                }
+            }
+
             if ($entry && $entry['required']) {
                 $conflicts['danger'][] = [
                     'op'    => 'remove',
@@ -3682,11 +3743,25 @@ class CommandRouter {
                 ];
                 continue;
             }
+
             $conflicts['warning'][] = [
                 'op'    => 'remove',
                 'field' => $name,
                 'why'   => "Removing '{$name}' will orphan any values stored on existing pages of template '{$templateName}'. The page-value data remains in the database but becomes unreachable via PW APIs.",
             ];
+
+            if ($field) {
+                $fieldOwner = $this->templateFieldsPushInferFieldModule($name);
+                if ($fieldOwner !== null) {
+                    $conflicts['warning'][] = [
+                        'op'     => 'remove',
+                        'field'  => $name,
+                        'why'    => "Field name '{$name}' matches the {$fieldOwner} module's convention. If {$fieldOwner} is installed and relies on this field being on '{$templateName}', removing it may silently break that module. Use pw_modules_list to confirm whether {$fieldOwner} is active on the target site before proceeding.",
+                        'scope'  => 'module-ownership',
+                        'module' => $fieldOwner,
+                    ];
+                }
+            }
         }
 
         // ================================================================
@@ -3932,6 +4007,105 @@ class CommandRouter {
         }
 
         return $issues;
+    }
+
+    /**
+     * Check the PW core flags that forbid deletion. `flagSystem` (8) marks
+     * fields core to PW's operation; `flagPermanent` (512) marks fields
+     * that PW itself refuses to delete. Either case is a hard danger for
+     * a `remove` operation, and no amount of `--force=1` should coerce
+     * the handler into applying the change without the operator also
+     * clearing the flag in the admin first.
+     *
+     * Returns the danger payload (why + scope + detail) or null when the
+     * field has neither flag set.
+     */
+    private function templateFieldsPushCoreFlagDanger(\ProcessWire\Field $field, array $currentFieldEntry): ?array {
+        $flags = (int) $field->flags;
+        if ($flags & \ProcessWire\Field::flagSystem) {
+            return [
+                'why'    => "Field '{$field->name}' is flagged system (flagSystem=8) — it is core to ProcessWire. Removing it will break PW itself. Remove the system flag in the admin first if you really need to delete this field.",
+                'scope'  => 'core-flag',
+                'detail' => ['flags' => $flags, 'flagBit' => 'flagSystem'],
+            ];
+        }
+        if ($flags & \ProcessWire\Field::flagPermanent) {
+            return [
+                'why'    => "Field '{$field->name}' is flagged permanent (flagPermanent=512) — PW refuses to delete it. Remove the permanent flag in the admin first if you really need to delete this field.",
+                'scope'  => 'core-flag',
+                'detail' => ['flags' => $flags, 'flagBit' => 'flagPermanent'],
+            ];
+        }
+        return null;
+    }
+
+    /**
+     * Infer whether a TEMPLATE name belongs to a known PW module.
+     *
+     * Module-owned templates (FormBuilder's `form-<name>`, PW's repeater
+     * storage templates, MediaHub's own templates, etc.) should never be
+     * edited via this tool — the module expects specific schema and will
+     * silently misbehave if the fieldgroup is altered out-of-band. Returns
+     * the module name when matched, null otherwise.
+     *
+     * Ordering matters: more specific patterns first (`form-*` before the
+     * broader `form_*`, etc.) so matches are unambiguous.
+     */
+    private function templateFieldsPushInferTemplateModule(string $templateName): ?string {
+        $patterns = [
+            // FormBuilder uses `form-<slug>` (hyphen form) for forms it
+            // creates; some installs also have `form_<slug>` (underscore)
+            // in legacy or ported configs.
+            'FormBuilder'      => '/^form[-_][a-z0-9_-]+$/i',
+            // Repeater and RepeaterMatrix internal storage templates.
+            'Repeater'         => '/^repeater_/i',
+            // ProcessWire core admin/auth pseudo-templates.
+            'ProcessWire core' => '/^(admin|user|role|permission|language)$/i',
+            // MediaHub attaches its own templates for media library pages
+            // on some installs.
+            'MediaHub'         => '/^(mediahub|media_hub)[-_]/i',
+            // ProFields table storage templates.
+            'ProFields'        => '/^(protable|profields)_/i',
+        ];
+        foreach ($patterns as $module => $rx) {
+            if (preg_match($rx, $templateName)) {
+                return $module;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Infer whether a FIELD name follows a known module's naming convention.
+     *
+     * Returns the module name when the name prefix matches, null otherwise.
+     * This runs when the removed field is NOT flagged system/permanent and
+     * the template is NOT a module-owned template — i.e. the "the field
+     * looks module-ish but is sitting on a regular content template" case.
+     * That's when we downgrade to warning: the operator may be cleaning up
+     * after an uninstall, which is legitimate; we just make sure they're
+     * told in case they didn't realize.
+     */
+    private function templateFieldsPushInferFieldModule(string $fieldName): ?string {
+        $prefixes = [
+            'form_'      => 'FormBuilder',
+            'formrpro_'  => 'FormBuilder Pro',
+            'repeater_'  => 'Repeater',
+            'mediahub_'  => 'MediaHub',
+            'media_hub_' => 'MediaHub',
+            'seoneo_'    => 'SEOneo',
+            'padloper_'  => 'Padloper',
+            'login_'     => 'LoginRegisterPro',
+            'register_'  => 'LoginRegisterPro',
+            'comment'    => 'CommentsManager',
+            'process_'   => 'ProcessWire Process modules',
+        ];
+        foreach ($prefixes as $prefix => $module) {
+            if (str_starts_with($fieldName, $prefix)) {
+                return $module;
+            }
+        }
+        return null;
     }
 
     // ========================================================================
