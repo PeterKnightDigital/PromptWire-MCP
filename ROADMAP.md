@@ -8,6 +8,30 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.10.2 — `idDriftPages` visibility + generalised `push-module-to-remote.mjs` (2026-05-01)
+
+Two tooling-polish changes surfaced during the v1.10.x post-deploy audit:
+
+**`idDriftPages` array surfaces the specific pages that were previously hidden.** v1.10.0 introduced a `pagesWithIdDrift` counter on `pw_page_assets compare` and `pw_site_compare`'s `pageAssets` section — operators saw that `N` pages had divergent local/remote ids, but had no way to discover which pages those were if the drifted pages also happened to have identical assets. The `diffs` array only emitted entries for pages with asset-level differences (an explicit `continue` on the identical-assets path), so any drifted-but-otherwise-identical page existed only as an anonymous increment in the counter. Right audit, wrong ergonomics: "1 page has drifted ids, good luck finding it."
+
+- **New `idDriftPages: Array<{ pagePath, template, localPageId, remotePageId }>`** on `SiteAssetCompareResult`, populated in the aggregation loop in `mcp-server/src/sync/page-assets.ts` regardless of whether the drifted page also has asset-level diffs. Collected before the early-continue, so pages with matching assets but divergent ids are now captured. Pages with drifted ids AND asset-level diffs appear in both `idDriftPages` and `diffs`, correctly reflecting that they have two separate kinds of problem.
+- **Operator workflow.** A non-zero `pagesWithIdDrift` now tells you the count *and* lets you enumerate the drifted pages for inspection — important for distinguishing the benign case (sites with independent fresh installs that have organically diverged id sequences) from the failure mode (same path resolving to two unrelated pages on the two environments).
+- **Zero migration impact.** Strictly additive on `SiteAssetCompareResult`. Existing consumers that don't read the new field keep working. The fallback `SiteAssetCompareResult` emitted by `pw_site_compare` when the remote API doesn't yet ship `page-assets:inventory` also gains an empty `idDriftPages: []` for shape consistency.
+
+**New deploy script `scripts/push-module-to-remote.mjs` — generalised companion to `push-self-to-remote.mjs`.** The existing script is hardcoded to the PromptWire module directory (`REMOTE_PREFIX = 'site/modules/PromptWire/'`, `REPO_ROOT = process.cwd()`). Aligning a third-party module's version between local and production required either rolling a one-off script, SFTP'ing by hand, or hoping `pw_site_sync`'s broken `directories` filter would be fixed in time.
+
+- **Takes `--source=<path>` and `--prefix=<site/modules/NAME/>` as args.** Any module tree, any remote prefix (enforced to start with `site/modules/` to match the remote `filesPush` allowed-prefix check). Same batching (50 files/batch), same `.git/node_modules/IDE` prune list extended from v1.9.3's `INVENTORY_PRUNE_DIRS`, same base64-over-JSON transport.
+- **Superset of push-self's allowed extensions.** Third-party modules commonly ship fonts (`woff`, `woff2`, `ttf`, `otf`, `eot`), source maps (`.map`), assorted asset types (`avif`, `ico`), and alt-syntax source (`mjs`, `cjs`, `scss`, `less`, `yaml`, `yml`) that PromptWire itself doesn't. Push-self's list stays focused on what PromptWire actually ships; the generic script's list is pragmatic for the wider ecosystem.
+- **`--exclude=<dir1,dir2>` flag** adds additional directory names to the prune list at walk time. Matching is by basename at any depth, not glob patterns — so `--exclude="docs and planning"` skips every `docs and planning/` directory wherever it appears in the tree. Use case: keeping internal PRDs, scratch notes, and test fixtures out of production without rewriting the allowed-extensions list.
+- **Safety guardrails.** Refuses to walk `/` or `$HOME` as a source. Refuses prefixes that don't start with `site/modules/` (so client-side errors match the remote API's behaviour instead of round-tripping to a 500). `--dry-run` prints the full file list and payload size without contacting the remote.
+- **First real-world use.** MediaHub was drifting local 1.15.4 vs remote 1.15.3 — 97 files / 1.4 MB pushed in two batches with `--exclude="docs and planning"` to skip ~200 KB of internal PRDs. Post-push `pw_clear_cache` + `pw_modules_list classes: ["MediaHub"] site: "both"` confirmed parity, and the `files` section of `pw_site_compare` dropped from 9+ MediaHub diffs to 2 legacy orphans (Tags→Labels rename artefacts on prod that the v1.15.0 upgrade hook couldn't delete).
+
+Both `PromptWire.module.php` and `mcp-server/package.json` are bumped to 1.10.2. No PHP runtime changes; this is MCP-side and tooling only.
+
+Migration impact: zero. `idDriftPages` is strictly additive on the compare result shape. The new script is additive in `scripts/` (excluded from any production push by the existing `SKIP_DIRS` mechanism in both deploy scripts).
+
+---
+
 ### v1.10.0 — `pw_page_assets` + page-assets in `pw_site_compare` / `pw_site_sync` (2026-04-30)
 
 Closes the gap that surfaced once PromptWire's site-compare and site-sync workflows hit a real production migration of a media-heavy site: the page push/pull pipeline shipped page CONTENT but not the on-disk files attached to those pages. The default `FieldtypeFile` / `FieldtypeImage` widgets store uploads in `site/assets/files/{pageId}/`, and the existing `pw_file_sync` already covered those *when* iterated through a page's fieldgroup. But two cases were missing:

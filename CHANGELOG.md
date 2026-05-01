@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.2 (1 May 2026)
+
+- **New:** `idDriftPages` array in `pw_page_assets compare` and `pw_site_compare`'s `pageAssets` section. Enumerates every page that has divergent local/remote ids alongside the existing `pagesWithIdDrift` counter. Previously, drifted pages with identical assets never appeared in `diffs` (early-continue path), so the counter was the only signal they existed. Now the operator can see which specific pages are drifting and decide whether the divergence is benign (organic id-sequence drift between independent fresh installs) or a correctness issue (same path resolving to two unrelated pages).
+- **New:** `scripts/push-module-to-remote.mjs` — generalised companion to `push-self-to-remote.mjs` for pushing any third-party module to a PromptWire-equipped remote. Takes `--source=<path>` and `--prefix=<site/modules/NAME/>` args, plus an `--exclude=<dir1,dir2>` flag for skipping internal docs/PRDs/test fixtures. First real-world use was aligning MediaHub 1.15.3 → 1.15.4 on peterknight.digital (97 files, clean two-batch push).
+- **Migration impact: zero.** `idDriftPages` is strictly additive on `SiteAssetCompareResult`. The new script is additive in `scripts/`, excluded from production pushes by the existing `SKIP_DIRS` rule in both deploy scripts.
+- **Module + MCP server version bumped to 1.10.2.** No PHP runtime changes.
+
 ## 1.10.1 (30 April 2026)
 
 - **New `ids` block in `page.meta.json`.** Per-environment `pageId` record alongside the existing top-level `pageId` (kept as a back-compat mirror): `ids: { local: { id, lastSeenAt }, remote: { id, lastSeenAt } }`. Each pull populates only its own slot; the other side's slot is preserved verbatim. Closes the v1.10.0 gap where re-pulling from the other environment silently overwrote `meta.pageId` and made `pushPage` address the wrong page.
