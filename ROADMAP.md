@@ -8,6 +8,47 @@ This is a working list, not a release plan. Issues / PRs against any of these ar
 
 ## Releases
 
+### v1.11.0 — `pw_template_fields_push` (fieldgroup edits + module-aware conflict classifier) (2026-05-01)
+
+Ships the deferred Session 3 feature that became Session 4: a tool that edits a template's fieldgroup — add, remove, reorder fields, and set per-fieldgroup context overrides — without touching field definitions. First user of the conflict-classification pattern that the later `pw_field_push` (v1.12+) and `pw_template_push` tools will build on.
+
+Scope is deliberately narrow: `pw_template_fields_push` manages the *wiring* of existing fields on a template, not the fields themselves. Fieldtype changes, inputfield class changes, parent pickers, selectable-pages selectors — anything that modifies a field *definition* — are explicitly rejected and pointed at `pw_field_push`. The split matters because fieldgroup edits are almost always safe, while field-definition edits cascade across every template the field is on.
+
+**New MCP tool `pw_template_fields_push { template, add, remove, reorder, site, dryRun, force }`.** Two input shapes for `add`:
+- Strings (bare field names) for "add this field with default per-template context"
+- `{ name, context }` objects for "add this field and set these per-fieldgroup overrides" — context accepts `label` override, `description`, `notes`, `required`, `columnWidth`, `showIf`, `requiredIf`, `collapsed`; plus FieldtypePage-only `template_id`, `parent_id`, `findPagesSelector`, `inputfield`
+
+Mixed (strings + objects) in the same `add` array is fine. `remove` and `reorder` are always string arrays. `site: 'both'` plans against local and remote independently and adds a cross-site drift merge (see below). Default `dryRun: true`.
+
+**Conflict classifier — every op flagged as `safe`, `warning`, or `danger`.** Dangers block writes unless `force: true`:
+
+- *Core-flag protection* — any attempt to remove a field with `flagSystem` (8) or `flagPermanent` (512) set is a danger (scope: `core-flag`), regardless of template. Catches PW core fields like `title`, `pass`, `email`, `roles`, `language` across any fieldgroup.
+- *Template-level module ownership* — if the target template matches a known module-owned pattern (`form-*`/`form_*` for FormBuilder, `repeater_*` for PW repeater storage, `admin`/`user`/`role`/`permission`/`language` for PW core, `mediahub_*` for MediaHub, `protable_*`/`profields_*` for ProFields), every write op fires a single template-ownership danger (scope: `module-ownership`). The operator's escape hatches are (a) change the module's settings instead of editing the fieldgroup directly, or (b) pass `force: true` after confirming the change is safe. Addresses the "silently breaking FormBuilder submissions by accidentally removing a form field" concern.
+- *Field-name prefix warning* — when a field's name matches a known module convention (`form_`, `formrpro_`, `seoneo_`, `mediahub_`/`media_hub_`, `padloper_`, `login_`, `register_`, `comment*`, `process_`) but the template itself is NOT module-owned, removals fire a warning (not a blocker). Legit operator workflows like "swap out SEOneo for a different SEO module" remain unblocked; the operator just gets told which module the field matches in case it's unintended.
+- *Required-field removal* — removing a field flagged required in the template's fieldgroup context is a danger. Context-aware detection (a field can be required on one template and optional on another) via `Fieldgroup::getFieldContextArray`.
+- *Fieldset pair integrity* — `FieldsetOpen` / `FieldsetTabOpen` / `FieldsetGroup` without its matching `{name}_END` close is a danger; same for the inverse (close without opener), or close before opener in a reorder. Keeps the admin UI from rendering in a half-closed state.
+- *Definition-level completeness warnings for added fields* — Page reference with all `template_id`/`parent_id`/`findPagesSelector` empty → "editors will see every page in the tree"; Page reference with no `inputfield` → "no picker type selected"; `FieldtypeTextarea` with no `inputfieldClass` → "plain textarea, not CKEditor/TinyMCE"; `FieldtypeImage`/`FieldtypeCroppableImage3`/`FieldtypeFile` with no `extensions` → "uploads may be rejected or accept anything"; `FieldtypeRepeater`/`FieldtypeRepeaterMatrix` with no `template_id`/`parent_id` → "field will be non-functional until configured". These are warnings, not blockers — the add can proceed; the operator just knows what editors will hit.
+- *Unknown context key* → warning; *FieldtypePage-only context key on a non-Page field* → danger.
+
+**Cross-site fieldtype drift detection (`site: 'both'`).** MCP-layer post-pass that compares the two plans' projected fieldgroups name-by-name; any field that exists on both sides with a different `FieldtypeX` class is surfaced as a `schema-drift` danger in a new top-level `crossSite` block alongside the per-side results. Covers the canonical `blog_post.images` case (local: `FieldtypeCroppableImage3` vs remote: `FieldtypeImage`) that's been open since Session 2. Graceful on asymmetric rollouts — when the remote runs an older PromptWire that doesn't know `template:fields-push`, the remote plan is simply absent and drift detection returns an empty list (no false positives, no crash).
+
+**Write path — in-place reordering for flagGlobal compatibility.** The naive "remove every field, re-add in desired order" approach fails as soon as the fieldgroup contains any field flagged `flagGlobal` (4) — PW refuses to detach global fields from any fieldgroup. `title` on most content templates is the trip-wire. The tool uses `WireArray::insertBefore` iterating the reorder list in reverse, positioning each entry to become the new first field in turn; after processing `reorder[N-1]...reorder[0]` the front of the list matches the caller's spec without any "remove" call ever touching a global field.
+
+**Audit trail on every write.** The response includes `{ removed, added, contextSet, reordered, saves }` even when a later step throws, so partial-applied writes are never invisible. Saves are batched per phase (remove+add → save; context → save; reorder → save) to minimise race-window between related mutations.
+
+**Response shape:**
+- Dry-run: `{ template, operations, currentFieldgroup, plannedFieldgroup, conflicts, conflictsSummary, dryRun: true, applied: false }`
+- Write: adds `beforeFieldgroup`, `afterFieldgroup` (re-snapshotted from the live fieldgroup after save), `audit`, `dryRun: false`, `applied: true`
+- `site: 'both'`: wrapped `{ local, remote, crossSite }`
+
+**New `template:fields-push` CLI command.** Accepts both flag form (`--template=X --add=a,b --remove=c --reorder=x,y --dry-run=0`) for quick CLI use and `--input=<JSON>` for the rich signature. `--input` wins when both are present (same precedence rule as `resolve`).
+
+**Migration impact: zero.** Strictly additive across CLI, MCP, and response shapes. No existing tool's signature or output changes. The new `templateFieldsPushInferTemplateModule` and `templateFieldsPushInferFieldModule` helpers are private to `CommandRouter`; their module-pattern lists are a starting set that can be extended in follow-ups without touching the classifier contract.
+
+**Not yet in v1.11.0 (deferred to follow-ups):**
+- *pw_modules_list cross-reference for field-prefix warnings* — the warnings fire on naming convention alone. Escalating warnings to dangers when the inferred owner module is confirmed installed on the target site is a natural follow-up (v1.11.1 or bundled into v1.12 `pw_field_push`).
+- *TS classifier migration* — the classification logic currently lives inline in the PHP handler, with the MCP layer only adding the cross-site drift post-pass. Migrating the full ruleset to a shared `mcp-server/src/conflicts/` module makes sense once there's a second consumer (v1.12 `pw_field_push`); doing it now would be speculative abstraction.
+
 ### v1.10.2 — `idDriftPages` visibility + generalised `push-module-to-remote.mjs` (2026-05-01)
 
 Two tooling-polish changes surfaced during the v1.10.x post-deploy audit:
