@@ -973,7 +973,7 @@ const tools = [
     },
   },
   // ========================================================================
-  // v1.11.0 (WIP) — FIELDGROUP EDITS
+  // v1.11.0 — FIELDGROUP EDITS
   // ========================================================================
   // Additive edits to a template's fieldgroup (add/remove/reorder existing
   // fields, plus per-fieldgroup context overrides). Explicitly NOT a
@@ -984,8 +984,6 @@ const tools = [
   // fields so AI callers get told about the classic "Page reference with
   // no parent picker" / "Textarea with no editor class" gotchas at plan
   // time rather than in the admin UI after the push.
-  //
-  // Phase 2b: dry-run only. Write path ships in Phase 3.
   {
     name: 'pw_template_fields_push',
     description:
@@ -1027,12 +1025,12 @@ const tools = [
           type: 'string',
           enum: ['local', 'remote', 'both'],
           description:
-            'Which site to plan against. Defaults to "local". Use "both" to see the plan from each side independently — useful when fieldgroups have drifted between environments. (Cross-site fieldtype-drift detection is a Phase 2c / v1.11 refinement.)',
+            'Which site to plan against. Defaults to "local". Use "both" to see the plan from each side independently — the response adds a top-level crossSite block that flags any field whose fieldtype differs across sides (the blog_post.images FieldtypeCroppableImage3-vs-FieldtypeImage case and friends).',
           default: 'local',
         },
         dryRun: {
           type: 'boolean',
-          description: 'If true (default), returns the plan without applying. Phase 2b: dryRun=false currently returns a "not yet implemented" error — write path ships in Phase 3.',
+          description: 'If true (default), returns the plan without applying. When false, applies the plan and returns before/after fieldgroup snapshots plus an audit trail of what landed. Danger-class conflicts block writes unless force=true.',
           default: true,
         },
         force: {
@@ -1145,7 +1143,7 @@ const tools = [
 const server = new Server(
   {
     name: 'promptwire',
-    version: '1.10.2',
+    version: '1.11.0',
   },
   {
     capabilities: {
@@ -1908,25 +1906,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return formatToolResponse(result);
     }
 
-    // v1.11.0 (WIP) — fieldgroup-only template edits.
+    // v1.11.0 — fieldgroup-only template edits.
     //
-    // The PHP handler already speaks the rich JSON input shape (template
-    // + add<string|{name,context}>[] + remove + reorder + dryRun + force),
-    // so MCP wiring is a shell-through: pack the args as --input JSON and
-    // let CommandRouter do the classification. Dry-run is the only path
-    // Phase 2b exercises; dryRun=false returns a structured "not yet
-    // implemented" error from PHP, which surfaces unchanged here.
+    // The PHP handler speaks the rich JSON input shape (template + add<
+    // string|{name,context}>[] + remove + reorder + dryRun + force), so
+    // MCP wiring is a shell-through: pack the args as --input JSON and
+    // let CommandRouter do the classification + (when dryRun=false) the
+    // actual fieldgroup mutation.
     //
     // site="both" returns `{ local, remote }` via runOnSite's built-in
     // parallel fan-out — each side plans against its own catalog and
-    // fieldgroup. On top of that, Phase 2c-2 adds a cross-site merge:
+    // fieldgroup. On top of that this handler adds a cross-site merge:
     // compare the two sides' `plannedFieldgroup` outputs and flag any
     // field that exists on both with a different fieldtype class as a
     // schema-drift danger. Covers the canonical blog_post.images case
-    // (local: FieldtypeCroppableImage3 vs remote: FieldtypeImage) that
-    // surfaced in Session 2 and is still open. The merge emits into a
-    // new top-level `crossSite` block so callers that already parse
-    // `data.local` / `data.remote` keep working unchanged.
+    // (local: FieldtypeCroppableImage3 vs remote: FieldtypeImage). The
+    // merge emits into a new top-level `crossSite` block so callers
+    // that already parse `data.local` / `data.remote` keep working
+    // unchanged.
     case 'pw_template_fields_push': {
       const {
         template,

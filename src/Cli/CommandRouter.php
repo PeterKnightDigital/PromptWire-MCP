@@ -444,10 +444,11 @@ class CommandRouter {
                 }
                 return $this->templateInspect($name);
 
-            // v1.11.0 (WIP) — fieldgroup-only template edits. Read/plan side
-            // only for now: computes the would-be operations, validates them
-            // against current template state, returns the projected post-push
-            // fieldgroup. Write path lands when conflict classification is in.
+            // v1.11.0 — fieldgroup-only template edits. Dry-run returns a
+            // classified plan (safe / warning / danger conflicts + the
+            // projected post-push fieldgroup); dryRun=false applies the
+            // plan via $fieldgroup->add/remove/setFieldContextArray +
+            // insertBefore for flagGlobal-safe reorder.
             //
             // Two input shapes supported:
             //   1. Flag form  (simple):
@@ -3478,7 +3479,7 @@ class CommandRouter {
     ];
 
     /**
-     * v1.11.0 (WIP) — fieldgroup-only template edits.
+     * v1.11.0 — fieldgroup-only template edits.
      *
      * Plan/read phase: validates the requested add/remove/reorder operations
      * against the live fieldgroup, computes the projected post-push fieldgroup,
@@ -4509,7 +4510,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.10.2',
+            'version' => '1.11.0',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
