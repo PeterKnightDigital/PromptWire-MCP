@@ -216,7 +216,16 @@ export async function syncSites(options: SiteSyncOptions): Promise<PwCommandResu
       diff.schema.templates.sourceOnly > 0;
 
     if (schemaHasWork) {
-      const schemaResult = await schemaPush(false);
+      // Route the schema push to the side we're syncing TO. Without this
+      // explicit target, schemaPush() falls back to its env-based routing
+      // (which always picks 'local' when PW_PATH is set) and the schema
+      // step silently no-ops against the source site instead of writing
+      // to the destination.
+      const schemaTarget = options.direction === 'local-to-remote'
+        ? 'remote' as const
+        : 'local'  as const;
+
+      const schemaResult = await schemaPush(false, schemaTarget);
 
       result.steps.push({
         step: 'schema',

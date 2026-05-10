@@ -559,7 +559,7 @@ const tools = [
   },
   {
     name: 'pw_schema_push',
-    description: 'Push local .pw-sync/schema/ files to a ProcessWire site — creating or updating fields and templates. Dry-run by default. Set dryRun=false to apply. Never deletes existing fields or templates.',
+    description: 'Push local .pw-sync/schema/ files to a ProcessWire site — creating or updating fields and templates. Dry-run by default. Set dryRun=false to apply. Never deletes existing fields or templates. Use targets to control where: "local" (PW_PATH), "remote" (PW_REMOTE_URL), or "both".',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -567,6 +567,11 @@ const tools = [
           type: 'boolean',
           description: 'If true (default), preview what would change without applying. Set to false to apply.',
           default: true,
+        },
+        targets: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site(s) to apply the schema to. Defaults to env-based routing: "local" if PW_PATH is set, "remote" if only PW_REMOTE_URL is set. Pass "remote" explicitly to push to production from a local-aware connection. Pass "both" to apply to local then remote and return per-target results.',
         },
       },
     },
@@ -1656,8 +1661,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case 'pw_schema_push': {
-      const { dryRun } = args as { dryRun?: boolean };
-      const result = await schemaPush(dryRun !== false);
+      const { dryRun, targets } = args as {
+        dryRun?:  boolean;
+        targets?: 'local' | 'remote' | 'both';
+      };
+      const result = await schemaPush(dryRun !== false, targets);
       return formatToolResponse(result);
     }
 
