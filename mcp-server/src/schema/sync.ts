@@ -150,13 +150,42 @@ export async function schemaPull(): Promise<PwCommandResult> {
 // SCHEMA PUSH — apply local files to a PW site
 // ============================================================================
 
+export type SchemaPushTarget = 'local' | 'remote' | 'both';
+
+export interface SchemaPushTargetResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+export interface SchemaPushResult {
+  success: boolean;
+  targets: SchemaPushTarget;
+  local?: SchemaPushTargetResult;
+  remote?: SchemaPushTargetResult;
+  data?: unknown;
+  error?: string;
+}
+
 /**
- * Push local schema files to a PW site (local or remote).
+ * Push local schema files to a PW site (local, remote, or both).
  *
  * Reads .pw-sync/schema/fields.json and templates.json, combines them,
- * writes to a temp file, and calls schema:apply on the target site.
+ * and calls schema:apply on each requested target.
+ *
+ * Routing:
+ *   - targets='local'  → runs against PW_PATH (the local site)
+ *   - targets='remote' → POSTs to PW_REMOTE_URL with the schema in the body
+ *   - targets='both'   → runs against local then remote, returning both results
+ *   - targets undefined → backwards-compatible behaviour (route by env vars)
+ *
+ * @param dryRun  If true, validate without applying.
+ * @param targets Where to apply. Defaults to env-based routing for back-compat.
  */
-export async function schemaPush(dryRun: boolean): Promise<PwCommandResult> {
+export async function schemaPush(
+  dryRun: boolean,
+  targets?: SchemaPushTarget,
+): Promise<PwCommandResult> {
   const syncDir = getSyncDir();
 
   const fieldsFile    = path.join(syncDir, 'fields.json');
@@ -188,15 +217,97 @@ export async function schemaPush(dryRun: boolean): Promise<PwCommandResult> {
     schema.templates = stripMeta(data);
   }
 
-  if (!process.env.PW_PATH && process.env.PW_REMOTE_URL) {
-    // Remote: pass schema inline in the HTTP body (no temp file needed)
-    const cmdArgs: string[] = [];
-    if (!dryRun) cmdArgs.push('--dry-run=0');
-    return runRemoteCommand('schema:apply', cmdArgs, schema as Record<string, unknown>);
+  // ── Resolve the effective target(s) ────────────────────────────────────
+  //
+  // When `targets` is provided, honour it explicitly. When omitted, fall
+  // back to the legacy env-based routing so existing callers continue to
+  // work unchanged.
+  const hasLocal  = !!process.env.PW_PATH;
+  const hasRemote = !!process.env.PW_REMOTE_URL;
+
+  let effective: SchemaPushTarget;
+  if (targets) {
+    effective = targets;
+  } else if (!hasLocal && hasRemote) {
+    effective = 'remote';
+  } else {
+    effective = 'local';
   }
 
-  // Local: write schema to a temp file so PHP can read it
-  // (avoids command-line length limits for large schemas)
+  // Validate that the requested target(s) actually have credentials
+  if ((effective === 'remote' || effective === 'both') && !hasRemote) {
+    return {
+      success: false,
+      error: 'Schema push to remote requested but PW_REMOTE_URL is not set in the environment',
+    };
+  }
+  if ((effective === 'local' || effective === 'both') && !hasLocal) {
+    return {
+      success: false,
+      error: 'Schema push to local requested but PW_PATH is not set in the environment',
+    };
+  }
+
+  // ── Apply to local ─────────────────────────────────────────────────────
+  let localResult: SchemaPushTargetResult | undefined;
+  if (effective === 'local' || effective === 'both') {
+    localResult = await applySchemaLocal(schema, dryRun);
+  }
+
+  // ── Apply to remote ────────────────────────────────────────────────────
+  let remoteResult: SchemaPushTargetResult | undefined;
+  if (effective === 'remote' || effective === 'both') {
+    remoteResult = await applySchemaRemote(schema, dryRun);
+  }
+
+  // Single-target callers expect the legacy "flat" PwCommandResult shape so
+  // we return that, with the new aggregate fields tucked inside data.
+  if (effective === 'local') {
+    return {
+      success: !!localResult?.success,
+      data: localResult?.data,
+      error: localResult?.error,
+    };
+  }
+  if (effective === 'remote') {
+    return {
+      success: !!remoteResult?.success,
+      data: remoteResult?.data,
+      error: remoteResult?.error,
+    };
+  }
+
+  // 'both' — succeed only if every requested target succeeded
+  const bothSuccess = !!localResult?.success && !!remoteResult?.success;
+  const aggregate: SchemaPushResult = {
+    success: bothSuccess,
+    targets: 'both',
+    local:   localResult,
+    remote:  remoteResult,
+  };
+  if (!bothSuccess) {
+    aggregate.error = [
+      localResult?.success  ? null : `local: ${localResult?.error  ?? 'failed'}`,
+      remoteResult?.success ? null : `remote: ${remoteResult?.error ?? 'failed'}`,
+    ].filter(Boolean).join('; ');
+  }
+  return {
+    success: bothSuccess,
+    data:    aggregate,
+    error:   aggregate.error,
+  };
+}
+
+/**
+ * Apply schema to the local site via the PHP CLI.
+ *
+ * Writes the schema to a temp file (the CLI takes a path so we don't run
+ * into command-line length limits for large schemas) and runs schema:apply.
+ */
+async function applySchemaLocal(
+  schema: Record<string, unknown>,
+  dryRun: boolean,
+): Promise<SchemaPushTargetResult> {
   const tmpFile = path.join(os.tmpdir(), `promptwire-schema-${Date.now()}.json`);
   await fs.writeFile(tmpFile, JSON.stringify(schema), 'utf8');
 
@@ -206,11 +317,26 @@ export async function schemaPush(dryRun: boolean): Promise<PwCommandResult> {
       cmdArgs.push('--dry-run=0');
     }
     const result = await runPwCommand('schema:apply', cmdArgs);
-    return result;
+    return { success: result.success, data: result.data, error: result.error };
   } finally {
-    // Always clean up the temp file
     await fs.unlink(tmpFile).catch(() => {});
   }
+}
+
+/**
+ * Apply schema to the remote site via the HTTP API.
+ *
+ * Posts the schema inline in the request body — no temp file needed because
+ * the remote endpoint reads schemaData from the JSON payload directly.
+ */
+async function applySchemaRemote(
+  schema: Record<string, unknown>,
+  dryRun: boolean,
+): Promise<SchemaPushTargetResult> {
+  const cmdArgs: string[] = [];
+  if (!dryRun) cmdArgs.push('--dry-run=0');
+  const result = await runRemoteCommand('schema:apply', cmdArgs, schema);
+  return { success: result.success, data: result.data, error: result.error };
 }
 
 // ============================================================================
