@@ -35,10 +35,31 @@ export interface SiteSyncOptions {
   excludeTemplates?:  string[];
   excludePages?:      string[];
   excludeFilePatterns?: string[];
+  /**
+   * Include `site/modules/**` in the file-sync step. Defaults to `false` —
+   * the modules tree is one of the easiest footguns in cross-environment
+   * deploys (push of a half-finished plugin update, accidental overwrite
+   * of a hotfix applied directly on prod, etc.) and very few sync runs
+   * actually want to ship plugins. Set `true` to opt in for the rare
+   * deploy that genuinely wants to push module code alongside templates
+   * and content.
+   *
+   * Implementation note: when `false`, `'site/modules/*'` is prepended to
+   * the effective `excludeFilePatterns`. The caller's own exclusions are
+   * preserved either way. The pattern uses a single `*` because PHP's
+   * `fnmatch()` (used in `CommandRouter::matchesExcludePatterns`) treats
+   * `*` as matching path separators by default, so `site/modules/*`
+   * matches every file under the modules tree recursively.
+   */
+  pushModules?:       boolean;
   backup:             boolean;
   maintenance:        boolean;
   dryRun:             boolean;
 }
+
+// Glob applied to the file inventory when `pushModules` is not enabled.
+// Single `*` is intentional — see the docstring on `pushModules` above.
+const MODULES_TREE_GLOB = 'site/modules/*';
 
 interface StepResult {
   step:    string;
@@ -81,11 +102,26 @@ export async function syncSites(options: SiteSyncOptions): Promise<PwCommandResu
     steps:     [],
   };
 
+  // Apply the v1.12.0 default: exclude `site/modules/*` from file sync
+  // unless the caller explicitly opts in with `pushModules: true`. The
+  // user's own `excludeFilePatterns` are preserved alongside the default;
+  // the modules glob is prepended only when missing so passing it
+  // manually doesn't produce a duplicate entry. Surfacing the auto-
+  // exclusion in the dry-run plan (further down) ensures the operator
+  // can see exactly why a module-only diff appeared empty.
+  const effectiveExcludeFilePatterns = (() => {
+    const userPatterns = options.excludeFilePatterns ?? [];
+    if (options.pushModules === true) return userPatterns;
+    if (userPatterns.includes(MODULES_TREE_GLOB)) return userPatterns;
+    return [MODULES_TREE_GLOB, ...userPatterns];
+  })();
+  const modulesAutoExcluded = options.pushModules !== true;
+
   // ── Step 1: Compare ─────────────────────────────────────────────────────
   const compareResult = await compareSites({
     excludeTemplates:    options.excludeTemplates,
     excludePages:        options.excludePages,
-    excludeFilePatterns: options.excludeFilePatterns,
+    excludeFilePatterns: effectiveExcludeFilePatterns,
   });
 
   if (!compareResult.success || !compareResult.data) {
@@ -159,6 +195,14 @@ export async function syncSites(options: SiteSyncOptions): Promise<PwCommandResu
         toUpdate:  diff.files.modified.map(f => f.relativePath),
         toCreate:  diff.files.localOnly.map(f => f.relativePath),
       };
+      if (modulesAutoExcluded) {
+        (plan.files as Record<string, unknown>).modulesExcluded = {
+          pattern: MODULES_TREE_GLOB,
+          note:
+            'site/modules/* is excluded by default in v1.12.0+. Pass ' +
+            'pushModules:true to include the modules tree in this sync.',
+        };
+      }
     }
 
     if (options.backup)      plan.wouldBackup = true;
