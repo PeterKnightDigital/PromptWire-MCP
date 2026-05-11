@@ -1083,7 +1083,7 @@ const tools = [
   },
   {
     name: 'pw_site_sync',
-    description: 'Synchronise local and remote ProcessWire sites. Runs a comparison first, then selectively pushes schema, pages, page assets (site/assets/files/{pageId}/), and/or template/module files. Page assets cover both standard file/image field uploads and module-managed files (e.g. MediaHub) keyed by page id. Supports optional backup and maintenance mode. Dry-run by default — set dryRun=false to apply. If a step fails, maintenance mode stays ON and the backup ID is reported for rollback.',
+    description: 'Synchronise local and remote ProcessWire sites. Runs a comparison first, then selectively pushes schema, pages, page assets (site/assets/files/{pageId}/), and/or template/module files. Page assets cover both standard file/image field uploads and module-managed files (e.g. MediaHub) keyed by page id. site/modules/* is EXCLUDED from the file step by default — most deploys are templates + content, and accidentally pushing the modules tree is one of the easiest footguns. Pass pushModules:true to include it. Supports optional backup and maintenance mode. Dry-run by default — set dryRun=false to apply. If a step fails, maintenance mode stays ON and the backup ID is reported for rollback.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1112,7 +1112,12 @@ const tools = [
         excludeFilePatterns: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Glob patterns to skip in file sync.',
+          description: 'Additional glob patterns to skip in file sync. site/modules/* is always excluded unless pushModules:true.',
+        },
+        pushModules: {
+          type: 'boolean',
+          description: 'Include site/modules/* in the file sync step. Defaults to false (module code is not pushed). Set true to ship a plugin update alongside templates/content.',
+          default: false,
         },
         backup: {
           type: 'boolean',
@@ -1148,7 +1153,7 @@ const tools = [
 const server = new Server(
   {
     name: 'promptwire',
-    version: '1.11.1',
+    version: '1.12.0',
   },
   {
     capabilities: {
@@ -2059,6 +2064,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         excludeTemplates,
         excludePages,
         excludeFilePatterns,
+        pushModules,
         backup,
         maintenance,
         dryRun,
@@ -2068,6 +2074,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         excludeTemplates?: string[];
         excludePages?: string[];
         excludeFilePatterns?: string[];
+        pushModules?: boolean;
         backup?: boolean;
         maintenance?: boolean;
         dryRun?: boolean;
@@ -2078,6 +2085,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         excludeTemplates,
         excludePages,
         excludeFilePatterns,
+        pushModules:        pushModules === true,
         backup:             backup !== false,
         maintenance:        maintenance ?? false,
         dryRun:             dryRun !== false,

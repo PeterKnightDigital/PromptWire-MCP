@@ -562,7 +562,9 @@ class CommandRouter {
         
         // Check if the PromptWire module is installed in ProcessWire
         $moduleLoaded = $modules->isInstalled('PromptWire');
-        
+
+        $writes = $this->computeWritesContext();
+
         return [
             'status' => 'ok',
             'pwVersion' => $config->version,
@@ -573,8 +575,56 @@ class CommandRouter {
                 'fields' => $this->wire->fields->getAll()->count(),
                 'pages' => $this->wire->pages->count('include=all'),
             ],
-            'writesEnabled' => false,  // Phase 1 is read-only
+            'writesEnabled'       => $writes['enabled'],
+            'writesEnabledReason' => $writes['reason'],
         ];
+    }
+
+    /**
+     * Compute whether writes can succeed against this server, and why.
+     *
+     * Replaces the old hardcoded `writesEnabled: false`. The flag is now a
+     * real signal derived from the gate that this caller had to pass to
+     * reach `health()`:
+     *
+     *  - CLI invocations always succeed (no auth gate; the PHP process
+     *    runs with whatever permissions the OS grants), so writes are
+     *    enabled with reason `cli`.
+     *  - Web invocations reach this code only if `promptwire-api.php` (or
+     *    an equivalent entrypoint) has already validated the API key.
+     *    `PROMPTWIRE_API_KEY` is therefore expected to be defined; the
+     *    reason is `api-key` plus `+ip-allowlist` when the optional
+     *    allowlist is set, plus `+http` when HTTPS enforcement was
+     *    explicitly bypassed via `PROMPTWIRE_ALLOW_HTTP`.
+     *  - Anything else (a misconfigured deploy that loads CommandRouter
+     *    via the web without the API key configured) reports
+     *    `writesEnabled: false` with reason `no-api-key` so the operator
+     *    sees a real diagnostic, not a stale literal.
+     *
+     * @return array{enabled: bool, reason: string}
+     */
+    private function computeWritesContext(): array {
+        if (php_sapi_name() === 'cli') {
+            return ['enabled' => true, 'reason' => 'cli'];
+        }
+
+        // `constant()` here (rather than the bare constant name) keeps
+        // intelephense happy — these are user-supplied config flags
+        // defined in `site/config-promptwire.php`, which lives outside
+        // the indexed module source, so a static reference would
+        // generate an "Undefined constant" warning on every read.
+        if (defined('PROMPTWIRE_API_KEY') && constant('PROMPTWIRE_API_KEY')) {
+            $reasons = ['api-key'];
+            if (defined('PROMPTWIRE_ALLOWED_IPS') && constant('PROMPTWIRE_ALLOWED_IPS')) {
+                $reasons[] = 'ip-allowlist';
+            }
+            if (defined('PROMPTWIRE_ALLOW_HTTP') && constant('PROMPTWIRE_ALLOW_HTTP')) {
+                $reasons[] = 'http';
+            }
+            return ['enabled' => true, 'reason' => implode('+', $reasons)];
+        }
+
+        return ['enabled' => false, 'reason' => 'no-api-key'];
     }
     
     /**
@@ -4628,7 +4678,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.11.1',
+            'version' => '1.12.0',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
