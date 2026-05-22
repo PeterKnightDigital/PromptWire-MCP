@@ -91,6 +91,35 @@ To push content to a production site, deploy the API endpoint file (`api/promptw
 
 See the [Remote setup guide](https://www.peterknight.digital/docs/promptwire/v1/remote-setup/) for full instructions.
 
+**Keep the remote API in sync.** The HTTP endpoint (`api/promptwire-api.php`) must match your installed module version. After upgrading PromptWire, redeploy the API file to your remote site root (rename it for security, then set `PW_REMOTE_URL`):
+
+```bash
+# From the PromptWire repo — pushes promptwire-api.php to production
+PW_REMOTE_URL=https://www.example.com/your-endpoint.php \
+PW_REMOTE_KEY=your-key \
+node scripts/push-api-to-remote.mjs
+```
+
+Also push module PHP changes when upgrading:
+
+```bash
+PW_REMOTE_URL=... PW_REMOTE_KEY=... node scripts/push-self-to-remote.mjs
+```
+
+The MCP server (`mcp-server/`) runs locally only and does not need to be deployed to production.
+
+### Product release pages (ZIP downloads)
+
+For pages with a `release_file` field (e.g. `/downloads/mediahub/v1-17-0/`):
+
+1. Place the ZIP in the local page files directory (`site/assets/files/{localPageId}/`)
+2. Set `release_file` in `page.yaml` with `filename` and `description` (e.g. `MediaHub 1.17.0`)
+3. `pw_page_push` — page content and file descriptions (local and/or remote)
+4. `pw_file_sync` — upload the ZIP binary to remote (`deleteRemoteOrphans: true` when replacing)
+5. Republish if needed (`publish: true` on push)
+
+`pw_page_push` does not replace binaries. Use `pw_file_sync` for the ZIP itself.
+
 ## Available tools
 
 ### Site inspection
@@ -151,7 +180,7 @@ Content is synced to `site/assets/pw-mcp/` — editable YAML files that you can 
 | Tool             | Description                                                                                                                                                                                                                                                                              |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pw_page_assets` | Preferred path. Syncs the on-disk asset directory for a page (`site/assets/files/{pageId}/`) by walking the directory directly, so module-managed files (notably MediaHub) are picked up alongside standard file/image field uploads. Supports both directions, dry-run by default. |
-| `pw_file_sync`   | Legacy field-aware sync. Iterates the page's fieldgroup, so it sees standard file/image field uploads only. Kept for simpler cases; use `pw_page_assets` when modules outside the standard field flow are involved.                                                                  |
+| `pw_file_sync`   | Field-aware file sync for standard file/image fields. Uploads changed binaries, syncs `description` from `page.yaml`, resolves the correct **local** page id after remote pulls (`ids.local.id`), and supports `deleteRemoteOrphans` when replacing release ZIPs. Use `pw_page_assets` when modules store files outside the normal field flow. |
 
 ### Repeater Matrix
 

@@ -60,6 +60,15 @@ interface PageMeta {
   canonicalPath: string;
   path?: string;
   template: string;
+  ids?: {
+    local?: { id?: number };
+    remote?: { id?: number };
+  };
+}
+
+interface FieldFileDetail {
+  fieldName: string;
+  description?: string | null;
 }
 
 // PW image variation pattern: name.WIDTHxHEIGHT[-suffix].ext
@@ -116,7 +125,8 @@ export async function syncFiles(opts: FileSyncOptions): Promise<PwCommandResult>
     return { success: false, error: 'PW_PATH not set — cannot locate local files' };
   }
 
-  const localFileDir = path.join(pwPath, 'site', 'assets', 'files', String(meta.pageId));
+  const localPageId = await resolveLocalPageId(meta, pwPath, pagePath);
+  const localFileDir = path.join(pwPath, 'site', 'assets', 'files', String(localPageId));
   if (!existsSync(localFileDir)) {
     return {
       success: true,
@@ -128,16 +138,25 @@ export async function syncFiles(opts: FileSyncOptions): Promise<PwCommandResult>
     };
   }
 
-  // Get the field mapping from the YAML to know which files belong to which fields
-  const fieldFileMap = await getFieldFileMap(yamlPath);
+  // Field/file mapping from YAML (field name, filename, optional description)
+  const fieldFileDetails = await getFieldFileDetails(yamlPath);
+  const fieldFileMap = Object.fromEntries(
+    Object.entries(fieldFileDetails).map(([filename, detail]) => [filename, [detail.fieldName]]),
+  ) as Record<string, string[]>;
 
   // Build local inventory
-  const localInventory = await buildLocalInventory(localFileDir, fieldFileMap);
+  const localInventory = await buildLocalInventory(localFileDir, fieldFileMap, fieldFileDetails);
 
   const results: Record<string, unknown> = {};
 
   if (shouldSyncRemote) {
-    const remoteResult = await syncToRemote(pagePath, localInventory, dryRun, deleteRemoteOrphans);
+    const remoteResult = await syncToRemote(
+      pagePath,
+      localInventory,
+      fieldFileDetails,
+      dryRun,
+      deleteRemoteOrphans,
+    );
     results['remote'] = remoteResult;
   }
 
@@ -159,29 +178,54 @@ export async function syncFiles(opts: FileSyncOptions): Promise<PwCommandResult>
 // ============================================================================
 
 /**
- * Read page.yaml to build a mapping of field name → filenames.
- * This tells us which field each file belongs to.
+ * Resolve the local page ID for reading site/assets/files/{pageId}/.
+ * After a remote pull, meta.pageId may be the remote id — prefer ids.local.id,
+ * then path lookup via get-page on the local site.
  */
-async function getFieldFileMap(yamlPath: string): Promise<Record<string, string[]>> {
+async function resolveLocalPageId(
+  meta: PageMeta,
+  pwPath: string,
+  pagePath: string,
+): Promise<number> {
+  const localId = meta.ids?.local?.id;
+  if (localId) return localId;
+
+  const fromPath = await findLocalPageId(pwPath, pagePath);
+  if (fromPath) return fromPath;
+
+  return meta.pageId;
+}
+
+async function findLocalPageId(pwPath: string, pagePath: string): Promise<number | null> {
+  const result = await runPwCommand('get-page', [pagePath, '--summary']);
+  if (!result.success || !result.data) return null;
+  const pageId = (result.data as { id?: number })?.id;
+  return pageId ?? null;
+}
+
+/**
+ * Read page.yaml to build filename → { fieldName, description }.
+ */
+async function getFieldFileDetails(yamlPath: string): Promise<Record<string, FieldFileDetail>> {
   try {
     const raw = await readFile(yamlPath, 'utf-8');
     const parsed = yamlLoad(raw) as { fields?: Record<string, unknown> };
     if (!parsed?.fields) return {};
 
-    const map: Record<string, string[]> = {};
-    for (const [key, value] of Object.entries(parsed.fields)) {
+    const details: Record<string, FieldFileDetail> = {};
+    for (const [fieldName, value] of Object.entries(parsed.fields)) {
       if (!Array.isArray(value)) continue;
-      const filenames: string[] = [];
       for (const item of value) {
         if (typeof item === 'object' && item !== null && 'filename' in item) {
-          filenames.push((item as { filename: string }).filename);
+          const filename = (item as { filename: string }).filename;
+          details[filename] = {
+            fieldName,
+            description: (item as { description?: string | null }).description ?? null,
+          };
         }
       }
-      if (filenames.length > 0) {
-        map[key] = filenames;
-      }
     }
-    return map;
+    return details;
   } catch {
     return {};
   }
@@ -194,6 +238,7 @@ async function getFieldFileMap(yamlPath: string): Promise<Record<string, string[
 async function buildLocalInventory(
   dirPath: string,
   fieldFileMap: Record<string, string[]>,
+  fieldFileDetails: Record<string, FieldFileDetail>,
 ): Promise<Record<string, FieldInventory>> {
   const allFiles = await readdir(dirPath);
 
@@ -213,7 +258,12 @@ async function buildLocalInventory(
 
     const content = await readFile(filePath);
     const md5 = createHash('md5').update(content).digest('hex');
-    entries.push({ filename, size: fileStat.size, md5 });
+    entries.push({
+      filename,
+      size: fileStat.size,
+      md5,
+      description: fieldFileDetails[filename]?.description ?? null,
+    });
   }
 
   // Group by field using the YAML mapping
@@ -246,6 +296,7 @@ async function buildLocalInventory(
 async function syncToRemote(
   pagePath: string,
   localInventory: Record<string, FieldInventory>,
+  fieldFileDetails: Record<string, FieldFileDetail>,
   dryRun: boolean,
   deleteOrphans: boolean,
 ): Promise<Record<string, unknown>> {
@@ -258,9 +309,14 @@ async function syncToRemote(
   const remoteFields = (inventoryResult.data as { fields?: Record<string, FieldInventory> })?.fields ?? {};
 
   // 2. Diff each field
-  const toUpload: Array<{ fieldName: string; filename: string; reason: string }> = [];
+  const toUpload: Array<{ fieldName: string; filename: string; reason: string; metadataOnly?: boolean }> = [];
   const toDelete: Array<{ fieldName: string; filename: string }> = [];
   const unchanged: string[] = [];
+
+  const descriptionsMatch = (
+    localDesc: string | null | undefined,
+    remoteDesc: string | null | undefined,
+  ): boolean => (localDesc ?? '') === (remoteDesc ?? '');
 
   for (const [fieldName, localField] of Object.entries(localInventory)) {
     if (fieldName === '_unmatched') continue;
@@ -274,10 +330,18 @@ async function syncToRemote(
 
     for (const localFile of localField.files) {
       const remoteFile = remoteFileMap.get(localFile.filename);
+      const yamlDesc = fieldFileDetails[localFile.filename]?.description ?? localFile.description ?? null;
       if (!remoteFile) {
         toUpload.push({ fieldName, filename: localFile.filename, reason: 'new' });
       } else if (remoteFile.md5 !== localFile.md5) {
         toUpload.push({ fieldName, filename: localFile.filename, reason: 'changed' });
+      } else if (!descriptionsMatch(yamlDesc, remoteFile.description)) {
+        toUpload.push({
+          fieldName,
+          filename: localFile.filename,
+          reason: 'description',
+          metadataOnly: true,
+        });
       } else {
         unchanged.push(localFile.filename);
       }
@@ -343,8 +407,12 @@ async function syncToRemote(
       continue;
     }
 
-    const fileContent = await readFile(filePath);
-    const base64 = fileContent.toString('base64');
+    const fileContent = item.metadataOnly ? null : await readFile(filePath);
+    const base64 = fileContent ? fileContent.toString('base64') : '';
+    const description =
+      fieldFileDetails[item.filename]?.description ??
+      localInventory[item.fieldName]?.files.find(f => f.filename === item.filename)?.description ??
+      null;
 
     const result = await runRemoteCommand(
       'file:upload',
@@ -357,6 +425,8 @@ async function syncToRemote(
         fieldName: item.fieldName,
         filename: item.filename,
         data: base64,
+        description,
+        metadataOnly: item.metadataOnly ?? false,
       },
     );
 
@@ -407,14 +477,9 @@ async function syncToRemote(
 
 /**
  * Find the local site/assets/files/{pageId}/ directory for a page path.
- * Uses the local PW CLI to resolve the path to a page ID.
  */
 async function findLocalPageDir(pwPath: string, pagePath: string): Promise<string | null> {
-  // Try to get page ID from local PW
-  const result = await runPwCommand('get-page', [pagePath, '--summary']);
-  if (!result.success || !result.data) return null;
-
-  const pageId = (result.data as { id?: number })?.id;
+  const pageId = await findLocalPageId(pwPath, pagePath);
   if (!pageId) return null;
 
   const dir = path.join(pwPath, 'site', 'assets', 'files', String(pageId));

@@ -2841,7 +2841,14 @@ class CommandRouter {
         }
 
         $pwRoot = rtrim($this->wire->config->paths->root, '/') . '/';
-        $allowedPrefixes = ['site/templates/', 'site/modules/', 'site/init.php', 'site/ready.php', 'site/finished.php'];
+        $allowedPrefixes = [
+            'site/templates/',
+            'site/modules/',
+            'site/init.php',
+            'site/ready.php',
+            'site/finished.php',
+            'promptwire-api.php',
+        ];
 
         $results   = [];
         $written   = 0;
@@ -4678,7 +4685,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.12.0',
+            'version' => '1.12.1',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',

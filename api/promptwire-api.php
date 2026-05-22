@@ -309,6 +309,68 @@ function pwMcpResolveFieldValue(\ProcessWire\Wire $wire, $value) {
     return $value;
 }
 
+/**
+ * Delete a file from site/assets/files/{pageId}/ if it exists.
+ * Used before file:upload replacements to prevent PW suffixing (-1, -2).
+ */
+function pwMcpDeletePageAssetFile(\ProcessWire\Wire $wire, int $pageId, string $filename): bool {
+    $pageDir = realpath($wire->config->paths->root . 'site/assets/files/' . $pageId);
+    if ($pageDir === false) return false;
+
+    $relPath = ltrim($filename, '/');
+    $target  = $pageDir . DIRECTORY_SEPARATOR . $relPath;
+    $real    = realpath($target);
+    if ($real === false || strpos($real, $pageDir . DIRECTORY_SEPARATOR) !== 0) {
+        return false;
+    }
+    if (!is_file($real)) return false;
+    return @unlink($real);
+}
+
+/**
+ * Update file/image field descriptions from YAML without touching binaries.
+ */
+function pwMcpApplyFileFieldMetadata(\ProcessWire\Page $page, string $fieldName, array $items): bool {
+    $fieldValue = $page->get($fieldName);
+    if (!($fieldValue instanceof \ProcessWire\Pagefiles)) {
+        return false;
+    }
+
+    $page->of(false);
+    $changed = false;
+
+    foreach ($items as $item) {
+        if (!is_array($item) || empty($item['filename'])) continue;
+        $filename = (string) $item['filename'];
+        $desc     = array_key_exists('description', $item) ? ($item['description'] ?? '') : null;
+        if ($desc === null) continue;
+
+        $file = $fieldValue->get("name=$filename");
+        if (!$file) continue;
+
+        if ((string) $file->description !== (string) $desc) {
+            $file->description = $desc;
+            $file->save();
+            $changed = true;
+        }
+    }
+
+    if ($changed) {
+        $page->save($fieldName);
+    }
+
+    return $changed;
+}
+
+/**
+ * True when a YAML field value looks like a file/image inventory entry list.
+ */
+function pwMcpIsFileFieldValueArray($value): bool {
+    if (!is_array($value) || empty($value)) return false;
+    $first = reset($value);
+    return is_array($first) && isset($first['filename']);
+}
+
 // ============================================================================
 // SPECIAL CASE: page:create — create a new page on a remote site
 // Accepts { command, args: [template, parentPath, pageName], pageData: { fields, published } }
@@ -486,9 +548,37 @@ if ($command === 'page:update') {
     // _pageRef values are resolved to remote IDs via path-first lookup so
     // cross-environment pushes don't write the wrong page ID.
     $fieldValues = []; // resolved values keyed by field name
+    $fileMetadata  = []; // field name => file entry arrays (description-only)
     foreach ($fields as $fieldName => $newValue) {
         if (strpos($fieldName, '_') === 0) continue;
-        if (!$wire->fields->get($fieldName)) continue;
+        $field = $wire->fields->get($fieldName);
+        if (!$field) continue;
+
+        if (pwMcpIsFileFieldValueArray($newValue)) {
+            $fieldValue = $page->get($fieldName);
+            if ($fieldValue instanceof \ProcessWire\Pagefiles) {
+                $pendingMeta = [];
+                foreach ($newValue as $item) {
+                    if (!is_array($item) || empty($item['filename'])) continue;
+                    if (!array_key_exists('description', $item)) continue;
+                    $filename = (string) $item['filename'];
+                    $desc     = (string) ($item['description'] ?? '');
+                    $file     = $fieldValue->get("name=$filename");
+                    if (!$file) continue;
+                    if ((string) $file->description !== $desc) {
+                        $pendingMeta[] = $item;
+                    }
+                }
+                if (!empty($pendingMeta)) {
+                    $fileMetadata[$fieldName] = $pendingMeta;
+                    $changes[$fieldName] = [
+                        'from' => '(file descriptions)',
+                        'to'   => '(update descriptions)',
+                    ];
+                }
+            }
+            continue;
+        }
 
         $resolved = pwMcpResolveFieldValue($wire, $newValue);
 
@@ -521,11 +611,15 @@ if ($command === 'page:update') {
         foreach ($fieldValues as $fieldName => $resolvedValue) {
             $page->set($fieldName, $resolvedValue);
         }
+        // Apply file field descriptions (metadata only — binaries via file:upload)
+        foreach ($fileMetadata as $fieldName => $items) {
+            pwMcpApplyFileFieldMetadata($page, $fieldName, $items);
+        }
         // Publish if requested
         if ($publish && $page->isUnpublished()) {
             $page->removeStatus(\ProcessWire\Page::statusUnpublished);
         }
-        if (!empty($fieldValues) || $publish) {
+        if (!empty($fieldValues) || !empty($fileMetadata) || $publish) {
             $wire->pages->save($page);
         }
     }
@@ -638,11 +732,18 @@ if ($command === 'file:upload') {
     $filename  = $fileData['filename']  ?? null;
     $base64    = $fileData['data']       ?? null;
     $desc      = $fileData['description'] ?? null;
+    $metadataOnly = !empty($fileData['metadataOnly']);
     $dryRun    = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
 
-    if (!$fieldName || !$filename || !$base64) {
+    if (!$fieldName || !$filename) {
         http_response_code(400);
-        echo json_encode(['error' => 'fileData requires fieldName, filename, and data (base64)']);
+        echo json_encode(['error' => 'fileData requires fieldName and filename']);
+        exit;
+    }
+
+    if (!$metadataOnly && !$base64) {
+        http_response_code(400);
+        echo json_encode(['error' => 'fileData requires data (base64) unless metadataOnly is true']);
         exit;
     }
 
@@ -661,34 +762,23 @@ if ($command === 'file:upload') {
     }
 
     if ($dryRun) {
-        $decoded = base64_decode($base64, true);
+        $size = 0;
+        if (!$metadataOnly && $base64) {
+            $decoded = base64_decode($base64, true);
+            $size = $decoded !== false ? strlen($decoded) : 0;
+        }
         echo json_encode([
             'success'   => true,
             'dryRun'    => true,
             'pagePath'  => $page->path,
             'fieldName' => $fieldName,
             'filename'  => $filename,
-            'size'      => $decoded !== false ? strlen($decoded) : 0,
-            'action'    => 'would_upload',
+            'size'      => $size,
+            'metadataOnly' => $metadataOnly,
+            'action'    => $metadataOnly ? 'would_update_metadata' : 'would_upload',
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         exit;
     }
-
-    $decoded = base64_decode($base64, true);
-    if ($decoded === false) {
-        http_response_code(400);
-        echo json_encode(['error' => 'Invalid base64 data']);
-        exit;
-    }
-
-    $tmpDir  = sys_get_temp_dir() . '/promptwire-uploads';
-    if (!is_dir($tmpDir)) mkdir($tmpDir, 0755, true);
-    $tmpFile = $tmpDir . '/' . $filename;
-    file_put_contents($tmpFile, $decoded);
-
-    register_shutdown_function(function() use ($tmpFile) {
-        if (file_exists($tmpFile)) @unlink($tmpFile);
-    });
 
     try {
         $page->of(false);
@@ -700,9 +790,52 @@ if ($command === 'file:upload') {
             exit;
         }
 
-        // Remove existing file with same name to allow replacement
+        if ($metadataOnly) {
+            $existing = $fieldValue->get("name=$filename");
+            if (!$existing) {
+                http_response_code(404);
+                echo json_encode(['error' => "File $filename not found in field $fieldName"]);
+                exit;
+            }
+            if ($desc !== null) {
+                $existing->description = $desc;
+                $existing->save();
+            }
+            $page->save($fieldName);
+
+            echo json_encode([
+                'success'      => true,
+                'dryRun'       => false,
+                'pagePath'     => $page->path,
+                'fieldName'    => $fieldName,
+                'filename'     => $filename,
+                'metadataOnly' => true,
+                'action'       => 'metadata_updated',
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        $decoded = base64_decode($base64, true);
+        if ($decoded === false) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Invalid base64 data']);
+            exit;
+        }
+
+        $tmpDir  = sys_get_temp_dir() . '/promptwire-uploads';
+        if (!is_dir($tmpDir)) mkdir($tmpDir, 0755, true);
+        $tmpFile = $tmpDir . '/' . $filename;
+        file_put_contents($tmpFile, $decoded);
+
+        register_shutdown_function(function() use ($tmpFile) {
+            if (file_exists($tmpFile)) @unlink($tmpFile);
+        });
+
+        // Remove existing field entry and any on-disk orphan with the same
+        // basename so ProcessWire does not suffix the replacement (-1, -2).
         $existing = $fieldValue->get("name=$filename");
         if ($existing) $fieldValue->delete($existing);
+        pwMcpDeletePageAssetFile($wire, $page->id, $filename);
 
         $fieldValue->add($tmpFile);
         if ($desc !== null) {

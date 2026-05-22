@@ -1,0 +1,12 @@
+# Exclude internal-only files from distribution archives.
+#
+# `git archive` (used by GitHub for source-zip downloads, and by most
+# ProcessWire module install paths under the hood) honours these
+# `export-ignore` directives. The files stay in the repo for development
+# but are stripped from any generated archive.
+#
+# Convention: anything prefixed with `_` is internal-only and not
+# intended for end users of the distributed module.
+
+_docs/                  export-ignore
+.gitattributes          export-ignore
