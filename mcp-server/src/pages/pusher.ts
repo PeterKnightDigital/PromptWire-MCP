@@ -266,9 +266,20 @@ async function parsePageYaml(yamlPath: string): Promise<FieldValue> {
 
     if (Array.isArray(value) && typeof value[0] === 'object') {
       // Pass _pageRef arrays through — the remote API resolves IDs by path.
-      // Skip everything else (image/file arrays) to avoid clobbering media.
-      const isPageRefArray = (value[0] as Record<string, unknown>)?._pageRef === true;
-      if (!isPageRefArray) continue;
+      const first = value[0] as Record<string, unknown>;
+      const isPageRefArray = first?._pageRef === true;
+      if (isPageRefArray) {
+        resolved[key] = value;
+        continue;
+      }
+      // Pass file/image inventory arrays through for description-only metadata
+      // sync on the remote side (binaries still go via pw_file_sync).
+      if ('filename' in first) {
+        resolved[key] = value;
+        continue;
+      }
+      // Skip other object arrays to avoid clobbering media.
+      continue;
     }
 
     // Single _pageRef objects are passed through as-is; path-first resolution

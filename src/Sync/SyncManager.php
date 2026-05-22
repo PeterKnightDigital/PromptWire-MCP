@@ -1819,20 +1819,23 @@ class SyncManager {
             return;
         }
         
-        // Handle files/images - skip for now (Phase 2+)
-        // Check if it's any file/image type (including namespaced class names and variants)
+        // Handle files/images — metadata only (descriptions). Binaries sync via pw_file_sync.
         if (strpos($typeName, 'FieldtypeFile') !== false || 
             strpos($typeName, 'FieldtypeImage') !== false ||
             strpos($typeName, 'FieldtypeCroppable') !== false) {
-            // Don't modify file fields in this phase
+            if (is_array($value)) {
+                $this->applyFileFieldMetadata($page, $fieldName, $value);
+            }
             return;
         }
         
-        // Also check the current page value - if it's a Pagefiles/Pageimages, skip
+        // Also check the current page value - if it's a Pagefiles/Pageimages, skip scalar writes
         $currentValue = $page->get($fieldName);
         if ($currentValue instanceof \ProcessWire\Pagefiles || 
             $currentValue instanceof \ProcessWire\Pageimages) {
-            // Don't modify file fields in this phase
+            if (is_array($value)) {
+                $this->applyFileFieldMetadata($page, $fieldName, $value);
+            }
             return;
         }
         
@@ -1844,6 +1847,48 @@ class SyncManager {
         
         // Simple scalar values
         $page->set($fieldName, $value);
+    }
+    
+    /**
+     * Update file/image field descriptions from YAML without replacing binaries.
+     *
+     * @param Page $page
+     * @param string $fieldName
+     * @param array $items Array of { filename, description? } from page.yaml
+     */
+    private function applyFileFieldMetadata(Page $page, string $fieldName, array $items): void {
+        $fieldValue = $page->get($fieldName);
+        if (!($fieldValue instanceof \ProcessWire\Pagefiles)) {
+            return;
+        }
+
+        $changed = false;
+
+        foreach ($items as $item) {
+            if (!is_array($item) || empty($item['filename'])) {
+                continue;
+            }
+            if (!array_key_exists('description', $item)) {
+                continue;
+            }
+
+            $filename = (string) $item['filename'];
+            $desc     = (string) ($item['description'] ?? '');
+            $file     = $fieldValue->get("name=$filename");
+            if (!$file) {
+                continue;
+            }
+
+            if ((string) $file->description !== $desc) {
+                $file->description = $desc;
+                $file->save();
+                $changed = true;
+            }
+        }
+
+        if ($changed) {
+            $page->save($fieldName);
+        }
     }
     
     /**

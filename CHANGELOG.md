@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.12.1 (22 May 2026)
+
+Fixes discovered during a product release ZIP sync on peterknight.digital (MediaHub 1.17.0 download page).
+
+- **Fixed: `pw_file_sync` now reads local files from `ids.local.id`**, not `meta.pageId`. After a remote pull, `pageId` in meta reflects the remote environment — local binaries live under a different id. The sync no longer silently reports zero local files when id drift is present.
+- **Fixed: `pw_file_sync` passes file `description` from `page.yaml` to `file:upload`**, and re-syncs when the binary is unchanged but the description differs (`metadataOnly` upload).
+- **Fixed: `file:upload` removes on-disk orphans before replacing a file**, preventing ProcessWire from suffixing replacements (`mediahub-1_17_0-1.zip`).
+- **Added: `file:upload` supports `metadataOnly: true`** to update a file description without re-uploading the binary.
+- **Fixed: `page:push` / `page:update` apply file field descriptions** from YAML (metadata only — binaries still sync via `pw_file_sync`). Previously dry-run reported description changes that were never applied.
+- **Fixed: remote `page:update` applies file description arrays** when pushed from the MCP server.
+- **Changed: `files:push` allows `promptwire-api.php` at the site root** so the remote API endpoint can be deployed via the existing push tooling.
+- **Migration impact: zero** for callers. Existing workflows gain correct behaviour; no signature changes.
+
 ## 1.12.0 (11 May 2026)
 
 Two narrowly-scoped fixes for friction observed during the May 2026 peterknight.digital deploy. Tracking RFC-001 (`_docs/rfcs/RFC-001-write-and-module-tools.md`); the broader write-tooling proposals from that RFC are deferred pending a second incident — the items below are the only two that the evidence justified building now.
@@ -84,7 +97,7 @@ Two narrowly-scoped fixes for friction observed during the May 2026 peterknight.
 ## 1.9.0 (30 April 2026)
 
 - **New:** `pw_modules_list` — list ProcessWire modules with install state, file path, and version. Defaults to every installed module; pass `classes: ["FormBuilder", "SeoNeo"]` to inspect specific module classes (installed or not). Use `site: "both"` to compare local vs remote install state side-by-side.
-- **New:** `pw_users_list` — list users with id, name, email, roles, and `member_*` fields. Pass `includeAll: true` to widen to every non-system field. `pass` is always skipped.
+- **New:** `pw_users_list` — list users with id, name, email, roles, and `member_`* fields. Pass `includeAll: true` to widen to every non-system field. `pass` is always skipped.
 - **New:** `pw_resolve` — bulk-resolve names to ProcessWire ids on the chosen site. Types: `field|template|page|role|permission|user|module`. Returns `{ type, mapping: { name: id|null }, count, missing[] }`. Used before a push to translate local field/template names into the equivalent remote ids without one HTTP round-trip per name.
 - **New:** `pw_inspect_template` — companion to `pw_get_template` that returns each field as `{ name, type, label }` rather than just a name. Sized for fieldgroup-diff workflows: `site: "both"` shows exactly which fields differ between local and prod before planning a fieldgroup push.
 - **Changed:** MCP server version bumped from stale 1.6.0 → 1.9.0 so the version Cursor reports matches `mcp-server/package.json`.
