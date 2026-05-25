@@ -1894,7 +1894,8 @@ class SyncManager {
     /**
      * Apply changes to repeater/matrix field items
      * 
-     * Updates existing items by _itemId. Does NOT add, delete, or reorder.
+     * Updates existing items by _itemId. Creates new items when _itemId starts with 'NEW'.
+     * Does NOT delete or reorder.
      * Validates that each item belongs to this page's repeater field.
      * 
      * @param Page $page Parent page
@@ -1936,9 +1937,37 @@ class SyncManager {
                 continue;
             }
             
-            $itemId = (int) $itemData['_itemId'];
+            $rawItemId = $itemData['_itemId'];
             $itemIndex++;
-            
+            // NEW* placeholder — create a fresh repeater/matrix item
+            if (is_string($rawItemId) && strncasecmp($rawItemId, 'NEW', 3) === 0) {
+                $isMatrix = ($field->type->className() === 'FieldtypeRepeaterMatrix');
+                $matrixTypeId = isset($itemData['_matrixType']) ? (int) $itemData['_matrixType'] : null;
+                if ($isMatrix && $matrixTypeId) {
+                    $typeName = $field->get("matrix{$matrixTypeId}_name");
+                    $newItem = $typeName ? $repeater->getNew($typeName) : $repeater->getNew();
+                    if ($newItem) $newItem->set('repeater_matrix_type', $matrixTypeId);
+                } else {
+                    $newItem = $repeater->getNew();
+                }
+                if (!$newItem) { $stats['skipped_missing']++; continue; }
+                $newItem->of(false);
+                foreach ($itemData as $key => $val) {
+                    if (strpos($key, '_') === 0) continue;
+                    $changeKey = $fieldName . '→' . $key . '[' . $itemIndex . ']';
+                    if (!empty($excludeNormalized) && in_array(strtolower($changeKey), $excludeNormalized)) continue;
+                    if (!$newItem->template->hasField($key)) continue;
+                    $itemField = $this->wire->fields->get($key);
+                    $itemField
+                        ? $this->applyFieldValue($newItem, $itemField, $val, $localDir, $excludeKeys)
+                        : $newItem->set($key, $val);
+                }
+                $repeater->add($newItem);
+                $page->save($fieldName);
+                $stats['updated']++;
+                continue;
+            }
+            $itemId = (int) $rawItemId;
             // Validate: item must belong to this page's repeater field
             // This prevents accidentally updating a random repeater item
             if (!isset($allowedIds[$itemId])) {
