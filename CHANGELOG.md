@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.12.2 (25 May 2026)
+
+- **New: `NEW*` placeholder support in `applyRepeaterValue`.** When a repeater/matrix item in `page.yaml` has `_itemId: NEW1` (or `NEW2`, etc.), PromptWire now creates a fresh repeater item instead of skipping it as missing. For `FieldtypeRepeaterMatrix` fields, the optional `_matrixType` key (the numeric type index stored in the YAML) is used to look up the type name via `$field->get("matrix{N}_name")` and call `$repeater->getNew($typeName)`, setting `repeater_matrix_type` automatically. Plain repeater fields fall back to `$repeater->getNew()`. All non-metadata field values are applied via the standard `applyFieldValue` pipeline; the item is added to the repeater and the field is saved before moving on. The existing item-update path (integer `_itemId`) is completely unchanged.
+- **Impact:** The `matrix:add × N → page:pull` manual bootstrapping step for new pages goes away. A single `page:publish` → `page:push` pass now creates and populates matrix items in one shot.
+- **Migration impact: zero.** Existing `page.yaml` files with integer `_itemId` values continue to work exactly as before. The `NEW*` path is only triggered when `_itemId` is a string beginning with `NEW` (case-insensitive).
+- **Module + MCP server version bumped to 1.12.2.**
+
 ## 1.12.1 (22 May 2026)
 
 Fixes discovered during a product release ZIP sync on peterknight.digital (MediaHub 1.17.0 download page).
