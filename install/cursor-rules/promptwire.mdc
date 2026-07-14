@@ -1,0 +1,43 @@
+---
+description: Use PromptWire MCP for ProcessWire CMS content; edit source files for templates and code
+alwaysApply: true
+---
+
+# PromptWire (ProcessWire content)
+
+This site uses **PromptWire** MCP (`pw_*` tools) to push and pull CMS content between local dev and remote. Docs: [PromptWire v1](https://www.peterknight.digital/docs/promptwire/v1/).
+
+## Default assumption
+
+When asked to change **page content** (copy, blog posts, field values, SEO meta, CMS-managed navigation), use PromptWire — not direct DB access, not guessing values from templates alone, and not hand-authoring `site/assets/pw-mcp/` without `pw_page_pull` or `pw_page_new`.
+
+## Use PromptWire for
+
+| Task | Tools |
+|------|-------|
+| Edit existing content | `pw_page_pull` → edit sync files → `pw_page_push` (dry-run first) |
+| New page | `pw_page_new` → edit → `pw_page_publish` |
+| Bulk section | `pw_pages_pull` / `pw_pages_push` |
+| Inspect live content or schema | `pw_get_page`, `pw_query_pages`, `pw_search`, `pw_list_templates` |
+| Schema changes | `pw_schema_pull`, `pw_schema_push`, `pw_schema_diff` |
+| Images / file fields | `pw_file_sync`, `pw_page_assets` |
+
+## Edit source files for
+
+- PHP templates (`site/templates/`), modules, hooks, CSS/JS
+- Rendering logic — not CMS field values stored in the database
+
+## MCP servers
+
+Use the PromptWire MCP entry that matches the target (local dev vs production). Names vary per project — check `.cursor/mcp.json`. Confirm before `targets: remote` or `both`.
+
+## Sync files (`site/assets/pw-mcp/`)
+
+- Never edit `page.meta.json` manually
+- Rich text: `fields/*.html` and `matrix/` files referenced from `page.yaml`
+- Page refs: only `id` in `_pageRef` blocks is editable; `_comment` is display-only
+
+## Safety
+
+- Push defaults to dry-run — preview before `dryRun: false`
+- Default push target is local — confirm before production
