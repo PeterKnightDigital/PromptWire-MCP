@@ -2441,7 +2441,7 @@ class CommandRouter {
     private function clearCache(string $target = 'all'): array {
         $cleared = [];
 
-        $validTargets = ['all', 'modules', 'templates', 'compiled', 'wire-cache'];
+        $validTargets = ['all', 'modules', 'templates', 'compiled', 'wire-cache', 'procache'];
         if (!in_array($target, $validTargets)) {
             return [
                 'error' => "Invalid cache target: $target",
@@ -2481,6 +2481,21 @@ class CommandRouter {
             // Clear WireCache (database-backed cache)
             $this->wire->cache->deleteAll();
             $cleared[] = 'wire-cache (database)';
+        }
+
+        if ($target === 'all' || $target === 'procache') {
+            if ($this->wire->modules->isInstalled('ProCache')) {
+                /** @var \ProcessWire\ProCache $procache */
+                $procache = $this->wire->modules->get('ProCache');
+                if ($procache) {
+                    $qty = (int) $procache->clearAll();
+                    $cleared[] = "procache static ($qty entries)";
+                } else {
+                    $cleared[] = 'procache (module unavailable)';
+                }
+            } else {
+                $cleared[] = 'procache (not installed)';
+            }
         }
 
         return [
@@ -4724,7 +4739,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.12.5',
+            'version' => '1.12.6',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
@@ -4757,7 +4772,7 @@ class CommandRouter {
                 'db-counts' => 'Get row counts for core tables and top field tables',
                 'logs [name?]' => 'Read log entries (--level=error --text=pattern --limit=N)',
                 'last-error' => 'Get the most recent error from log files',
-                'clear-cache [target?]' => 'Clear caches (all, modules, templates, compiled, wire-cache)',
+                'clear-cache [target?]' => 'Clear caches (all, modules, templates, compiled, wire-cache, procache)',
                 'maintenance:on [message?]' => 'Enable maintenance mode (blocks front-end visitors)',
                 'maintenance:off' => 'Disable maintenance mode (site goes live)',
                 'maintenance:status' => 'Check if maintenance mode is active',

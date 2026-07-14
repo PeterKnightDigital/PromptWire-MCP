@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.12.6 (14 Jul 2026)
+
+- **Fixed: MCP remote client no longer misreports `page:update` 404s as "Remote API not found".** When the remote API returns HTTP 404 with `{"error":"Page not found: /path/"}`, the client now surfaces that application error instead of the generic endpoint-missing message. This restores the `page:create` fallback in `pushToRemote()` when pushing a locally-created page to production for the first time.
+- **Fixed: MCP remote client now surfaces HTTP 400 application errors.** Responses such as `Template not found: guide-page` or `Parent page not found: /guides/` are returned verbatim instead of the opaque `Remote API returned HTTP 400`.
+- **New: `clear-cache procache` target** (+ included in `clear-cache all` when ProCache is installed). Clears ProCache static cache via `$procache->clearAll()` and reports how many entries were removed.
+- **Module + MCP server version bumped to 1.12.6.**
+
 ## 1.12.5 (14 Jul 2026)
 
 - **New: `pw_page_rename` MCP tool** (+ `page:rename` CLI command). Renames a ProcessWire page slug on local, remote, or both. Dry-run by default. Checks for name collisions and refuses system pages (home, admin). Reports whether PagePathHistory is installed (auto-301 from old URL).
