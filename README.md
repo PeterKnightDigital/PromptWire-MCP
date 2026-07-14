@@ -6,7 +6,7 @@ ProcessWire ↔ Cursor MCP Bridge for AI-assisted development.
 
 ## Introduction
 
-PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 46 specialised tools for site inspection, content sync, schema management, page creation, schema-aware fieldgroup edits, page-asset sync (catches MediaHub-managed files), database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
+PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 47 specialised tools for site inspection, content sync, schema management, page creation, page slug renames, schema-aware fieldgroup edits, page-asset sync (catches MediaHub-managed files), database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
 
 **Just describe what you want in plain language:**
 
@@ -40,6 +40,15 @@ Or download the zip, extract, and rename the folder to `PromptWire` inside `site
 Then in ProcessWire admin: **Modules → Refresh → Install PromptWire**.
 
 The admin dashboard (`ProcessPromptWireAdmin`) is installed automatically — you'll find it under **Setup → PromptWire Admin**.
+
+**Developing PromptWire itself?** Symlink your local clone into `site/modules/PromptWire` so edits land in the git repo, not a vendored copy:
+
+```bash
+# From your ProcessWire site root — adjust the clone path to match your machine
+ln -sfn /path/to/PromptWire-MCP site/modules/PromptWire
+```
+
+Point `.cursor/mcp.json` at `site/modules/PromptWire/mcp-server/dist/index.js` — symlinks resolve fine. Rebuild the MCP server after TypeScript changes (`npm run build` in `mcp-server/`).
 
 ### 2. Build the MCP server
 
@@ -95,7 +104,7 @@ cp site/modules/PromptWire/install/cursor-rules/promptwire.mdc .cursor/rules/
 
 The rule applies on every chat (`alwaysApply: true`). It separates **CMS content** (pull → edit `site/assets/pw-mcp/` → push) from **code** (templates, modules, CSS).
 
-For coverage across all ProcessWire projects without copying the file into each repo, install the personal skill from [install/cursor-skills/](install/cursor-skills/) into `~/.cursor/skills/promptwire/`.
+For coverage across all ProcessWire projects without copying the file into each repo, install the personal skills from [install/cursor-skills/](install/cursor-skills/) into `~/.cursor/skills/` (`promptwire` for the general workflow, `promptwire-page-rename` for slug changes).
 
 ### 5. (Optional) Remote site access
 
@@ -175,6 +184,7 @@ Content is synced to `site/assets/pw-mcp/` — editable YAML files that you can 
 | `pw_page_init`     | Initialise or repair `page.meta.json` for a sync directory              |
 | `pw_page_publish`  | Publish a scaffolded page to ProcessWire (local, remote, or both)        |
 | `pw_pages_publish` | Bulk publish all new page scaffolds in a directory                        |
+| `pw_page_rename`   | Rename a page slug (local, remote, or both); reconciles pw-mcp folder     |
 
 ### Schema sync
 
@@ -250,7 +260,7 @@ For a full walkthrough, see the [Admin dashboard guide](https://www.peterknight.
 - [**Schema sync**](https://www.peterknight.digital/docs/promptwire/v1/schema-sync/) — Synchronising fields and templates between sites
 - [**Admin dashboard**](https://www.peterknight.digital/docs/promptwire/v1/admin-dashboard/) — Visual sync UI walkthrough
 - [**Prompt recipes**](https://www.peterknight.digital/docs/promptwire/v1/prompt-recipes/) — Natural language prompts for common workflows
-- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 46 tools with parameters and examples
+- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 47 tools with parameters and examples
 - [**Environment variables**](https://www.peterknight.digital/docs/promptwire/v1/environment-variables/) — Configuration reference
 - [**Security**](https://www.peterknight.digital/docs/promptwire/v1/security/) — HTTPS enforcement, API authentication, backup protection, and best practices
 - [**Changelog**](https://www.peterknight.digital/docs/promptwire/v1/changelog/) — Version history
