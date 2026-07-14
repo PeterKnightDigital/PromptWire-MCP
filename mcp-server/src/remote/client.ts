@@ -97,6 +97,34 @@ export async function runRemoteCommand(
 
     // Handle HTTP error codes with helpful messages
     if (!response.ok) {
+      // page:update returns 404 when the page path is missing — not when the
+      // API endpoint is missing. Parse the JSON body so callers can fall back
+      // to page:create (see pushToRemote in pages/pusher.ts).
+      if (response.status === 404) {
+        try {
+          const notFoundBody = await response.json() as RemoteResponse;
+          const appError = typeof notFoundBody.error === 'string' ? notFoundBody.error : '';
+          if (appError.includes('Page not found')) {
+            return { success: false, error: appError };
+          }
+        } catch {
+          // Fall through to generic 404 message.
+        }
+      }
+
+      // Surface application-level errors from 400 responses (e.g. missing template).
+      if (response.status === 400) {
+        try {
+          const badRequestBody = await response.json() as RemoteResponse;
+          const appError = typeof badRequestBody.error === 'string' ? badRequestBody.error : '';
+          if (appError) {
+            return { success: false, error: appError };
+          }
+        } catch {
+          // Fall through to generic 400 message.
+        }
+      }
+
       switch (response.status) {
         case 401:
           return {
