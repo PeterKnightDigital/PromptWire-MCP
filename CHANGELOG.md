@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.12.3 (14 Jul 2026)
+
+Three bugs surfaced during a real-world blog content migration on ChillSSL.com, where a Next.js site was moved into ProcessWire and legacy YAML/content was cleaned up via `pw_page_push`.
+
+- **Fixed: PHP CLI `page:push` now rejects `--targets=remote` and `--targets=both` with a clear error.** Previously, passing `--targets=remote` to the CLI silently succeeded but only pushed to the local ProcessWire database — the remote API was never called. Operators would see `changeCount: 3` and assume production was updated. The CLI runs inside the local PW process and has no HTTP path to a remote site; remote push is a TypeScript / MCP server concern. The CLI now returns a structured error pointing to `pw_page_push` with `targets="remote"` as the correct tool.
+
+- **Fixed: nested per-target push errors now surface at the top level.** When `pw_page_push targets="remote"` failed (e.g. due to a YAML parse error), `pushPage()` returned `success: false` with the generic message `"One or more push targets failed — check results for details"`. The concrete error (`remote: Failed to parse page.yaml: bad indentation…`) was buried inside `data.results.remote.error` — invisible to agents reading only the top-level `error` field, and invisible to `formatToolResponse` which displayed only that field. Two complementary fixes: (1) `pushPage()` now collects nested per-target errors and includes them verbatim in the top-level `error` string; (2) `formatToolResponse()` now appends `result.data` as JSON whenever `!result.success` and data is present, so the full diagnostic is always shown.
+
+- **Improved: YAML parse errors in `parsePageYaml` now include an actionable hint.** When js-yaml throws on a colon-in-value (e.g. `seoneo_title: Focus On: SSL Notifications` — a colon not inside a quoted string), the error message looked like `bad indentation of a mapping entry (70:25)` — correct but opaque. PromptWire now detects the `bad indentation` / `mapping entry` pattern and appends: `— likely cause: an unquoted colon in a field value (e.g. seoneo_title: Foo: Bar must be seoneo_title: "Foo: Bar")`. PHP's `yamlValue()` already quotes colons on export; this improves the experience for hand-edited or migrated YAML files that don't go through the exporter.
+
+- **Module + MCP server version bumped to 1.12.3.**
+
 ## 1.12.2 (25 May 2026)
 
 - **New: `NEW*` placeholder support in `applyRepeaterValue`.** When a repeater/matrix item in `page.yaml` has `_itemId: NEW1` (or `NEW2`, etc.), PromptWire now creates a fresh repeater item instead of skipping it as missing. For `FieldtypeRepeaterMatrix` fields, the optional `_matrixType` key (the numeric type index stored in the YAML) is used to look up the type name via `$field->get("matrix{N}_name")` and call `$repeater->getNew($typeName)`, setting `repeater_matrix_type` automatically. Plain repeater fields fall back to `$repeater->getNew()`. All non-metadata field values are applied via the standard `applyFieldValue` pipeline; the item is added to the repeater and the field is saved before moving on. The existing item-update path (integer `_itemId`) is completely unchanged.
