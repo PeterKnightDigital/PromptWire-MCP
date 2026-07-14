@@ -275,15 +275,16 @@ export function formatToolResponse(result: PwCommandResult): {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
 } {
-  // Handle error responses
+  // Handle error responses. Include result.data when present so that nested
+  // per-target details (e.g. results.remote.error from a multi-target push)
+  // are always visible to the agent — not buried behind a vague sentinel.
   if (!result.success) {
+    const parts: string[] = [`Error: ${result.error}`];
+    if (result.data !== undefined) {
+      parts.push(JSON.stringify(result.data, null, 2));
+    }
     return {
-      content: [
-        {
-          type: 'text',
-          text: `Error: ${result.error}`,
-        },
-      ],
+      content: [{ type: 'text', text: parts.join('\n\n') }],
       isError: true,
     };
   }

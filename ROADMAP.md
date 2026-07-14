@@ -827,6 +827,75 @@ This feature replaces the "clone the whole database" workflow for keeping dev an
 
 ---
 
+## Findings from real deployments (June 2026)
+
+Captured during the MediaHub 1.19.0 + docs search deploy on peterknight.digital.
+Items that overlap existing roadmap entries are cross-referenced rather than duplicated.
+
+### A. `pw_file_sync` / `pw_page_assets upload` — fails silently when endpoint not on remote
+
+**Symptom:** `pw_file_sync` returns `"Remote API not found at .../promptwire-api.php"` with
+no further guidance. The release page was created without its attached ZIP file. There is no
+indication in `pw_page_push` output or `pw_health` that the file sync endpoint is missing.
+
+**Root cause:** `pw_page_push` routes through ProcessWire's own API (no extra file needed).
+`pw_file_sync` and `pw_page_assets upload` route through `promptwire-api.php`, which must
+be manually deployed to the production web root. The two tools share the same conceptual
+surface ("push content to remote") but have different prerequisites that aren't surfaced until
+the operation fails mid-deploy.
+
+**Proposed fixes:**
+1. `pw_health` should check that `promptwire-api.php` (or the configured endpoint) is
+   reachable on remote and add `fileEndpointReachable: bool` to the response. Catches the
+   gap before any file operation is attempted.
+2. When `pw_file_sync` / `pw_page_assets upload` fail with a 404 on the endpoint, return a
+   specific error code (`E_REMOTE_ENDPOINT_NOT_FOUND`) and a plain-English message explaining
+   what file needs to be deployed and where.
+3. Longer term: route file transfers through the same ProcessWire API channel as `pw_page_push`,
+   eliminating the separate endpoint requirement entirely.
+
+---
+
+### B. `pw_page_push` — generic error when page doesn't exist on remote
+
+**Symptom:** pushing `/docs/mediahub/v1/find-raw/` and `/downloads/mediahub/v1-19-0/` to
+remote returned `"one or more push targets failed"` with no actionable detail. Both pages only
+existed locally. The correct recovery path (`pw_page_publish`) is non-obvious from the error.
+
+**Proposed fix:** when `pw_page_push` resolves the canonical path on the remote and gets a
+null result, return a specific error: `"Page /foo/bar/ not found on remote. Use pw_page_publish
+to create it first, then pw_page_push to update it."` Cross-reference: item 1 below already
+proposes an upsert mode that would remove the push-vs-publish ambiguity entirely.
+
+---
+
+### C. `pw_pages_push --force` reports `changeCount: 0` after local edits
+
+**Symptom:** bulk-pushing the mediahub doc tree with `force: true` after a session of local
+content edits returned `changeCount: 0` on most pages. The correct content was on remote (it
+had been pushed in an earlier step), but the zero counts made it impossible to confirm which
+pages had actually received updates during the session.
+
+**Proposed fix:** `force: true` should bypass the revision hash comparison and always write
+every field, returning `changeCount` values reflecting what was written to the database rather
+than what differed from the stored snapshot hash.
+
+---
+
+### D. `pw_site_sync --scope pages` — no subtree scope
+
+**Symptom:** a `pw_site_sync --scope pages dryRun:true` produced a 55 KB diff spanning
+hundreds of pages across all templates. There was no way to narrow it to just
+`/docs/mediahub/` without running `pw_page_push` per directory manually.
+
+**Proposed fix:** add a `rootPath` argument (e.g. `rootPath: "/docs/mediahub/"`) that limits
+the page comparison and sync to a specific subtree. Resolves to a `parent=<id>` selector on
+both sides for the inventory call. Cross-reference: the "sensible compare → sync feedback loop"
+item below already proposes a `pushPlan` array — `rootPath` is the scoping primitive that
+makes that plan reviewable before running.
+
+---
+
 ## High leverage
 
 ### 1. `pw_pages_push` — support pushing local scaffolds to a remote target

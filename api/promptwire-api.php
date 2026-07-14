@@ -519,6 +519,53 @@ if ($command === 'page:exists') {
 }
 
 // ============================================================================
+// SPECIAL CASE: field:set-options — sync FieldtypeOptions lines on a field
+// Accepts { command, args: ["field_name"], optionsString: "opt1\nopt2" }
+// ============================================================================
+
+if ($command === 'field:set-options') {
+    $fieldName = $flags['_positional'][0] ?? null;
+    $optionsString = $request['optionsString'] ?? null;
+    $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+
+    if (!$fieldName || !is_string($optionsString)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'field:set-options requires field name and optionsString']);
+        exit;
+    }
+
+    $field = $wire->fields->get($fieldName);
+    if (!$field || !$field->id) {
+        http_response_code(404);
+        echo json_encode(['error' => "Field not found: $fieldName"]);
+        exit;
+    }
+    if ($field->type->className() !== 'FieldtypeOptions') {
+        http_response_code(400);
+        echo json_encode(['error' => "Field is not FieldtypeOptions: $fieldName"]);
+        exit;
+    }
+
+    if (!$dryRun) {
+        $field->type->manager->setOptionsString($field, $optionsString);
+    }
+
+    $options = [];
+    foreach ($field->type->getOptions($field) as $opt) {
+        $options[] = ['id' => $opt->id, 'title' => $opt->title, 'value' => $opt->value];
+    }
+
+    echo json_encode([
+        'success' => true,
+        'dryRun' => $dryRun,
+        'field' => $fieldName,
+        'optionCount' => count($options),
+        'options' => $options,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
 // SPECIAL CASE: page:update — apply field values to a remote page directly
 // Accepts { command, args: ["/path/"], pageData: { fields: { field: value } } }
 // ============================================================================
@@ -1181,6 +1228,90 @@ if ($command === 'page-assets:delete') {
         'filename'   => $relPath,
         'action'     => 'deleted',
         'variations' => array_map('basename', $variations),
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ============================================================================
+// SPECIAL CASE: form:import — FormBuilder JSON import (spam settings, fields)
+// ============================================================================
+
+if ($command === 'form:import') {
+    $imports = $request['formImports'] ?? null;
+    if (!is_array($imports) || !count($imports)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'form:import requires formImports object in the request body']);
+        exit;
+    }
+
+    $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+    /** @var FormBuilder $forms */
+    $forms = $wire->modules->get('FormBuilder');
+    if (!$forms) {
+        http_response_code(500);
+        echo json_encode(['error' => 'FormBuilder module is not installed']);
+        exit;
+    }
+
+    $results = [];
+    $allOk = true;
+
+    foreach ($imports as $formName => $formData) {
+        $formName = $wire->sanitizer->pageName($formName);
+        if (!$formName) {
+            $results[$formName ?: '(invalid)'] = ['success' => false, 'error' => 'Invalid form name'];
+            $allOk = false;
+            continue;
+        }
+
+        $form = $forms->load($formName);
+        if (!$form || !$form->id) {
+            $results[$formName] = ['success' => false, 'error' => 'Form not found'];
+            $allOk = false;
+            continue;
+        }
+
+        if (is_string($formData)) {
+            $json = $formData;
+            $decoded = json_decode($json, true);
+        } else {
+            $decoded = $formData;
+            $json = json_encode($formData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+
+        if (!is_array($decoded) || !array_key_exists('children', $decoded)) {
+            $results[$formName] = ['success' => false, 'error' => 'Invalid FormBuilder export JSON'];
+            $allOk = false;
+            continue;
+        }
+
+        if ($dryRun) {
+            $results[$formName] = [
+                'success' => true,
+                'dryRun' => true,
+                'formId' => (int) $form->id,
+                'honeypot' => $decoded['honeypot'] ?? null,
+                'spamTimer' => $decoded['spamTimer'] ?? null,
+                'saveFlags' => $decoded['saveFlags'] ?? null,
+            ];
+            continue;
+        }
+
+        $ok = $forms->importJSON($form->id, $json);
+        $results[$formName] = [
+            'success' => (bool) $ok,
+            'formId' => (int) $form->id,
+            'honeypot' => $decoded['honeypot'] ?? null,
+            'spamTimer' => $decoded['spamTimer'] ?? null,
+            'saveFlags' => $decoded['saveFlags'] ?? null,
+        ];
+        if (!$ok) $allOk = false;
+    }
+
+    echo json_encode([
+        'success' => $allOk,
+        'dryRun' => $dryRun,
+        'results' => $results,
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
 }

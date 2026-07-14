@@ -186,6 +186,16 @@ class CommandRouter {
                 if (!$localPath) {
                     return ['error' => 'Local path to page.yaml or sync directory required'];
                 }
+                // --targets is a MCP-server concept; the PHP CLI only has access to the
+                // local ProcessWire database and cannot reach a remote site over HTTP.
+                $cliTarget = $flags['targets'] ?? 'local';
+                if ($cliTarget === 'remote' || $cliTarget === 'both') {
+                    return [
+                        'error' => "The PHP CLI cannot push to a remote site. " .
+                                   "Use pw_page_push with targets=\"{$cliTarget}\" via the MCP server instead.",
+                        'hint'  => 'Remote push requires PW_REMOTE_URL + PW_REMOTE_KEY configured in your MCP server env.',
+                    ];
+                }
                 // Default: dry-run is ON for safety
                 $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
                 $force = isset($flags['force']);

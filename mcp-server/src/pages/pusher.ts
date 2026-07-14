@@ -135,9 +135,22 @@ export async function pushPage(opts: PushPageOptions): Promise<PwCommandResult> 
     }
   }
 
+  // Collect the first concrete nested error and surface it at the top level
+  // so agents and formatToolResponse see "remote: Failed to parse page.yaml: …"
+  // rather than the vague "One or more push targets failed" sentinel.
+  let topLevelError: string | undefined;
+  if (hasFailure) {
+    const nested = Object.entries(results)
+      .filter(([, r]) => r !== null && typeof r === 'object' && 'error' in (r as object))
+      .map(([target, r]) => `${target}: ${(r as { error: string }).error}`);
+    topLevelError = nested.length > 0
+      ? nested.join('; ')
+      : 'One or more push targets failed — check results for details';
+  }
+
   return {
     success: !hasFailure,
-    ...(hasFailure ? { error: 'One or more push targets failed — check results for details' } : {}),
+    ...(topLevelError !== undefined ? { error: topLevelError } : {}),
     data: {
       pagePath,
       dryRun,
@@ -237,7 +250,23 @@ async function pushToRemote(
  */
 async function parsePageYaml(yamlPath: string): Promise<FieldValue> {
   const raw = await readFile(yamlPath, 'utf-8');
-  const parsed = yamlLoad(raw) as { fields?: Record<string, unknown> };
+
+  let parsed: { fields?: Record<string, unknown> };
+  try {
+    parsed = yamlLoad(raw) as { fields?: Record<string, unknown> };
+  } catch (err) {
+    // js-yaml throws YAMLException with a `mark` that contains the offending line.
+    // The most common real-world cause is an unquoted colon in a scalar value,
+    // e.g.:  seoneo_title: Focus On: SSL Notifications
+    // PHP's yamlValue() quotes those on export, but hand-edited or migrated YAML
+    // files often don't.  Surface a targeted hint so the fix is obvious.
+    const msg = err instanceof Error ? err.message : String(err);
+    const colonHint = msg.includes('bad indentation') || msg.includes('mapping entry')
+      ? ' — likely cause: an unquoted colon in a field value ' +
+        '(e.g. `seoneo_title: Foo: Bar` must be `seoneo_title: "Foo: Bar"`)'
+      : '';
+    throw new Error(`YAML parse error in ${yamlPath}: ${msg}${colonHint}`);
+  }
 
   if (!parsed?.fields) {
     throw new Error('page.yaml has no "fields" key');

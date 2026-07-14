@@ -85,7 +85,19 @@ Create or edit `.cursor/mcp.json` in your project root:
 
 If `which php` returns the correct version (8.0+), you can omit `PHP_PATH` entirely.
 
-### 4. (Optional) Remote site access
+### 4. (Recommended) Cursor project rules
+
+So every new AI chat knows to use PromptWire for CMS content (not direct DB access or guessing from templates), copy the rule into your ProcessWire project:
+
+```bash
+cp site/modules/PromptWire/install/cursor-rules/promptwire.mdc .cursor/rules/
+```
+
+The rule applies on every chat (`alwaysApply: true`). It separates **CMS content** (pull → edit `site/assets/pw-mcp/` → push) from **code** (templates, modules, CSS).
+
+For coverage across all ProcessWire projects without copying the file into each repo, install the personal skill from [install/cursor-skills/](install/cursor-skills/) into `~/.cursor/skills/promptwire/`.
+
+### 5. (Optional) Remote site access
 
 To push content to a production site, deploy the API endpoint file (`api/promptwire-api.php`) to your remote site root. **Rename it** to something non-obvious (e.g. `pw-xyz8k3m.php`) so the URL isn't guessable from the public documentation, then set `PW_REMOTE_URL` to match. The endpoint enforces HTTPS; requests over plain HTTP are rejected with a 403.
 
