@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.4 (14 Jul 2026)
+
+- **Fixed: `yamlValue()` now correctly quotes non-string objects after `(string)` cast.** Fields backed by custom ProcessWire field types that return an object rather than a plain PHP string (e.g. SeoNeo's field objects) previously bypassed the colon/special-character quoting check in `yamlValue()`. The function tested `is_string($value)` first and applied quoting inside that branch, but fell through to a bare `return (string) $value` for everything else — so a SeoNeo title of `Focus On: SSL Notifications` would be emitted unquoted, causing js-yaml to throw `bad indentation of a mapping entry` on the next remote push. The fix adds a second quoting pass after the cast: the stringified result is now checked against the same `[:#\[\]{}|>&*!?]` regex and quoted if needed.
+
+- **Module version bumped to 1.12.4.**
+
 ## 1.12.3 (14 Jul 2026)
 
 Three bugs surfaced during a real-world blog content migration on ChillSSL.com, where a Next.js site was moved into ProcessWire and legacy YAML/content was cleaned up via `pw_page_push`.

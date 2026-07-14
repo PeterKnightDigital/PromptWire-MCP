@@ -2859,7 +2859,15 @@ class SyncManager {
             }
             return $value;
         }
-        return (string) $value;
+        // Non-string scalars/objects with __toString() (e.g. SeoNeo field objects).
+        // Cast to string first, then re-apply the quoting check — without this second
+        // pass a title like "Focus On: SSL Notifications" would be emitted unquoted
+        // and break js-yaml's parser on the next remote push.
+        $str = (string) $value;
+        if (preg_match('/[:#\[\]{}|>&*!?]/', $str) || $str === '' || is_numeric($str)) {
+            return '"' . addslashes($str) . '"';
+        }
+        return $str;
     }
     
     // ========================================================================
