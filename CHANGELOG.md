@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.12.5 (14 Jul 2026)
+
+- **New: `pw_page_rename` MCP tool** (+ `page:rename` CLI command). Renames a ProcessWire page slug on local, remote, or both. Dry-run by default. Checks for name collisions and refuses system pages (home, admin). Reports whether PagePathHistory is installed (auto-301 from old URL).
+- **New: local sync folder reconcile after rename.** When a local rename succeeds, PromptWire automatically runs `sync:reconcile` to move `site/assets/pw-mcp/.../old-slug/` to the new path and update `page.meta.json`. Pass `--no-reconcile` (CLI) or `reconcileLocal: false` (MCP) to skip.
+- **Remote routing:** `targets: remote` and `targets: both` call the remote PromptWire API — no SSH or admin clicks required. Same pattern as `pw_page_push`.
+- **Docs:** README symlink development note; optional `promptwire-page-rename` Cursor skill in `install/cursor-skills/`.
+- **Module + MCP server version bumped to 1.12.5.**
+
 ## 1.12.4 (14 Jul 2026)
 
 - **Fixed: `yamlValue()` now correctly quotes non-string objects after `(string)` cast.** Fields backed by custom ProcessWire field types that return an object rather than a plain PHP string (e.g. SeoNeo, custom FieldtypeText subclasses) previously bypassed the colon/special-character quoting check in `yamlValue()`. The function tested `is_string($value)` first and applied quoting inside that branch, but fell through to a bare `return (string) $value` for everything else — so any field value containing a colon (e.g. a title like `"Foo: Bar"`) would be emitted unquoted, causing js-yaml to throw `bad indentation of a mapping entry` on the next remote push. The fix adds a second quoting pass after the cast: the stringified result is checked against the same `[:#\[\]{}|>&*!?]` regex and quoted if needed.

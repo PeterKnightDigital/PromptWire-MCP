@@ -9,6 +9,7 @@
 | `pw_get_page` | Read live page (use `truncate` or `summary` for large pages) |
 | `pw_page_pull` | Pull to sync tree (`source: remote` to mirror production) |
 | `pw_page_push` | Push sync tree (`dryRun`, `targets`, `publish`) |
+| `pw_page_rename` | Rename page slug (`idOrPath`, `newName`, `targets`, `reconcileLocal`) |
 | `pw_page_new` / `pw_page_publish` | Scaffold and publish new pages |
 | `pw_pages_pull` / `pw_pages_push` | Bulk by selector, parent, or template |
 | `pw_sync_status` | Dirty / conflict status |
@@ -23,7 +24,9 @@ Each ProcessWire project should have `.cursor/mcp.json` with PromptWire MCP serv
 
 ## Rename / page references
 
-To rename a referenced page: edit the **source page** title, not `_comment` fields in referencing pages.
+**Slug rename:** use `pw_page_rename` (install skill `promptwire-page-rename`). Replaces manual admin renames and one-off CLI scripts. Auto-reconciles `site/assets/pw-mcp/` folders on local rename.
+
+To rename a referenced page title only: edit the **source page** title, not `_comment` fields in referencing pages.
 
 ## HannaCode and forms
 

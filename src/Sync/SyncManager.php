@@ -3501,6 +3501,112 @@ class SyncManager {
     }
     
     // ========================================================================
+    // PAGE RENAME
+    // ========================================================================
+
+    /**
+     * Rename a page slug (ProcessWire page name).
+     *
+     * Triggers PagePathHistory 301 redirects when that module is installed.
+     * Optionally reconciles the local sync folder after a successful rename.
+     *
+     * @param int|string $idOrPath Page ID or path
+     * @param string $newName URL-safe page name (slug)
+     * @param bool $dryRun Preview without applying (default: true)
+     * @param bool $reconcileLocal Move local pw-mcp folder to match new path
+     * @param string|null $syncDirectory Sync root for reconcile (default: syncRoot)
+     * @return array Result with old/new path and optional reconcile report
+     */
+    public function renamePage($idOrPath, string $newName, bool $dryRun = true, bool $reconcileLocal = true, ?string $syncDirectory = null): array {
+        $page = is_numeric($idOrPath)
+            ? $this->wire->pages->get((int) $idOrPath)
+            : $this->wire->pages->get($idOrPath);
+
+        if (!$page || !$page->id) {
+            return ['error' => 'Page not found'];
+        }
+
+        if ($page->id === 1) {
+            return ['error' => 'Cannot rename the home page'];
+        }
+
+        if ($page->template && $page->template->name === 'admin') {
+            return ['error' => 'Cannot rename admin pages'];
+        }
+
+        $sanitizer = $this->wire->sanitizer;
+        $newName = $sanitizer->pageName(trim($newName));
+        if (!strlen($newName)) {
+            return ['error' => 'Invalid page name'];
+        }
+
+        $oldName = $page->name;
+        $oldPath = $page->path;
+
+        if ($oldName === $newName) {
+            return [
+                'success' => true,
+                'dryRun' => $dryRun,
+                'noChange' => true,
+                'pageId' => $page->id,
+                'title' => (string) $page->title,
+                'name' => $newName,
+                'path' => $oldPath,
+            ];
+        }
+
+        $parent = $page->parent;
+        if (!$parent || !$parent->id) {
+            return ['error' => 'Page has no parent'];
+        }
+
+        $collision = $this->wire->pages->get("parent=$parent, name=$newName, include=all");
+        if ($collision && $collision->id && $collision->id !== $page->id) {
+            return [
+                'error' => "Name collision: page already exists at {$parent->path}$newName/",
+            ];
+        }
+
+        $newPath = $parent->path . $newName . '/';
+        $pagePathHistory = $this->wire->modules->isInstalled('PagePathHistory');
+
+        $result = [
+            'success' => true,
+            'dryRun' => $dryRun,
+            'pageId' => $page->id,
+            'title' => (string) $page->title,
+            'oldName' => $oldName,
+            'newName' => $newName,
+            'oldPath' => $oldPath,
+            'newPath' => $newPath,
+            'pagePathHistory' => $pagePathHistory,
+        ];
+
+        if ($dryRun) {
+            $result['hint'] = 'Use --dry-run=0 to apply';
+            if ($reconcileLocal) {
+                $result['willReconcileLocal'] = true;
+            }
+            return $result;
+        }
+
+        $page->of(false);
+        $page->name = $newName;
+        $this->wire->pages->save($page);
+
+        $page = $this->wire->pages->get($page->id);
+        $result['newPath'] = $page->path;
+        $result['renamedAt'] = date('c');
+
+        if ($reconcileLocal) {
+            $reconcileReport = $this->reconcile($syncDirectory, false);
+            $result['reconcile'] = $reconcileReport;
+        }
+
+        return $result;
+    }
+
+    // ========================================================================
     // SYNC RECONCILIATION
     // ========================================================================
     

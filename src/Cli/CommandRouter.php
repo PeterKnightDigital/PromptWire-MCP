@@ -200,6 +200,25 @@ class CommandRouter {
                 $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
                 $force = isset($flags['force']);
                 return $this->pagePush($localPath, $dryRun, $force);
+
+            case 'page:rename':
+                $idOrPath = $positional[0] ?? null;
+                $newName = $positional[1] ?? null;
+                if (!$idOrPath || !$newName) {
+                    return ['error' => 'Usage: page:rename [id|path] [new-name] [--dry-run=0] [--no-reconcile] [--sync-directory=site/assets/pw-mcp]'];
+                }
+                $cliTarget = $flags['targets'] ?? 'local';
+                if ($cliTarget === 'remote' || $cliTarget === 'both') {
+                    return [
+                        'error' => "The PHP CLI cannot rename pages on a remote site. " .
+                                   "Use pw_page_rename with targets=\"{$cliTarget}\" via the MCP server instead.",
+                        'hint'  => 'Remote rename requires PW_REMOTE_URL + PW_REMOTE_KEY configured in your MCP server env.',
+                    ];
+                }
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                $reconcileLocal = !isset($flags['no-reconcile']);
+                $syncDirectory = $flags['sync-directory'] ?? null;
+                return $this->pageRename($idOrPath, $newName, $dryRun, $reconcileLocal, $syncDirectory);
             
             case 'pages:pull':
                 $selector = $positional[0] ?? null;
@@ -1414,6 +1433,16 @@ class CommandRouter {
         
         $syncManager = new \PromptWire\Sync\SyncManager($this->wire);
         return $syncManager->pushPage($localPath, $dryRun, $force);
+    }
+
+    /**
+     * Rename a ProcessWire page slug and optionally reconcile local sync folders.
+     */
+    private function pageRename($idOrPath, string $newName, bool $dryRun = true, bool $reconcileLocal = true, ?string $syncDirectory = null): array {
+        require_once(__DIR__ . '/../Sync/SyncManager.php');
+
+        $syncManager = new \PromptWire\Sync\SyncManager($this->wire);
+        return $syncManager->renamePage($idOrPath, $newName, $dryRun, $reconcileLocal, $syncDirectory);
     }
     
     /**
@@ -4695,7 +4724,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.12.1',
+            'version' => '1.12.5',
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',
@@ -4711,6 +4740,7 @@ class CommandRouter {
                 'page:pull [id|path]' => 'Pull page into local sync directory',
                 'page:export-yaml [id|path]' => 'Export page as inline YAML payload (no filesystem writes; used by pw_page_pull source=remote)',
                 'page:push [path]' => 'Push local changes to ProcessWire (--dry-run=0 to apply)',
+                'page:rename [id|path] [new-name]' => 'Rename page slug; auto-reconciles local pw-mcp folder (--dry-run=0 to apply, --no-reconcile to skip folder move)',
                 'pages:pull [selector]' => 'Pull multiple pages by selector, parent, or template',
                 'pages:push [directory]' => 'Push all local changes in directory (--dry-run=0 to apply)',
                 'sync:status [directory]' => 'Check sync status of all pulled pages',

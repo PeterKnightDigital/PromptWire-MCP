@@ -32,6 +32,7 @@ import { runPwCommand, runOnSite, formatToolResponse, type Site } from './cli/ru
 import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
 import { compareSites as compareSchemas, listSiteConfigs } from './schema/compare.js';
 import { pushPage, publishPage, pushPagesBulk } from './pages/pusher.js';
+import { renamePage } from './pages/rename.js';
 import { pullPageFromRemote } from './pages/puller.js';
 import { syncFiles } from './pages/file-sync.js';
 import { validateRefs } from './pages/validator.js';
@@ -423,6 +424,44 @@ const tools = [
           default: true,
         },
       },
+    },
+  },
+  {
+    name: 'pw_page_rename',
+    description: 'Rename a ProcessWire page slug (page name). Creates a 301 redirect via PagePathHistory when installed. After a local rename, automatically reconciles the pw-mcp sync folder to the new path. Use targets to rename on local (MAMP/dev), remote (production), or both. Dry-run by default.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        idOrPath: {
+          type: 'string',
+          description: 'Page ID (number) or path (e.g., "/features/example/old-slug/")',
+        },
+        newName: {
+          type: 'string',
+          description: 'URL-safe page name/slug (e.g., "new-slug")',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), preview the rename without applying. Set to false to apply.',
+          default: true,
+        },
+        targets: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Where to rename: "local" (MAMP dev), "remote" (production via HTTP API), or "both". Defaults to "local".',
+          default: 'local',
+        },
+        reconcileLocal: {
+          type: 'boolean',
+          description: 'After a successful local rename, move the pw-mcp sync folder to match the new path. Defaults to true for local/both targets.',
+          default: true,
+        },
+        syncDirectory: {
+          type: 'string',
+          description: 'Sync root for folder reconcile (default: site/assets/pw-mcp)',
+        },
+      },
+      required: ['idOrPath', 'newName'],
     },
   },
   // ========================================================================
@@ -1533,6 +1572,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         cmdArgs.push('--dry-run=0');
       }
       const result = await runPwCommand('sync:reconcile', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_page_rename': {
+      const { idOrPath, newName, dryRun, targets, reconcileLocal, syncDirectory } = args as {
+        idOrPath: string;
+        newName: string;
+        dryRun?: boolean;
+        targets?: 'local' | 'remote' | 'both';
+        reconcileLocal?: boolean;
+        syncDirectory?: string;
+      };
+
+      const result = await renamePage({
+        idOrPath,
+        newName,
+        dryRun: dryRun !== false,
+        targets: targets ?? 'local',
+        reconcileLocal: reconcileLocal !== false,
+        syncDirectory,
+      });
       return formatToolResponse(result);
     }
 
