@@ -427,12 +427,28 @@ export async function publishPage(opts: PublishPageOptions): Promise<PwCommandRe
         : '/';
       const parentPath = meta.parentPath ?? derivedParentPath;
 
-      const remoteResult = await runRemoteCommand(
-        'page:create',
-        [template, parentPath, pageName, ...(dryRun ? [] : ['--dry-run=0'])],
+      // Try page:update first — mirrors the pushToRemote() "find-or-create" guard.
+      // Without this, retrying pw_page_publish on a page that already exists on
+      // remote causes ProcessWire to auto-increment the slug (-1, -2 …) instead
+      // of updating in place, producing unpublished duplicate orphans.
+      const canonicalPath = meta.canonicalPath ?? (parentPath + pageName + '/');
+      let remoteResult = await runRemoteCommand(
+        'page:update',
+        [canonicalPath, ...(dryRun ? [] : ['--dry-run=0'])],
         undefined, undefined, undefined,
-        { fields: parsedFields, published },
+        { fields: parsedFields, publish: published },
       );
+
+      // Page genuinely doesn't exist on remote yet — fall through to create it.
+      if (!remoteResult.success && remoteResult.error?.includes('Page not found') && template) {
+        remoteResult = await runRemoteCommand(
+          'page:create',
+          [template, parentPath, pageName, ...(dryRun ? [] : ['--dry-run=0'])],
+          undefined, undefined, undefined,
+          { fields: parsedFields, published },
+        );
+      }
+
       if (!remoteResult.success) hasFailure = true;
       results['remote'] = remoteResult.success ? remoteResult.data : { error: remoteResult.error };
 

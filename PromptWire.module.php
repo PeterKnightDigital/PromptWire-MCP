@@ -17,7 +17,7 @@
  * @package     PromptWire
  * @author      Peter Knight <https://www.peterknight.digital>
  * @license     MIT
- * @version     1.12.6
+ * @version     1.12.7
  * @link        https://github.com/PeterKnightDigital/PromptWire-MCP
  * 
  * @see         /bin/promptwire.php      CLI entrypoint

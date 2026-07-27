@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.12.7 (27 Jul 2026)
+
+- **Fixed: `publishPage` remote branch now uses "try-update, fall-back-to-create" guard.** Previously `pw_page_publish` called `page:create` unconditionally on the remote target. If the page already existed on remote (e.g. from a prior interrupted publish attempt), ProcessWire auto-incremented the slug to `pagename-1`, producing an unpublished orphan duplicate. The remote branch now mirrors the `pushToRemote()` pattern: it tries `page:update` first and only falls through to `page:create` when the response is `Page not found`. Resolves the `-1` suffix orphan pages visible in `pw_site_sync` dry-runs.
+
 ## 1.12.6 (14 Jul 2026)
 
 - **Fixed: MCP remote client no longer misreports `page:update` 404s as "Remote API not found".** When the remote API returns HTTP 404 with `{"error":"Page not found: /path/"}`, the client now surfaces that application error instead of the generic endpoint-missing message. This restores the `page:create` fallback in `pushToRemote()` when pushing a locally-created page to production for the first time.
