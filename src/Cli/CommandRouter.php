@@ -266,7 +266,8 @@ class CommandRouter {
                     return ['error' => 'Local path to page sync directory required'];
                 }
                 $template = $flags['template'] ?? null;
-                return $this->pageInit($localPath, $template);
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                return $this->pageInit($localPath, $template, $dryRun);
             
             case 'page:publish':
                 $localPath = $positional[0] ?? null;
@@ -436,6 +437,38 @@ class CommandRouter {
                     ? array_map('trim', explode(',', $flags['classes']))
                     : [];
                 return $this->modulesList($classes);
+
+            case 'module:install':
+                // Accept positional ModuleClass and/or --classes=Foo,Bar. One
+                // module per call is recommended; up to five per batch.
+                $classes = [];
+                if (isset($flags['classes']) && $flags['classes'] !== '') {
+                    $classes = array_map('trim', explode(',', $flags['classes']));
+                } elseif (!empty($positional[0])) {
+                    $classes = [trim($positional[0])];
+                }
+                $classes = array_values(array_filter($classes, fn($c) => $c !== ''));
+                if (empty($classes)) {
+                    return ['error' => 'Usage: module:install ModuleClass [--classes=Foo,Bar] [--dry-run=0]'];
+                }
+                if (count($classes) > 5) {
+                    return ['error' => 'module:install accepts at most 5 module classes per call'];
+                }
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                return $this->moduleInstall($classes, $dryRun);
+
+            case 'module:config:patch':
+                $class = $positional[0] ?? null;
+                $patchJson = $flags['patch'] ?? $flags['input'] ?? null;
+                if (!$class || !$patchJson) {
+                    return ['error' => 'Usage: module:config:patch ModuleClass --patch=\'{"key":"value"}\' [--dry-run=0]'];
+                }
+                $patch = json_decode($patchJson, true);
+                if (!is_array($patch)) {
+                    return ['error' => 'module:config:patch requires valid JSON object via --patch or --input'];
+                }
+                $dryRun = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+                return $this->moduleConfigPatch($class, $patch, $dryRun);
 
             case 'users:list':
                 $includeAll = in_array('all', $flags['include'] ?? [], true);
@@ -1574,11 +1607,11 @@ class CommandRouter {
     /**
      * Initialise or repair page.meta.json for a sync directory
      */
-    private function pageInit(string $localPath, ?string $template = null): array {
+    private function pageInit(string $localPath, ?string $template = null, bool $dryRun = false): array {
         require_once(__DIR__ . '/../Sync/SyncManager.php');
         
         $syncManager = new \PromptWire\Sync\SyncManager($this->wire);
-        return $syncManager->initPageMeta($localPath, $template);
+        return $syncManager->initPageMeta($localPath, $template, $dryRun);
     }
     
     /**
@@ -3386,6 +3419,222 @@ class CommandRouter {
     }
 
     /**
+     * Install one or more ProcessWire modules whose files are already on disk.
+     *
+     * Guardrails (by design):
+     * - Refuses when the module file is missing — no implicit upload.
+     * - Dry-run by default; returns the install plan (version, requirements,
+     *   auto-install companions) without mutating the site.
+     * - Uses ProcessWire's own requirement checks before attempting install.
+     *
+     * @param string[] $classes Module class names (max 5)
+     * @param bool $dryRun Preview only unless false
+     * @return array
+     */
+    private function moduleInstall(array $classes, bool $dryRun = true): array {
+        if (!$dryRun) {
+            $this->wire->modules->refresh();
+        }
+
+        $results = [];
+        foreach ($classes as $class) {
+            $results[] = $this->moduleInstallOne($class, $dryRun);
+        }
+
+        $errors = array_values(array_filter($results, fn($r) => !empty($r['error'])));
+        $applied = array_values(array_filter($results, fn($r) => !empty($r['installed'])));
+
+        $payload = [
+            'dryRun' => $dryRun,
+            'results' => $results,
+            'count' => count($results),
+        ];
+
+        if ($dryRun) {
+            $payload['hint'] = 'Set dryRun=false (MCP) or --dry-run=0 (CLI) to install.';
+            return $payload;
+        }
+
+        $payload['success'] = count($errors) === 0;
+        $payload['installedCount'] = count($applied);
+        if ($errors) {
+            $payload['error'] = implode('; ', array_map(
+                fn($r) => ($r['class'] ?? '?') . ': ' . $r['error'],
+                $errors
+            ));
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Install plan / single-module install for moduleInstall().
+     *
+     * @param string $class Module class name
+     * @param bool $dryRun Preview only unless false
+     * @return array
+     */
+    private function moduleInstallOne(string $class, bool $dryRun): array {
+        $modules = $this->wire->modules;
+        $installer = $modules->installer();
+        $rootPath = $this->wire->config->paths->root;
+
+        $filePath = $modules->getModuleFile($class);
+        $fileExists = $filePath && file_exists($filePath);
+
+        if (!$fileExists) {
+            return [
+                'class' => $class,
+                'fileExists' => false,
+                'error' => "Module file not found on disk: {$class}. Copy or symlink the module into site/modules/ and run Modules → Refresh before installing.",
+            ];
+        }
+
+        $info = $modules->getModuleInfo($class);
+        $version = isset($info['version'])
+            ? (is_numeric($info['version'])
+                ? $modules->formatVersion((int) $info['version'])
+                : (string) $info['version'])
+            : null;
+        $willAutoInstall = $info['installs'] ?? [];
+        $missingRequirements = $installer->getRequiresForInstall($class);
+
+        if ($modules->isInstalled($class)) {
+            return [
+                'class' => $class,
+                'fileExists' => true,
+                'filePath' => ltrim(str_replace($rootPath, '', $filePath), '/'),
+                'isInstalled' => true,
+                'alreadyInstalled' => true,
+                'version' => $version,
+                'message' => 'Already installed',
+            ];
+        }
+
+        $plan = [
+            'class' => $class,
+            'fileExists' => true,
+            'filePath' => ltrim(str_replace($rootPath, '', $filePath), '/'),
+            'isInstalled' => false,
+            'version' => $version,
+            'willAutoInstall' => $willAutoInstall,
+            'missingRequirements' => $missingRequirements,
+            'installable' => $installer->isInstallable($class, true),
+        ];
+
+        if (!empty($missingRequirements)) {
+            $plan['error'] = 'Unmet requirements: ' . implode(', ', $missingRequirements);
+            return $plan;
+        }
+
+        if ($dryRun) {
+            return $plan;
+        }
+
+        if (!$installer->isInstallable($class)) {
+            return array_merge($plan, [
+                'error' => "Module is not installable: {$class}",
+            ]);
+        }
+
+        try {
+            $module = $modules->install($class);
+            if (!$module) {
+                return array_merge($plan, [
+                    'error' => "ProcessWire returned null when installing {$class}",
+                ]);
+            }
+
+            $modules->refresh();
+
+            $autoInstalled = [];
+            foreach ($willAutoInstall as $companion) {
+                if ($modules->isInstalled($companion)) {
+                    $autoInstalled[] = $companion;
+                }
+            }
+
+            $installedInfo = $modules->getModuleInfo($class);
+            $installedVersion = isset($installedInfo['version'])
+                ? (is_numeric($installedInfo['version'])
+                    ? $modules->formatVersion((int) $installedInfo['version'])
+                    : (string) $installedInfo['version'])
+                : $version;
+
+            return [
+                'class' => $class,
+                'installed' => true,
+                'isInstalled' => true,
+                'version' => $installedVersion,
+                'autoInstalled' => $autoInstalled,
+            ];
+        } catch (\Throwable $e) {
+            return array_merge($plan, [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Merge keys into a module's saved config (modules.data JSON).
+     *
+     * @param string $class Module class name (e.g. SeoNeo)
+     * @param array<string, mixed> $patch Key/value pairs to merge
+     * @param bool $dryRun Preview only unless false
+     * @return array
+     */
+    private function moduleConfigPatch(string $class, array $patch, bool $dryRun = true): array {
+        $modules = $this->wire->modules;
+        if (!$modules->isInstalled($class)) {
+            return ['error' => "Module not installed: $class"];
+        }
+
+        $data = $modules->getModuleConfigData($class);
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        $changes = [];
+        foreach ($patch as $key => $value) {
+            $before = array_key_exists($key, $data) ? $data[$key] : null;
+            if ($before === $value) {
+                continue;
+            }
+            $changes[$key] = ['from' => $before, 'to' => $value];
+            $data[$key] = $value;
+        }
+
+        if ($dryRun) {
+            return [
+                'dryRun' => true,
+                'module' => $class,
+                'changes' => $changes,
+                'changeCount' => count($changes),
+                'hint' => 'Use --dry-run=0 to apply',
+            ];
+        }
+
+        if (!$changes) {
+            return [
+                'success' => true,
+                'module' => $class,
+                'changed' => false,
+                'message' => 'No changes needed',
+            ];
+        }
+
+        $modules->saveModuleConfigData($class, $data);
+
+        return [
+            'success' => true,
+            'module' => $class,
+            'changed' => true,
+            'changes' => $changes,
+            'changeCount' => count($changes),
+        ];
+    }
+
+    /**
      * List ProcessWire users with roles and (by default) member_* fields.
      *
      * The default field projection is deliberately narrow: id, name, email,
@@ -4784,6 +5033,7 @@ class CommandRouter {
                 'site:inventory' => 'Page inventory with content hashes (--exclude-templates=user,role --include-system)',
                 'files:inventory' => 'File inventory with MD5 hashes (--directories=site/templates,site/modules --extensions=php,js,css,json,latte,twig,module --no-follow-symlinks)',
                 'modules:list' => 'List installed modules with version + file path (--classes=Foo,Bar to inspect specific classes)',
+                'module:install [Class]' => 'Install a module whose files are already on disk (--classes=Foo,Bar, max 5; --dry-run=0 to apply)',
                 'users:list' => 'List users with roles and member_* fields (--include=all to widen to every non-system field)',
                 'resolve' => 'Bulk-resolve names to ids (--type=field|template|page|role|permission|user|module --names=foo,bar OR --input=\'{"type":"field","names":["foo"]}\')',
                 'template:inspect' => 'Inspect a template with rich field info ({name,type,label} per field) for fieldgroup-diff workflows',

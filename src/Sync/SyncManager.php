@@ -667,7 +667,7 @@ class SyncManager {
             }
             
             $field = $this->wire->fields->get($fieldName);
-            $this->applyFieldValue($page, $field, $value, $localDir, $excludeKeys);
+            $this->applyFieldValue($page, $field, $value, $localDir, $excludeKeys, false);
         }
         
         // Save the page
@@ -1750,7 +1750,7 @@ class SyncManager {
      * @param string|null $localDir Base path for reading external files
      * @param array $excludeKeys Field keys to skip (e.g. matrix→Body[2]) - used for repeater sub-fields
      */
-    private function applyFieldValue(Page $page, $field, $value, ?string $localDir = null, array $excludeKeys = []): void {
+    private function applyFieldValue(Page $page, $field, $value, ?string $localDir = null, array $excludeKeys = [], bool $dryRun = false): void {
         $fieldName = $field->name;
         /** @var string $typeName */
         $typeName = $field->type->className();
@@ -1806,15 +1806,18 @@ class SyncManager {
             return;
         }
         
-        // Handle Options fields (single option with id/_label)
-        if (is_array($value) && isset($value['id']) && isset($value['_label'])) {
-            $page->set($fieldName, [(int) $value['id']]);
+        // Handle Options fields (single option with id/_label).
+        // Resolve by _label first so cross-environment pushes (where option IDs differ
+        // between local and remote) land on the correct option by title match.
+        if (is_array($value) && isset($value['_label'])) {
+            $resolved = $this->resolveOptionId($field, $value['_label'], $value['id'] ?? null);
+            $page->set($fieldName, [$resolved]);
             return;
         }
         
         // Handle Options fields (array of options with id/_label)
-        if (is_array($value) && !empty($value) && isset($value[0]['id']) && isset($value[0]['_label'])) {
-            $optionIds = array_map(fn($opt) => (int) $opt['id'], $value);
+        if (is_array($value) && !empty($value) && isset($value[0]['_label'])) {
+            $optionIds = array_map(fn($opt) => $this->resolveOptionId($field, $opt['_label'], $opt['id'] ?? null), $value);
             $page->set($fieldName, $optionIds);
             return;
         }
@@ -1824,7 +1827,7 @@ class SyncManager {
             strpos($typeName, 'FieldtypeImage') !== false ||
             strpos($typeName, 'FieldtypeCroppable') !== false) {
             if (is_array($value)) {
-                $this->applyFileFieldMetadata($page, $fieldName, $value);
+                $this->applyFileFieldMetadata($page, $fieldName, $value, $dryRun);
             }
             return;
         }
@@ -1834,7 +1837,7 @@ class SyncManager {
         if ($currentValue instanceof \ProcessWire\Pagefiles || 
             $currentValue instanceof \ProcessWire\Pageimages) {
             if (is_array($value)) {
-                $this->applyFileFieldMetadata($page, $fieldName, $value);
+                $this->applyFileFieldMetadata($page, $fieldName, $value, $dryRun);
             }
             return;
         }
@@ -1856,7 +1859,14 @@ class SyncManager {
      * @param string $fieldName
      * @param array $items Array of { filename, description? } from page.yaml
      */
-    private function applyFileFieldMetadata(Page $page, string $fieldName, array $items): void {
+    /**
+     * @param bool $dryRun When true the method detects changes for diff reporting but
+     *                     does NOT create Pagefile objects or call $page->save().
+     *                     This guard is defensive — callers in pushPage / publishPage
+     *                     already return before reaching this code in dry-run mode,
+     *                     but the flag makes the safety contract explicit.
+     */
+    private function applyFileFieldMetadata(Page $page, string $fieldName, array $items, bool $dryRun = false): void {
         $fieldValue = $page->get($fieldName);
         if (!($fieldValue instanceof \ProcessWire\Pagefiles)) {
             return;
@@ -1868,29 +1878,70 @@ class SyncManager {
             if (!is_array($item) || empty($item['filename'])) {
                 continue;
             }
-            if (!array_key_exists('description', $item)) {
-                continue;
-            }
 
             $filename = (string) $item['filename'];
             $desc     = (string) ($item['description'] ?? '');
             $file     = $fieldValue->get("name=$filename");
+
+            // If the file is on disk but not yet registered in PW's Pagefiles, add it.
+            // Skipped entirely in dry-run mode — no Pagefile objects are created.
             if (!$file) {
+                $diskPath = $page->filesManager()->path() . $filename;
+                if (file_exists($diskPath)) {
+                    if (!$dryRun) {
+                        $file = new \ProcessWire\Pagefile($fieldValue, $diskPath);
+                        $fieldValue->add($file);
+                    }
+                    $changed = true;
+                } else {
+                    continue;
+                }
+            }
+
+            if (!$file || !array_key_exists('description', $item)) {
                 continue;
             }
 
             if ((string) $file->description !== $desc) {
-                $file->description = $desc;
-                $file->save();
+                if (!$dryRun) {
+                    $file->description = $desc;
+                }
                 $changed = true;
             }
         }
 
-        if ($changed) {
+        if ($changed && !$dryRun) {
             $page->save($fieldName);
         }
     }
-    
+
+    /**
+     * Resolve a FieldtypeOptions option ID by label title, falling back to the raw ID.
+     *
+     * Option IDs are auto-incremented per environment, so they routinely differ between
+     * local and remote ProcessWire installations. Matching by title is stable across
+     * environments as long as the option title is unchanged.
+     *
+     * @param Field  $field    The options field object.
+     * @param string $label    The _label value from YAML (used as the preferred match key).
+     * @param mixed  $fallback Raw id from YAML to use when no title match is found.
+     * @return int             Resolved option ID (> 0) or the raw fallback cast to int.
+     */
+    private function resolveOptionId($field, string $label, $fallback): int {
+        try {
+            $options = $field->type->getOptions($field);
+            foreach ($options as $opt) {
+                $title = (string) ($opt->title ?: $opt->value);
+                if (strcasecmp($title, $label) === 0) {
+                    return (int) $opt->id;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Options not accessible — fall through to raw ID
+        }
+        return (int) $fallback;
+    }
+
     /**
      * Apply changes to repeater/matrix field items
      * 
@@ -1959,7 +2010,7 @@ class SyncManager {
                     if (!$newItem->template->hasField($key)) continue;
                     $itemField = $this->wire->fields->get($key);
                     $itemField
-                        ? $this->applyFieldValue($newItem, $itemField, $val, $localDir, $excludeKeys)
+                        ? $this->applyFieldValue($newItem, $itemField, $val, $localDir, $excludeKeys, false)
                         : $newItem->set($key, $val);
                 }
                 $repeater->add($newItem);
@@ -1999,7 +2050,7 @@ class SyncManager {
                 $itemField = $this->wire->fields->get($key);
                 if ($itemField) {
                     // Recursively apply field value (handles nested types and _file references)
-                    $this->applyFieldValue($repeaterPage, $itemField, $val, $localDir, $excludeKeys);
+                    $this->applyFieldValue($repeaterPage, $itemField, $val, $localDir, $excludeKeys, false);
                 } else {
                     // Simple value
                     $repeaterPage->set($key, $val);
@@ -2998,7 +3049,7 @@ class SyncManager {
      * @param string|null $template Template name (required only for new pages when parent allows multiple child templates)
      * @return array Result
      */
-    public function initPageMeta(string $localPath, ?string $template = null): array {
+    public function initPageMeta(string $localPath, ?string $template = null, bool $dryRun = false): array {
         if (str_ends_with($localPath, '.yaml') || str_ends_with($localPath, '.json')) {
             $localPath = dirname($localPath);
         } else {
@@ -3015,11 +3066,26 @@ class SyncManager {
         
         $metaPath = $localPath . '/page.meta.json';
         $yamlPath = $localPath . '/page.yaml';
-        
+
+        // Read any existing meta so we can preserve remote-tracking data across re-init.
+        $existingMeta = null;
         if (file_exists($metaPath)) {
-            $existingMeta = json_decode(file_get_contents($metaPath), true);
-            if ($existingMeta && !empty($existingMeta['pageId'])) {
-                return ['error' => "page.meta.json already exists and references page ID {$existingMeta['pageId']}. Delete it first to re-initialise."];
+            $existingMeta = json_decode(file_get_contents($metaPath), true) ?: null;
+        }
+
+        if ($existingMeta) {
+            // For metas that carry an ids block (v1.10.1+), only the ids.local slot
+            // identifies a confirmed local page — pageId in a remote-pull meta holds
+            // the remote site's ID and must NOT be treated as a local block.
+            // For legacy metas without an ids block, fall back to pageId.
+            if (isset($existingMeta['ids'])) {
+                $existingLocalId = (int) ($existingMeta['ids']['local']['id'] ?? 0);
+            } else {
+                $existingLocalId = (int) ($existingMeta['pageId'] ?? 0);
+            }
+
+            if ($existingLocalId > 0) {
+                return ['error' => "page.meta.json already linked to local page ID {$existingLocalId}. Delete it first to re-initialise."];
             }
         }
         
@@ -3041,15 +3107,21 @@ class SyncManager {
         // Check if page already exists in PW
         $existingPage = $this->wire->pages->get($fullPagePath);
         
+        // Preserve ids.remote from a previous remote pull so cross-environment tracking
+        // survives a local re-init without requiring the user to delete page.meta.json first.
+        $preservedRemoteIds = $existingMeta['ids']['remote'] ?? null;
+
         if ($existingPage && $existingPage->id) {
             // Page exists — write a "pulled" meta so push works
             $currentFields = $this->extractPageFields($existingPage);
             $revisionHash = $this->generateRevisionHash($currentFields);
-            
+
+            $idsBlock = $this->buildIdsBlock('local', (int) $existingPage->id, $existingMeta);
+
             $meta = [
                 '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
                 'pageId' => (int) $existingPage->id,
-                'ids' => $this->buildIdsBlock('local', (int) $existingPage->id),
+                'ids' => $idsBlock,
                 'new' => false,
                 'canonicalPath' => $existingPage->path,
                 'template' => $existingPage->template->name,
@@ -3061,17 +3133,22 @@ class SyncManager {
                 'revisionHash' => $revisionHash,
                 'lastPushedAt' => date('c'),
             ];
-            
-            file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            if (!$dryRun) {
+                file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            }
             
             return [
                 'success' => true,
+                'dryRun' => $dryRun,
                 'action' => 'linked',
                 'pageId' => $existingPage->id,
                 'path' => $existingPage->path,
                 'template' => $existingPage->template->name,
                 'localPath' => $this->getRelativePath($localPath),
-                'note' => 'Existing page found — meta written for pw_page_push.',
+                'note' => $dryRun
+                    ? 'Dry run — page.meta.json not written. Would link to existing page.'
+                    : 'Existing page found — meta written for pw_page_push.',
             ];
         }
         
@@ -3105,10 +3182,17 @@ class SyncManager {
                 $title = $content['fields']['title'];
             }
         }
+
+        // Seed ids block — no local ID yet, but carry forward any remote slot.
+        $idsBlock = [];
+        if ($preservedRemoteIds) {
+            $idsBlock['remote'] = $preservedRemoteIds;
+        }
         
         $meta = [
             '_readme' => 'DO NOT EDIT - This file is auto-generated. Edit page.yaml and field HTML files instead.',
             'pageId' => null,
+            'ids' => $idsBlock ?: (object) [],
             'new' => true,
             'canonicalPath' => $fullPagePath,
             'template' => $templateName,
@@ -3119,15 +3203,27 @@ class SyncManager {
             'status' => 'new',
         ];
         
-        file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        if (!$dryRun) {
+            file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        }
+
+        if ($dryRun) {
+            $note = 'Dry run — page.meta.json not written. Would scaffold a new page.';
+        } else {
+            $note = 'Page does not exist yet — meta written for pw_page_publish.';
+            if ($preservedRemoteIds) {
+                $note .= ' ids.remote preserved from previous pull.';
+            }
+        }
         
         return [
             'success' => true,
+            'dryRun' => $dryRun,
             'action' => 'scaffolded',
             'path' => $fullPagePath,
             'template' => $templateName,
             'localPath' => $this->getRelativePath($localPath),
-            'note' => 'Page does not exist yet — meta written for pw_page_publish.',
+            'note' => $note,
         ];
     }
     
@@ -3361,7 +3457,7 @@ class SyncManager {
             
             $field = $this->wire->fields->get($fieldName);
             if ($field) {
-                $this->applyFieldValue($page, $field, $value, $localPath);
+                $this->applyFieldValue($page, $field, $value, $localPath, [], false);
             }
         }
         

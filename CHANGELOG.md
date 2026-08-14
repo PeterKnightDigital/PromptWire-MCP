@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.13.0 (14 Aug 2026)
+
+- **Fixed: Options fields now resolve by label across environments.** When a page is pushed between environments (e.g. local → production), options field IDs are matched by title, not raw integer. Option IDs are auto-incremented per install and routinely differ between sites; matching by label means the correct option is always selected regardless of which environment generated the YAML. Applies to both the local PHP push path (`SyncManager::applyFieldValue`) and the remote API (`promptwire-api.php`).
+- **Fixed: `FieldtypeFile` and `FieldtypeImage` fields now register disk-resident files during `pw_page_push`.** Previously, a file placed in the page's asset directory via `pw_page_assets`, `pw_file_sync`, or a manual copy was silently skipped when pushing field metadata — the file existed on disk but was not registered in ProcessWire's Pagefiles collection. The push now detects this case and adds the `Pagefile` object before writing the description, so a single `pw_page_push` is enough to register and describe a newly-uploaded file. Same fix applied to both the CLI and remote API push paths.
+- **Fixed: `pw_page_init` no longer requires manual deletion of `page.meta.json` when the file was written by a remote pull.** A remote pull sets `pageId` to the remote environment's integer; this caused `initPageMeta` to treat the page as already locally-linked and block re-init. The guard now checks `ids.local` exclusively — a meta with only `ids.remote` is correctly treated as unlinked locally and init proceeds without the manual delete step.
+- **New: `pw_page_init` gains dry-run mode.** Pass `dryRun: true` (the new default) to preview what would be linked or scaffolded without writing `page.meta.json`. Pass `dryRun: false` to apply. Consistent with every other write tool in the suite.
+- **Improvement: `pw_page_init` preserves `ids.remote` across re-init.** When a page is re-initialised locally, any existing `ids.remote` slot in the old meta is carried forward into the new one. Re-initing a page that was previously pulled from production no longer loses the remote-environment tracking information.
+- **Module + MCP server version bumped to 1.13.0.**
+
+## 1.12.8 (10 Aug 2026)
+
+- **New: `pw_module_install` MCP tool** (+ `module:install` CLI command). Installs ProcessWire modules whose files are already on disk. Dry-run by default — returns version, missing requirements, and auto-install companions (`installs` from module info) before mutating the site. Refuses when the module file is missing (no implicit upload). Remote apply requires the module to be installed locally first unless `skipLocalVerification=true`. `site="both"` installs locally first and only proceeds to remote when local succeeds. Batch limit: 5 classes per call.
+- **Module + MCP server version bumped to 1.12.8.**
+
 ## 1.12.7 (27 Jul 2026)
 
 - **Fixed: `publishPage` remote branch now uses "try-update, fall-back-to-create" guard.** Previously `pw_page_publish` called `page:create` unconditionally on the remote target. If the page already existed on remote (e.g. from a prior interrupted publish attempt), ProcessWire auto-incremented the slug to `pagename-1`, producing an unpublished orphan duplicate. The remote branch now mirrors the `pushToRemote()` pattern: it tries `page:update` first and only falls through to `page:create` when the response is `Page not found`. Resolves the `-1` suffix orphan pages visible in `pw_site_sync` dry-runs.

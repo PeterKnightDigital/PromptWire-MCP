@@ -158,6 +158,7 @@ For pages with a `release_file` field (e.g. `/downloads/mediahub/v1-17-0/`):
 | `pw_search`           | Search page content by keyword                                                                    |
 | `pw_search_files`     | Search PHP/template files in the site directory                                                   |
 | `pw_modules_list`     | List installed modules with version, file path, and install state. Pass `site: "both"` to compare |
+| `pw_module_install` | Install modules whose files are on disk. Dry-run by default; remote apply requires local install first |
 | `pw_users_list`       | List users with id, name, email, roles, and any `member_*` fields. Password hashes are excluded   |
 | `pw_resolve`          | Bulk-resolve names to ProcessWire ids on the chosen site (fields, templates, pages, roles, users) |
 | `pw_export_schema`    | Export the full site schema (templates + fields) as JSON                                          |

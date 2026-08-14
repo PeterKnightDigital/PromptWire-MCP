@@ -288,10 +288,14 @@ function pwMcpResolvePageRef(\ProcessWire\Wire $wire, array $ref): ?int {
 
 /**
  * Resolve a field value before passing to $page->set().
- * Handles _pageRef objects (single and array) transparently; all other values
- * are returned unchanged.
+ * Handles _pageRef objects (single and array) and FieldtypeOptions (_label resolution)
+ * transparently; all other values are returned unchanged.
+ *
+ * @param \ProcessWire\Wire  $wire
+ * @param mixed              $value  Raw value from YAML / JSON payload.
+ * @param \ProcessWire\Field|null $field  Optional field object; required for Options label resolution.
  */
-function pwMcpResolveFieldValue(\ProcessWire\Wire $wire, $value) {
+function pwMcpResolveFieldValue(\ProcessWire\Wire $wire, $value, $field = null) {
     if (!is_array($value)) return $value;
     // Single page reference
     if (isset($value['_pageRef']) && $value['_pageRef'] === true) {
@@ -306,7 +310,46 @@ function pwMcpResolveFieldValue(\ProcessWire\Wire $wire, $value) {
         }
         return $ids ?: null;
     }
+    // Single FieldtypeOptions value — resolve by _label for cross-environment safety
+    if (isset($value['_label']) && !isset($value['_pageRef'])) {
+        $id = pwMcpResolveOptionId($wire, $field, $value['_label'], $value['id'] ?? null);
+        return [$id];
+    }
+    // Array of FieldtypeOptions values
+    if (!empty($value) && isset($value[0]['_label']) && !isset($value[0]['_pageRef'])) {
+        return array_map(fn($opt) => pwMcpResolveOptionId($wire, $field, $opt['_label'], $opt['id'] ?? null), $value);
+    }
     return $value;
+}
+
+/**
+ * Resolve a FieldtypeOptions option to its ID on this environment by matching
+ * the option title (_label). Falls back to the raw ID when no title match is found.
+ *
+ * Option IDs are auto-incremented per environment, so they routinely differ
+ * between local and remote ProcessWire installations.
+ *
+ * @param \ProcessWire\Wire        $wire
+ * @param \ProcessWire\Field|null  $field    The options field (null = fall back to raw ID).
+ * @param string                   $label    The _label value from the push payload.
+ * @param mixed                    $fallback Raw ID to use when no title match is found.
+ * @return int
+ */
+function pwMcpResolveOptionId(\ProcessWire\Wire $wire, $field, string $label, $fallback): int {
+    if ($field) {
+        try {
+            $options = $field->type->getOptions($field);
+            foreach ($options as $opt) {
+                $title = (string) ($opt->title ?: $opt->value);
+                if (strcasecmp($title, $label) === 0) {
+                    return (int) $opt->id;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Fall through to raw ID
+        }
+    }
+    return (int) $fallback;
 }
 
 /**
@@ -342,15 +385,29 @@ function pwMcpApplyFileFieldMetadata(\ProcessWire\Page $page, string $fieldName,
     foreach ($items as $item) {
         if (!is_array($item) || empty($item['filename'])) continue;
         $filename = (string) $item['filename'];
-        $desc     = array_key_exists('description', $item) ? ($item['description'] ?? '') : null;
-        if ($desc === null) continue;
+        $desc     = array_key_exists('description', $item) ? (string) ($item['description'] ?? '') : null;
 
         $file = $fieldValue->get("name=$filename");
-        if (!$file) continue;
 
-        if ((string) $file->description !== (string) $desc) {
+        // If the file is on disk but not yet registered in PW's Pagefiles, add it.
+        // This covers the case where a file was placed in the page's files directory
+        // (e.g. via pw_file_sync or manual copy) but push was called before it was
+        // ever registered.
+        if (!$file) {
+            $diskPath = $page->filesManager()->path() . $filename;
+            if (file_exists($diskPath)) {
+                $file = new \ProcessWire\Pagefile($fieldValue, $diskPath);
+                $fieldValue->add($file);
+                $changed = true;
+            } else {
+                continue;
+            }
+        }
+
+        if ($desc === null) continue;
+
+        if ((string) $file->description !== $desc) {
             $file->description = $desc;
-            $file->save();
             $changed = true;
         }
     }
@@ -607,11 +664,19 @@ if ($command === 'page:update') {
                 $pendingMeta = [];
                 foreach ($newValue as $item) {
                     if (!is_array($item) || empty($item['filename'])) continue;
-                    if (!array_key_exists('description', $item)) continue;
                     $filename = (string) $item['filename'];
                     $desc     = (string) ($item['description'] ?? '');
                     $file     = $fieldValue->get("name=$filename");
-                    if (!$file) continue;
+                    if (!$file) {
+                        // File is on disk but not yet registered — registering it
+                        // is a pending change even if no description update is needed.
+                        $diskPath = $page->filesManager()->path() . $filename;
+                        if (file_exists($diskPath)) {
+                            $pendingMeta[] = $item;
+                        }
+                        continue;
+                    }
+                    if (!array_key_exists('description', $item)) continue;
                     if ((string) $file->description !== $desc) {
                         $pendingMeta[] = $item;
                     }
@@ -627,7 +692,7 @@ if ($command === 'page:update') {
             continue;
         }
 
-        $resolved = pwMcpResolveFieldValue($wire, $newValue);
+        $resolved = pwMcpResolveFieldValue($wire, $newValue, $field);
 
         $oldValue = (string) $page->get($fieldName);
         // For display in the diff, use path(s) if it's a page ref; otherwise raw.
@@ -654,6 +719,7 @@ if ($command === 'page:update') {
     $publish = !empty($pageData['publish']);
 
     if (!$dryRun) {
+        $page->of(false);
         // Apply resolved field values
         foreach ($fieldValues as $fieldName => $resolvedValue) {
             $page->set($fieldName, $resolvedValue);
@@ -757,6 +823,93 @@ if ($command === 'file:inventory') {
             'line'  => $e->getLine(),
         ]);
     }
+    exit;
+}
+
+// ============================================================================
+// SPECIAL CASE: file:refresh-filesize — re-read on-disk size into Pagefile DB metadata.
+// Use after page-assets sync replaced a binary without going through file:upload.
+// Accepts { command, args: ["/path/"], fileData: { fieldName, filename? } }
+// ============================================================================
+
+if ($command === 'file:refresh-filesize') {
+    $pagePath = $flags['_positional'][0] ?? null;
+    $fileData = $request['fileData'] ?? [];
+    $fieldName = is_array($fileData) ? ($fileData['fieldName'] ?? null) : null;
+    $filename  = is_array($fileData) ? ($fileData['filename'] ?? null) : null;
+    $dryRun    = !isset($flags['dry-run']) || $flags['dry-run'] !== '0';
+
+    if (!$pagePath || !$fieldName) {
+        http_response_code(400);
+        echo json_encode(['error' => 'file:refresh-filesize requires page path and fileData.fieldName']);
+        exit;
+    }
+
+    $page = $wire->pages->get($pagePath);
+    if (!$page || !$page->id) {
+        http_response_code(404);
+        echo json_encode(['error' => "Page not found: $pagePath"]);
+        exit;
+    }
+
+    $fieldValue = $page->get($fieldName);
+    if (!($fieldValue instanceof \ProcessWire\Pagefiles) || !$fieldValue->count()) {
+        http_response_code(404);
+        echo json_encode(['error' => "No files in field $fieldName"]);
+        exit;
+    }
+
+    $file = $filename
+        ? $fieldValue->get('name=' . $filename)
+        : $fieldValue->first();
+    if (!$file) {
+        http_response_code(404);
+        echo json_encode(['error' => 'File not found in field']);
+        exit;
+    }
+
+    $diskSize = (int) @filesize($file->filename);
+    $stored   = (int) $file->get('filesize');
+
+    if ($dryRun) {
+        echo json_encode([
+            'success' => true,
+            'dryRun' => true,
+            'pagePath' => $page->path,
+            'fieldName' => $fieldName,
+            'filename' => $file->basename,
+            'storedFilesize' => $stored,
+            'diskFilesize' => $diskSize,
+            'action' => 'would_refresh',
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $page->of(false);
+    // Pagefile only accepts filesize set while empty/zero — clear then set from disk.
+    $file->set('filesize', 0);
+    $file->data('filesize', 0);
+    $file->filesize = $diskSize;
+    $file->modified = time();
+    $page->save($fieldName);
+
+    $wire->pages->uncacheAll();
+    $page = $wire->pages->get($page->id);
+    $file = $filename
+        ? $page->get($fieldName)->get('name=' . $filename)
+        : $page->get($fieldName)->first();
+
+    echo json_encode([
+        'success' => true,
+        'dryRun' => false,
+        'pagePath' => $page->path,
+        'fieldName' => $fieldName,
+        'filename' => $file ? $file->basename : null,
+        'storedFilesize' => $file ? (int) $file->get('filesize') : null,
+        'diskFilesize' => $diskSize,
+        'filesizeStr' => $file ? $file->filesizeStr() : null,
+        'action' => 'refreshed',
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
 }
 

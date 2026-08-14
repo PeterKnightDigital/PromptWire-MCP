@@ -516,7 +516,7 @@ const tools = [
   },
   {
     name: 'pw_page_init',
-    description: 'Initialise or repair page.meta.json for a sync directory. If the page exists in ProcessWire, links to it (for pw_page_push). If not, creates a new-page scaffold (for pw_page_publish). Useful when content files were created manually without using pw_page_new.',
+    description: 'Initialise or repair page.meta.json for a sync directory. If the page exists in ProcessWire, links to it (for pw_page_push). If not, creates a new-page scaffold (for pw_page_publish). Useful when content files were created manually without using pw_page_new. Supports dryRun to preview what would happen without writing page.meta.json.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -527,6 +527,11 @@ const tools = [
         template: {
           type: 'string',
           description: 'Template name (required only for new pages when the parent allows multiple child templates)',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'If true (default), preview what would be linked or scaffolded without writing page.meta.json. Set to false to apply.',
+          default: true,
         },
       },
       required: ['localPath'],
@@ -947,6 +952,47 @@ const tools = [
           default: 'local',
         },
       },
+    },
+  },
+  {
+    name: 'pw_module_install',
+    description:
+      'Install ProcessWire modules whose files are already on disk (symlinked or copied into site/modules/). ' +
+      'Dry-run by default — returns the install plan (version, missing requirements, auto-install companions) without mutating the site. ' +
+      'Set dryRun=false to apply. Refuses when the module file is missing (no implicit upload). ' +
+      'For site="remote", the module must already be installed locally unless skipLocalVerification=true. ' +
+      'For site="both", installs locally first and only proceeds to remote when local succeeds. ' +
+      'One module per call is recommended; up to 5 classes per batch.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        classes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Module class names to install (e.g. ["SeoNeoFallbackChain"]). Required. Max 5.',
+          minItems: 1,
+          maxItems: 5,
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'Preview the install plan without applying. Defaults to true.',
+          default: true,
+        },
+        site: {
+          type: 'string',
+          enum: ['local', 'remote', 'both'],
+          description: 'Which site to install on. Defaults to "local".',
+          default: 'local',
+        },
+        skipLocalVerification: {
+          type: 'boolean',
+          description:
+            'When site="remote", skip the check that each module is already installed locally. ' +
+            'Use only when you have deliberately synced module files to remote without installing locally first.',
+          default: false,
+        },
+      },
+      required: ['classes'],
     },
   },
   {
@@ -1673,9 +1719,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Initialise or repair page.meta.json
     case 'pw_page_init': {
-      const { localPath, template } = args as { localPath: string; template?: string };
+      const { localPath, template, dryRun } = args as { localPath: string; template?: string; dryRun?: boolean };
       const cmdArgs = [localPath];
       if (template) cmdArgs.push(`--template=${template}`);
+      if (dryRun !== false) cmdArgs.push('--dry-run=1'); else cmdArgs.push('--dry-run=0');
       const result = await runPwCommand('page:init', cmdArgs);
       return formatToolResponse(result);
     }
@@ -1949,6 +1996,89 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         cmdArgs.push(`--classes=${classes.join(',')}`);
       }
       const result = await runOnSite(site, 'modules:list', cmdArgs);
+      return formatToolResponse(result);
+    }
+
+    case 'pw_module_install': {
+      const {
+        classes,
+        dryRun,
+        site,
+        skipLocalVerification,
+      } = args as {
+        classes: string[];
+        dryRun?: boolean;
+        site?: Site;
+        skipLocalVerification?: boolean;
+      };
+
+      if (!classes || classes.length === 0) {
+        return formatToolResponse({
+          success: false,
+          error: 'classes array is required (e.g. ["SeoNeoFallbackChain"])',
+        });
+      }
+      if (classes.length > 5) {
+        return formatToolResponse({
+          success: false,
+          error: 'pw_module_install accepts at most 5 module classes per call',
+        });
+      }
+
+      const target: Site = site ?? 'local';
+      const apply = dryRun === false;
+      const cmdArgs = [`--classes=${classes.join(',')}`];
+      if (apply) {
+        cmdArgs.push('--dry-run=0');
+      }
+
+      // Remote apply guardrail: prove the module is vetted locally first unless
+      // the operator explicitly opts out. Dry-run previews are always allowed.
+      if (apply && (target === 'remote' || target === 'both') && !skipLocalVerification) {
+        const localCheckArgs = [`--classes=${classes.join(',')}`];
+        const localCheck = await runPwCommand('modules:list', localCheckArgs);
+        if (!localCheck.success) {
+          return formatToolResponse(localCheck);
+        }
+        const localModules = (localCheck.data as { modules?: Array<{ class: string; isInstalled: boolean }> })
+          ?.modules ?? [];
+        const notInstalledLocally = classes.filter((cls) => {
+          const entry = localModules.find((m) => m.class === cls);
+          return !entry?.isInstalled;
+        });
+        if (notInstalledLocally.length > 0) {
+          return formatToolResponse({
+            success: false,
+            error:
+              `Remote install refused — install locally first: ${notInstalledLocally.join(', ')}. ` +
+              'Use pw_module_install with site="local" and dryRun=false, or pass skipLocalVerification=true ' +
+              'only when module files are already on remote and you accept the risk.',
+          });
+        }
+      }
+
+      if (target === 'both') {
+        const localResult = await runPwCommand('module:install', cmdArgs);
+        if (!localResult.success) {
+          return formatToolResponse(localResult);
+        }
+        const localData = localResult.data as { success?: boolean; error?: string } | undefined;
+        if (apply && localData && localData.success === false) {
+          return formatToolResponse({
+            success: false,
+            error: localData.error ?? 'Local install failed — remote install skipped',
+            data: { local: localResult.data },
+          });
+        }
+        const remoteResult = await runOnSite('remote', 'module:install', cmdArgs);
+        return formatToolResponse({
+          success: localResult.success && remoteResult.success,
+          data: { local: localResult.data, remote: remoteResult.data },
+          error: remoteResult.error ?? localResult.error,
+        });
+      }
+
+      const result = await runOnSite(target, 'module:install', cmdArgs);
       return formatToolResponse(result);
     }
 
