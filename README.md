@@ -67,6 +67,15 @@ PW_PATH=/path/to/pw-site node scripts/smoke-mcp.mjs   # also calls pw_health on 
 
 It fails loudly if `dist/` is older than the source, if the server reports a version other than `mcp-server/package.json`, or if the tool list disagrees with the source — the three ways an install can quietly be out of date.
 
+The content-sync layer has its own check — the page fields written to `page.yaml` on a pull must read back byte-for-byte on the next push:
+
+```bash
+node scripts/check-sync-yaml.mjs
+PHP_PATH=/Applications/MAMP/bin/php/php8.3.30/bin/php node scripts/check-sync-yaml.mjs
+```
+
+It asserts the round-trip invariant (`parseYamlValue(yamlValue($v)) === $v`) over the values that have broken it before — straight quotes, backslashes, apostrophes and the characters that force the writer to quote a scalar (`: # [ ] { } | > & * ! ?`). Run it after touching `src/Sync/SyncManager.php`; a failure there means a push would write escapes into a customer's content.
+
 ### 3. Configure Cursor
 
 Create or edit `.cursor/mcp.json` in your project root:

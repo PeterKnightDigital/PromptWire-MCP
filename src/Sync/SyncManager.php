@@ -1185,10 +1185,29 @@ class SyncManager {
         if (is_numeric($value)) {
             return strpos($value, '.') !== false ? (float) $value : (int) $value;
         }
-        // Remove quotes
-        if ((str_starts_with($value, '"') && str_ends_with($value, '"')) ||
-            (str_starts_with($value, "'") && str_ends_with($value, "'"))) {
-            return substr($value, 1, -1);
+        // Unquote. The writer emits double-quoted scalars escaping only \ and "
+        // (see yamlValue()), so both must be decoded here: leaving the escapes in
+        // place wrote them back into the field on the next push, and each pull/push
+        // cycle doubled the backslashes. YAML's single-quote rule is '' -> '.
+        if (str_starts_with($value, '"') && str_ends_with($value, '"')) {
+            $inner = substr($value, 1, -1);
+            $out = '';
+            for ($i = 0, $n = strlen($inner); $i < $n; $i++) {
+                $c = $inner[$i];
+                if ($c === '\\' && $i + 1 < $n) {
+                    $next = $inner[$i + 1];
+                    if ($next === '\\' || $next === '"') {
+                        $out .= $next;
+                        $i++;
+                        continue;
+                    }
+                }
+                $out .= $c;
+            }
+            return $out;
+        }
+        if (str_starts_with($value, "'") && str_ends_with($value, "'")) {
+            return str_replace("''", "'", substr($value, 1, -1));
         }
         return $value;
     }

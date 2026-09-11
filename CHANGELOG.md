@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.3 (11 Sep 2026)
+
+- **Fixed: the YAML reader now decodes the escapes the writers emit, so a pull/push cycle no longer writes escape sequences into a field.** `SyncManager::parseYamlValue()` stripped a double-quoted scalar's surrounding quotes and returned the body verbatim, leaving `\"` and `\\` inside the value. v1.13.1 taught both *writers* to escape exactly those two sequences — nothing taught the *reader* to reverse them — so the escapes came back as content, `normalizeForComparison()` saw a difference on a field nobody had edited, and the next push applied it. Each further cycle doubled the backslashes. A blog summary ending `…is "How much does a basement conversion cost to build?"` round-tripped to `…is \"How much…?\"` (ensoul, 11 Sep 2026), and the result reads as an editorial mistake rather than a tooling fault. Single-quoted scalars now collapse `''` → `'` too, which they previously did not.
+- **Content already carrying escapes is not repaired by this fix.** A further pull/push stabilises it rather than healing it — the value in the field has to be corrected (audit Finding F, action F3).
+- **New: `scripts/check-sync-yaml.mjs`** (`npm run check-sync-yaml` from `mcp-server/`) asserts the round-trip invariant `parseYamlValue(yamlValue($v)) === $v` over the values that have broken it: straight quotes, backslashes, apostrophes, and the characters that force the writer to quote a scalar (`: # [ ] { } | > & * ! ?`). Standalone, no dependencies, exit code 1 on failure. Documented in the README beside the MCP smoke test, and worth running after any change to `src/Sync/SyncManager.php`.
+- **Module + MCP server version bumped to 1.13.3.**
+
 ## 1.13.2 (11 Sep 2026)
 
 - **Fixed: the CLI `--help` banner reported a stale version after the module was updated on disk.** `moduleVersion()` read ProcessWire's *cached* module info, so bumping the module to 1.13.1 still had `--help` announce 1.13.0 until the next modules scan — the same lie the 1.13.1 fix set out to remove, one layer down. The lookup now passes `noCache`, so it reads the installed module's own info. Verified live: the banner reports a bumped version immediately, with no cache clear.
