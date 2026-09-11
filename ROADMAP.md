@@ -896,6 +896,217 @@ makes that plan reviewable before running.
 
 ---
 
+## Findings from MediaHub 1.21.1 download deploy (August 2026)
+
+Captured while publishing `/downloads/mediahub/v1-21-1/` (ZIP on `release_file`) to
+peterknight.digital. Recurring commercial-module workflow: scaffold a product-release
+page, attach a ZIP, ship it so signed-in licence holders can download.
+
+### E. `pw_page_publish` remote 500 when YAML lists a file that is not on the remote yet
+
+**Symptom:** `pw_page_publish` dry-run against `targets: remote` succeeded. Apply with
+`release_file` populated (`filename: mediahub-1_21_1.zip`) returned HTTP 500 wrapped as
+`"Remote server error — check that PromptWire module is installed on the remote site"`.
+The module was installed. Health was `ok`. Clearing `release_file: []` and republishing
+created the page immediately (remote page ID 1815).
+
+**Root cause:** `page:create` applies the full field payload, including file-field
+filename lists, before any binary has been uploaded. ProcessWire then throws; the API
+returns 500. The MCP client maps every 500 to the "module not installed" message and
+does not parse the JSON error body (400 and "Page not found" 404s are parsed; 500s are
+not).
+
+**Workaround:** create the page with file/image fields empty, then attach binaries via
+`file:upload` (or `Pagefiles->add()` locally). Same pattern as the 1.19.50 one-off
+`pw-push-mediahub-1-19-50-remote.php` script.
+
+**Proposed fix:**
+1. `page:create` / `pw_page_publish` should skip `FieldtypeFile` / `FieldtypeImage` on
+   create (leave them empty) and return `{ skippedFileFields: [...] }` so the operator
+   knows to run file sync next. Optionally accept the binaries in the same call.
+2. Parse JSON error bodies on HTTP 500 the same way 400 is handled, so the real
+   exception reaches the agent instead of a misleading "module not installed" string.
+
+### F. No MCP tool for `file:upload` — disk copy is not field attachment
+
+**Symptom:** `pw_page_assets push` transferred `mediahub-1_21_1.zip` to
+`site/assets/files/{remotePageId}/` (`transferred: 1`). The download template streams
+`$page->release_file`. The field was still empty, so signed-in users would hit a missing
+file. `pw_file_sync` then reported `uploaded: 0`. Attaching required a hand-rolled PHP
+POST to the existing `file:upload` API command.
+
+**Root cause (two layers):**
+1. `pw_page_assets` is a directory sync. It does not call `$page->release_file->add()`.
+   `file:refresh-filesize` only works when the file is already in the Pagefiles
+   collection.
+2. `pw_file_sync` builds `filename → fieldName` from YAML, then inverts the map
+   incorrectly in `buildLocalInventory()` (`mcp-server/src/pages/file-sync.ts`). Keys of
+   `fieldFileMap` are filenames, but the reverse loop treats them as field names. Files
+   land in `_unmatched` and `syncToRemote` skips `_unmatched` (`if (fieldName ===
+   '_unmatched') continue`). Even a correctly listed `release_file` ZIP is never
+   uploaded.
+
+`pwMcpApplyFileFieldMetadata()` already knows how to register an on-disk file into a
+Pagefiles field (comment: "placed in the page's files directory but not yet
+registered"). That path is not exposed as an MCP tool, and `pw_page_push` only runs it
+during `page:update` metadata apply.
+
+**Proposed fix:**
+1. Fix the `fieldFileMap` inversion in `file-sync.ts` so YAML `release_file: [{
+   filename }]` maps to field `release_file`.
+2. Add `pw_file_upload` (or a `pw_file_sync` mode) that wraps `file:upload`, including
+   attaching a file already on disk (`metadataOnly` is not enough; need add-from-disk).
+3. After `pw_page_assets push`, either auto-attach unmatched originals to the YAML file
+   field, or return an explicit `{ onDiskNotInField: [...] }` so the agent does not
+   treat a directory copy as a successful downloadable release.
+
+### G. FieldtypeOptions must sync by title, never by option ID
+
+**Symptom:** local YAML stores `release_status: { id: 2, _label: released }`. Remote
+`fieldtype_options` for the same field:
+
+| option_id | local title | remote title |
+|-----------|-------------|--------------|
+| 1 | beta draft (value `released`) | **released** |
+| 2 | **released** | **beta** |
+| 3 | beta | draft |
+| 4 | draft | archived |
+| 8 | archived | — |
+
+Pushing local `id: 2` to remote would mark the release as **beta**. `page:update` with
+the string `"released"` stored remote option **1** (correct). A subsequent
+`pw_page_push` dry-run still proposes `{id: 2, _label: released}` because it diffs the
+serialized YAML object against the stored id `1`, not titles. Applying that dry-run
+would be a silent status corruption.
+
+**Root cause:** option IDs are per-site autoincrement. YAML snapshots the local id.
+`pkdReleaseCanDownload()` keys off the option **title**. Cross-environment push by id
+is unsafe for every FieldtypeOptions field, not just `release_status`.
+
+**Workaround:** set options on remote by title string (`released`, `beta`, `draft`,
+`archived`). Do not apply a dry-run that only changes the numeric id.
+
+**Proposed fix:**
+1. On pull, write `_label` as the canonical value; treat `id` as local-only display.
+2. On push/publish, resolve FieldtypeOptions by title (then value), never by id, unless
+   both sides report identical option tables.
+3. `pw_schema_compare` should flag FieldtypeOptions id/title drift the same way it
+   flags FieldtypePage `parent_id` drift.
+4. Optional: `pw_page_push` dry-run should say `release_status: released → released
+   (id 1 vs id 2, no title change)` and `changeCount: 0` when titles match.
+
+### H. `pw_page_pull` shows `release_file: []` when the ZIP is on disk but not in the field
+
+**Symptom:** `/downloads/mediahub/v1-20-1/` pulled with `release_file: []` while
+`page.meta.json` `pageAssets` listed `mediahub-1_20_1.zip` (~767 KB). `pw_get_page`
+`includeFiles: true` reported `_count: 0`. Licensed download would fail even though
+the binary exists under `site/assets/files/{id}/`.
+
+**Proposed fix:** on pull, if a file-field is empty but `filesManager` has originals,
+either attach them (with a flag) or emit `pageAssets.unregisteredFiles` so the operator
+sees field vs disk drift. Same signal as F.
+
+### I. Recurring "product release + ZIP" wants one recipe, not five tools
+
+**Symptom:** shipping MediaHub 1.21.1 took `pw_page_new` → edit YAML → `pw_page_publish`
+(fail) → empty file field → `pw_page_publish` (ok) → copy ZIP to `site/assets/files/{id}/`
+→ local PHP `Pagefiles->add()` → `pw_page_assets push` (disk only) → `pw_file_sync`
+(no-op) → raw `file:upload` via curl. That is the same shape as 1.19.0, 1.19.25, and
+1.19.50.
+
+**Proposed fix:** a documented (or first-class) path:
+
+1. `pw_page_publish` creates the page, skipping file fields.
+2. `pw_file_upload` / fixed `pw_file_sync` attaches the ZIP to `release_file`.
+3. Options set by title.
+4. One dry-run that reports page create + file attach + status as a single plan.
+
+Until then, keep the 1.19.50 remote PHP script as the known-good production attach
+path, or expose `file:upload` on MCP.
+
+---
+
+## Findings from a client reviews section build (September 2026)
+
+Captured while building a reviews section on a client ProcessWire site — 22 pages (a
+listing template plus 20 detail children) over 6 new fields and 2 new templates. First real
+use of `schema:apply` for a field/template pair, and first use of `pages:pull` on a page
+subtree created outside PromptWire.
+
+### A. `SchemaImporter::setFieldOptions()` was a silent no-op, so `schema:apply` created zero options
+
+**Symptom:** `schema:apply` reported success for a `FieldtypeOptions` field
+(`review_stars`, five options). `pw_get_field` then showed `options: []`. Re-running
+`schema:apply` kept reporting success. The template existed, the field existed, and the
+inputfield rendered an empty select — no error at any point.
+
+**Root cause:** the option branch called `getBlankOption()` and `saveOption()`, which do
+not exist on `FieldtypeOptions` in PW 3.x. Instantiating/calling them raised nothing that
+escaped the try, so `optionsAdded` was never tracked and the field was left with no
+options table. Underneath that, the option API belongs to the **manager** the fieldtype
+owns (`$fieldtype->get('manager')`); `FieldtypeOptions` itself only proxies
+`getOptions` / `setOptions` / `addOptions` / `deleteOptions`.
+
+Now uses `$fieldtype->addOptions()` and returns `optionsAdded` / `optionsError`, so an
+empty options array is visible in the apply result instead of being reported as success.
+Verified additive on re-run (second apply adds 0, does not duplicate).
+
+**Related:** the downstream half of this trap is already logged as **G** above —
+FieldtypeOptions stores option **IDs**, and `sanitizeValue()` reads a bare digit string as
+an **ID**, so `$page->review_stars = '5'` with options created 5,4,3,2,1 selects id 5 =
+*"1 star"*. Every card rendered 1 star with no error. Never trust HTTP 200 on an options
+field; assert on the rendered label.
+
+### B. `pages:push` silently flattens paragraph breaks in multi-paragraph text fields
+
+**Symptom:** `pages:pull` on that subtree pulled 22 pages, then `sync:status` reported
+`clean: 22, localDirty: 0`. The very next `pages:push` dry-run proposed `modify` on
+`review_full` for 5 of the 20 review pages. Every diff was whitespace-only:
+
+```
+oldValue: "<para one>\n\n<para two>"   # blank line preserved
+newValue: "<para one>\n<para two>"     # paragraph break lost
+```
+
+Applying that dry-run would merge every paragraph in those reviews into one block, with no
+error and no warning. 15 of the 20 pages round-tripped cleanly — only the multi-paragraph
+ones were affected.
+
+**Root cause:** `symfony/yaml` is declared in `composer.json` but `vendor/` is not
+installed, so `class_exists('Symfony\Component\Yaml\Yaml')` is `false` and
+`SyncManager::yamlToArray()` falls through to the hand-rolled parser. That parser skips
+blank lines unconditionally:
+
+```php
+// src/Sync/SyncManager.php
+// Skip empty lines and comments
+if (trim($line) === '' || ltrim($line)[0] === '#') {
+    continue;
+}
+```
+
+Correct at the document level, wrong *inside a `|` block scalar*, where the blank lines
+are the paragraph separators. The writer (`yamlValue()`) emits them faithfully as
+indent-only lines, so the pull looks right on disk, `sync:status` hashes match, and the
+loss only becomes visible when the parsed value is diffed against the database.
+
+**Workaround:** do not `pages:push` a page whose text fields contain blank lines until
+this is fixed; or run `composer install` in the PromptWire module so the Symfony parser
+is used. Content pulled with `pages:pull` is not damaged — only a subsequent push is.
+
+**Proposed fix:**
+1. Track block-scalar state in the fallback parser. Once a `key: |` (or `|-` / `|+`) is
+   opened, consume every following line *verbatim* — dedented by the block indent, blank
+   lines included — until a line's indentation drops below the block indent. Only apply
+   the blank-line skip at the document level.
+2. Make the fallback visible: if `symfony/yaml` is unavailable, either warn once per run
+   or fail loudly, so a lossy parser is never silently in use.
+3. Regression test: round-trip a value containing `\n\n` and a trailing newline through
+   `arrayToYamlWithLabels()` → `yamlToArray()` and assert byte equality. Same test should
+   cover a text field whose value *starts* or *ends* with a blank line.
+
+---
+
 ## High leverage
 
 ### 1. `pw_pages_push` — support pushing local scaffolds to a remote target
