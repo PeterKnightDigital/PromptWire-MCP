@@ -7,11 +7,12 @@
  * handshake version was a hardcoded literal while dist/ was stale (see
  * _docs/audits/2026-09-11-mcp-release-integrity-audit.md).
  *
- * It checks three layers, in order of how they can lie to you:
+ * It checks four layers, in order of how they can lie to you:
  *
  *   1. Source    declared tools (name: 'pw_x') == dispatched tools (case 'pw_x')
- *   2. Artifact  dist/index.js exists and is newer than every src/*.ts file
- *   3. Runtime   a real MCP handshake over stdio, asserting the server reports
+ *   2. Version   module @version == its getModuleInfo version == package.json
+ *   3. Artifact  dist/index.js exists and is newer than every src/*.ts file
+ *   4. Runtime   a real MCP handshake over stdio, asserting the server reports
  *                the package.json version and lists exactly the source's tools
  *
  * If PW_PATH is set it also calls pw_health, so a passing run means the server
@@ -97,6 +98,37 @@ try {
   manifest = JSON.parse(readFileSync(MANIFEST, 'utf8'));
 } catch (err) {
   fail('manifest: mcp-server/package.json is unreadable', err.message);
+}
+
+// ---------------------------------------------------------------------------
+// 1b. Version declarations
+//
+// A release version lives in three places, and a missed one is invisible until
+// something downstream reports the old number: the module docblock, the same
+// module's getModuleInfo(), and the MCP manifest. v1.13.1 shipped with the
+// getModuleInfo key left behind — hence this check.
+// ---------------------------------------------------------------------------
+
+const MODULE_FILE = path.join(REPO_ROOT, 'PromptWire.module.php');
+
+if (!manifest) {
+  skip('version: declarations agree', 'package.json unreadable');
+} else if (!existsSync(MODULE_FILE)) {
+  fail('version: PromptWire.module.php is missing', MODULE_FILE);
+} else {
+  const php = readFileSync(MODULE_FILE, 'utf8');
+  const docblock = (php.match(/@version\s+([0-9][0-9.]*)/) || [])[1] || null;
+  const infoVersion = (php.match(/'version'\s*=>\s*'([0-9][0-9.]*)'/) || [])[1] || null;
+
+  if (!docblock || !infoVersion) {
+    fail('version: could not read the module version', `docblock=${docblock} getModuleInfo=${infoVersion}`);
+  } else if (docblock !== infoVersion) {
+    fail('version: module docblock disagrees with getModuleInfo', `@version ${docblock} vs 'version' => ${infoVersion}`);
+  } else if (docblock !== manifest.version) {
+    fail('version: module and MCP manifest disagree', `module ${docblock}, package.json ${manifest.version}`);
+  } else {
+    pass('version: declarations agree', `module + mcp-server both ${docblock}`);
+  }
 }
 
 if (!existsSync(DIST_ENTRY)) {

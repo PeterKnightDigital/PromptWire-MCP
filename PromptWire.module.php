@@ -31,7 +31,7 @@ class PromptWire extends WireData implements Module {
         return [
             'title' => 'PromptWire',
             'summary' => 'ProcessWire ↔ Cursor MCP Bridge for AI-assisted development',
-            'version' => '1.13.1',
+            'version' => '1.13.2',
             'author' => 'Peter Knight',
             'href' => 'https://github.com/PeterKnightDigital/PromptWire-MCP',
             'singular' => true,
