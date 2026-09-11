@@ -4995,7 +4995,10 @@ class CommandRouter {
             if (!$this->wire || !$this->wire->modules) {
                 return 'unknown';
             }
-            $info = $this->wire->modules->getModuleInfo('PromptWire');
+            // noCache is required: PW caches module info (in the DB, per module),
+            // so a version bumped on disk is otherwise reported stale until the
+            // next modules scan. Cheap enough for a --help banner.
+            $info = $this->wire->modules->getModuleInfo('PromptWire', ['noCache' => true]);
             if (empty($info['version'])) {
                 return 'unknown';
             }
