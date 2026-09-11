@@ -153,17 +153,24 @@ class SchemaImporter
 
         $this->wire->fields->save($field);
 
-        // Handle select options after field is saved
-        if (($def['type'] ?? '') === 'FieldtypeOptions' && !empty($settings['options'])) {
-            $this->setFieldOptions($field, $settings['options']);
-        }
-
-        return [
+        $result = [
             'success' => true,
             'id'      => $field->id,
             'type'    => $typeName,
             'label'   => $field->label,
         ];
+
+        // Handle select options after the field is saved
+        if (($def['type'] ?? '') === 'FieldtypeOptions' && !empty($settings['options'])) {
+            $optionResult = $this->setFieldOptions($field, $settings['options']);
+            if (!empty($optionResult['error'])) {
+                $result['optionsError'] = $optionResult['error'];
+            } else {
+                $result['optionsAdded'] = $optionResult['optionsAdded'] ?? 0;
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -435,34 +442,63 @@ class SchemaImporter
 
     /**
      * Set options for a FieldtypeOptions field (adds missing options only)
+     *
+     * @param mixed $field
+     * @param array $options Array of ['value' => string, 'title' => string] items
+     * @return array Result summary
+     *
+     * NOTE: the option API lives on the SelectableOptionManager owned by the fieldtype
+     * ($fieldtype->get('manager')), not on FieldtypeOptions itself — FieldtypeOptions only
+     * proxies getOptions/setOptions/addOptions/deleteOptions. Older revisions of this method
+     * called getBlankOption()/saveOption(), which do not exist in PW 3.x, so it silently
+     * created zero options. Options are added (never deleted) so re-running schema:apply
+     * cannot wipe options added through the admin.
      */
-    private function setFieldOptions($field, array $options): void
+    private function setFieldOptions($field, array $options): array
     {
-        $manager = $this->wire->modules->get('FieldtypeOptions');
-        if (!$manager || !method_exists($manager, 'getOptions')) {
-            return;
+        $fieldtype = $field->getFieldtype();
+        if (!$fieldtype || $fieldtype->className() !== 'FieldtypeOptions') {
+            return ['success' => false, 'error' => 'Field is not a FieldtypeOptions field'];
         }
 
-        $existingOptions = $manager->getOptions($field);
-        $existingValues  = [];
-        foreach ($existingOptions as $opt) {
+        $manager = $fieldtype->get('manager');
+        if (!$manager || !method_exists($manager, 'getOptions')) {
+            return ['success' => false, 'error' => 'SelectableOptionManager unavailable for this field'];
+        }
+
+        // Collect values that already exist so this stays additive
+        $existingValues = [];
+        foreach ($manager->getOptions($field) as $opt) {
             $existingValues[] = (string) $opt->value;
         }
 
+        $newOptions = $this->wire->wire(new \ProcessWire\SelectableOptionArray());
+        $sort       = count($existingValues);
+
         foreach ($options as $opt) {
             $value = (string) ($opt['value'] ?? '');
-            if ($value === '' || in_array($value, $existingValues, true)) {
+            $title = (string) ($opt['title'] ?? $value);
+            if ($title === '') {
                 continue;
             }
-            if (method_exists($manager, 'getBlankOption')) {
-                $newOpt        = $manager->getBlankOption($field);
-                $newOpt->value = $value;
-                $newOpt->title = $opt['title'] ?? $value;
-                if (method_exists($manager, 'saveOption')) {
-                    $manager->saveOption($field, $newOpt);
-                }
+            if ($value !== '' && in_array($value, $existingValues, true)) {
+                continue;
             }
+            $option         = $this->wire->wire(new \ProcessWire\SelectableOption());
+            $option->value  = $value;
+            $option->title  = $title;
+            $option->sort   = $sort++;
+            $newOptions->add($option);
+            $existingValues[] = $value;
         }
+
+        if (!count($newOptions)) {
+            return ['success' => true, 'optionsAdded' => 0];
+        }
+
+        $added = $fieldtype->addOptions($field, $newOptions);
+
+        return ['success' => true, 'optionsAdded' => (int) $added];
     }
 
     /**
