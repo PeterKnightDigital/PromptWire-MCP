@@ -275,7 +275,10 @@ function formatYamlValue($value): string {
     if (is_string($value)) {
         // Quote strings that contain special YAML characters
         if (preg_match('/[\n\r\t:#{}\[\]&*!|>\'"%@`]/', $value) || $value === '') {
-            return '"' . addslashes($value) . '"';
+            // Only \ and " are escapable inside a double-quoted YAML scalar.
+            // addslashes() additionally escapes ' as \', which is not a valid
+            // YAML escape sequence and makes js-yaml reject the document.
+            return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"';
         }
         return $value;
     }

@@ -2906,7 +2906,7 @@ class SyncManager {
             if (preg_match('/[:#\[\]{}|>&*!?]/', $value) || 
                 $value === '' || 
                 is_numeric($value)) {
-                return '"' . addslashes($value) . '"';
+                return $this->yamlQuote($value);
             }
             return $value;
         }
@@ -2916,9 +2916,26 @@ class SyncManager {
         // and break js-yaml's parser on the next remote push.
         $str = (string) $value;
         if (preg_match('/[:#\[\]{}|>&*!?]/', $str) || $str === '' || is_numeric($str)) {
-            return '"' . addslashes($str) . '"';
+            return $this->yamlQuote($str);
         }
         return $str;
+    }
+
+    /**
+     * Quote a string as a YAML double-quoted scalar.
+     *
+     * Only `\` and `"` are escapable in that context. PHP's addslashes() also
+     * escapes `'` as `\'`, which is not a valid YAML escape sequence — js-yaml
+     * (the parser the MCP server uses) rejects the whole file with "unknown
+     * escape sequence". It only shows up when a value contains an apostrophe
+     * *and* a character that forces quoting, which is why it lurked for so long.
+     * Apostrophes need no escaping inside a double-quoted scalar.
+     *
+     * @param string $value Single-line value (multi-line is handled above)
+     * @return string Quoted, escaped scalar ready to append to the YAML
+     */
+    private function yamlQuote(string $value): string {
+        return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $value) . '"';
     }
     
     // ========================================================================

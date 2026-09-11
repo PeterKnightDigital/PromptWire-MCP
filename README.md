@@ -6,7 +6,7 @@ ProcessWire ↔ Cursor MCP Bridge for AI-assisted development.
 
 ## Introduction
 
-PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 47 specialised tools for site inspection, content sync, schema management, page creation, page slug renames, schema-aware fieldgroup edits, page-asset sync (catches MediaHub-managed files), database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
+PromptWire connects your ProcessWire CMS to Cursor IDE via the [Model Context Protocol](https://modelcontextprotocol.io/), giving AI agents direct read/write access to your site's structure, content, and files. It ships with 48 specialised tools for site inspection, content sync, schema management, page creation, page slug renames, schema-aware fieldgroup edits, page-asset sync (catches MediaHub-managed files), database introspection, log analysis, site sync, backup, maintenance mode, and cross-environment deployment.
 
 **Just describe what you want in plain language:**
 
@@ -57,6 +57,15 @@ cd site/modules/PromptWire/mcp-server
 npm install
 npm run build
 ```
+
+Then verify the build — from the repo root:
+
+```bash
+node scripts/smoke-mcp.mjs
+PW_PATH=/path/to/pw-site node scripts/smoke-mcp.mjs   # also calls pw_health on a live site
+```
+
+It fails loudly if `dist/` is older than the source, if the server reports a version other than `mcp-server/package.json`, or if the tool list disagrees with the source — the three ways an install can quietly be out of date.
 
 ### 3. Configure Cursor
 
@@ -261,7 +270,7 @@ For a full walkthrough, see the [Admin dashboard guide](https://www.peterknight.
 - [**Schema sync**](https://www.peterknight.digital/docs/promptwire/v1/schema-sync/) — Synchronising fields and templates between sites
 - [**Admin dashboard**](https://www.peterknight.digital/docs/promptwire/v1/admin-dashboard/) — Visual sync UI walkthrough
 - [**Prompt recipes**](https://www.peterknight.digital/docs/promptwire/v1/prompt-recipes/) — Natural language prompts for common workflows
-- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 47 tools with parameters and examples
+- [**Tools reference**](https://www.peterknight.digital/docs/promptwire/v1/tools-reference/) — All 48 tools with parameters and examples
 - [**Environment variables**](https://www.peterknight.digital/docs/promptwire/v1/environment-variables/) — Configuration reference
 - [**Security**](https://www.peterknight.digital/docs/promptwire/v1/security/) — HTTPS enforcement, API authentication, backup protection, and best practices
 - [**Changelog**](https://www.peterknight.digital/docs/promptwire/v1/changelog/) — Version history

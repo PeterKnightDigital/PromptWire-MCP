@@ -28,6 +28,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { readFileSync } from 'node:fs';
 import { runPwCommand, runOnSite, formatToolResponse, type Site } from './cli/runner.js';
 import { schemaPull, schemaPush, schemaDiff } from './schema/sync.js';
 import { compareSites as compareSchemas, listSiteConfigs } from './schema/compare.js';
@@ -1235,10 +1236,23 @@ const tools = [
  * - Name and version for identification
  * - Tools capability to expose our ProcessWire tools
  */
+// Version is read from package.json so the reported server version cannot
+// drift from the package again (1.13.0 shipped still reporting 1.12.7).
+// Falls back to 'unknown' rather than refusing to start when the package file
+// is not beside dist/ (e.g. a lone copied dist/index.js).
+let serverVersion = 'unknown';
+try {
+  serverVersion = JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+  ).version ?? 'unknown';
+} catch {
+  // keep the 'unknown' fallback
+}
+
 const server = new Server(
   {
     name: 'promptwire',
-    version: '1.12.7',
+    version: serverVersion,
   },
   {
     capabilities: {

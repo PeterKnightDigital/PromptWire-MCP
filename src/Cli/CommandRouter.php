@@ -4979,6 +4979,38 @@ class CommandRouter {
     }
 
     /**
+     * Version of the installed PromptWire module, for banners that quote it.
+     *
+     * Read from the module's own getModuleInfo() rather than hardcoded. A
+     * literal here shipped a 1.13.0 install whose `--help` still announced
+     * "1.12.7" — the same class of bug as the MCP server's hardcoded
+     * serverInfo.version (fixed in 81acaa1, which now reads package.json).
+     * ProcessWire packs some module versions as an int (184 → "1.8.4"), so
+     * anything without a dot is passed through formatVersion().
+     *
+     * @return string Dotted version, or 'unknown' if it genuinely cannot be read
+     */
+    private function moduleVersion(): string {
+        try {
+            if (!$this->wire || !$this->wire->modules) {
+                return 'unknown';
+            }
+            $info = $this->wire->modules->getModuleInfo('PromptWire');
+            if (empty($info['version'])) {
+                return 'unknown';
+            }
+            $version = $info['version'];
+            if (is_string($version) && strpos($version, '.') !== false) {
+                return $version;
+            }
+            return (string) $this->wire->modules->formatVersion((int) $version);
+        } catch (\Throwable $e) {
+            // A module-info failure must never take down `--help`.
+            return 'unknown';
+        }
+    }
+
+    /**
      * Show help information
      * 
      * Returns available commands and flags.
@@ -4988,7 +5020,7 @@ class CommandRouter {
     private function help(): array {
         return [
             'name' => 'PromptWire CLI',
-            'version' => '1.12.7',
+            'version' => $this->moduleVersion(),
             'description' => 'ProcessWire ↔ Cursor MCP Bridge CLI',
             'commands' => [
                 'health' => 'Check connection and get site info',

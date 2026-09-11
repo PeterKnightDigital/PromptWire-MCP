@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: both PHP YAML writers no longer emit invalid `\'` escape sequences.** `SyncManager::yamlValue()` (page sync files) and `formatYamlValue()` in `bin/promptwire.php` (schema export) quoted values with PHP's `addslashes()`, which escapes `'` as `\'`. That is not a valid escape in a double-quoted YAML scalar, so js-yaml — the parser the MCP server uses — rejected the entire document with `unknown escape sequence`. It only fired when a value contained an apostrophe **and** a character that forced quoting (`&`, `:`, `#` …), which is how it survived: a review reading "Mike's project management skills are tried & tested…" wrote a `page.yaml` that the next `pw_page_push` could not read. Only `\` and `"` are escaped now, matching what js-yaml itself emits. Files already written by the old code are not repaired by this fix — a `page:pull` regenerates them.
+- **Fixed: the CLI `--help` banner reports the real module version.** `CommandRouter::help()` carried a hardcoded `'1.12.7'`, so a 1.13.0 install announced the wrong version to anyone reading `--help` (and to any agent that trusted it). It now reads the version from `getModuleInfo('PromptWire')`, returning `unknown` rather than a stale guess if the lookup fails. Same class of bug as the MCP server's hardcoded `serverInfo.version`, fixed in 81acaa1.
+
 ## 1.13.0 (14 Aug 2026)
 
 - **Fixed: Options fields now resolve by label across environments.** When a page is pushed between environments (e.g. local → production), options field IDs are matched by title, not raw integer. Option IDs are auto-incremented per install and routinely differ between sites; matching by label means the correct option is always selected regardless of which environment generated the YAML. Applies to both the local PHP push path (`SyncManager::applyFieldValue`) and the remote API (`promptwire-api.php`).
