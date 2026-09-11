@@ -35,7 +35,7 @@ npm-debug.log*
 SESSION-NEXT.md
 SESSION-*.md
 
-# Internal audit notes and forum drafts — development-only, never published.
-# The repo is public; these files are not.
-_docs/audits/
-_docs/forum-post-*
+# Internal notes — audits, RFCs, forum drafts. Development-only: the public
+# repo must never carry them. _docs/ was purged from published history
+# (main + tags) on 2026-09-11.
+_docs/
