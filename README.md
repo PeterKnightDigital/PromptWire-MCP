@@ -153,11 +153,16 @@ For pages with a `release_file` field (e.g. `/downloads/mediahub/v1-17-0/`):
 
 1. Place the ZIP in the local page files directory (`site/assets/files/{localPageId}/`)
 2. Set `release_file` in `page.yaml` with `filename` and `description` (e.g. `MediaHub 1.17.0`)
-3. `pw_page_push` — page content and file descriptions (local and/or remote)
-4. `pw_file_sync` — upload the ZIP binary to remote (`deleteRemoteOrphans: true` when replacing)
-5. Republish if needed (`publish: true` on push)
+3. `pw_page_push` with `targets: "local"`, `"remote"`, or `"both"` as needed
+4. Republish if needed (`publish: true` on push)
 
-`pw_page_push` does not replace binaries. Use `pw_file_sync` for the ZIP itself.
+**Local** (`targets: "local"`): `pw_page_push` registers disk-resident files into the Pagefiles collection and writes descriptions — no separate upload step.
+
+**Remote** (`targets: "remote"` / `"both"`, v1.13.4+): after `page:update`, the MCP server auto-calls `file:upload` for each file-field binary listed in `page.yaml` that exists under the local page assets directory. Production admin fields (e.g. **Release ZIP**) are populated in the same push.
+
+If you are on an older PromptWire version, or only synced bytes via `pw_page_assets` without pushing YAML, use `pw_file_sync` or a manual `file:upload` for the ZIP binary.
+
+Guard `.htaccess` files under `site/assets/` can be deployed via `files:push` (exact paths only — see [v1.13.4 in the changelog](https://www.peterknight.digital/docs/promptwire/v1/changelog/)).
 
 ## Available tools
 
