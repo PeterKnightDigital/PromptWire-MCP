@@ -133,6 +133,21 @@ export async function pushPage(opts: PushPageOptions): Promise<PwCommandResult> 
     if (remoteResult.success && !dryRun) {
       await recordRemoteIdInMeta(metaPath, remoteResult.data);
     }
+
+    // v1.13.4: page-assets sync only writes to site/assets/files/{id}/ — it does
+    // not attach FieldtypeFile/Pagefiles entries. After a successful remote
+    // page:update, upload any file-field binaries declared in page.yaml via
+    // file:upload so production admin fields (e.g. release_file) are populated.
+    if (remoteResult.success) {
+      const fileSync = await syncRemoteFileFieldsFromYaml({
+        yamlPath,
+        metaPath,
+        pagePath,
+        dryRun,
+      });
+      if (!fileSync.success) hasFailure = true;
+      results['remoteFileFields'] = fileSync.success ? fileSync.data : { error: fileSync.error };
+    }
   }
 
   // Collect the first concrete nested error and surface it at the top level
@@ -191,6 +206,123 @@ async function pushToLocal(yamlPath: string, dryRun: boolean, force: boolean): P
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : 'Local push failed' };
   }
+}
+
+// ============================================================================
+// REMOTE FILE FIELD SYNC — file:upload for page.yaml file/image inventories
+// ============================================================================
+
+interface RemoteFileFieldSyncOptions {
+  yamlPath: string;
+  metaPath: string;
+  pagePath: string;
+  dryRun: boolean;
+}
+
+interface PageMetaWithIds extends PageMeta {
+  ids?: { local?: { id?: number } };
+}
+
+/**
+ * After a remote page push, attach file/image field binaries declared in
+ * page.yaml via file:upload. page-assets sync only places files on disk;
+ * FieldtypeFile fields need file:upload (or a local push that registers
+ * from disk) to show in the admin UI.
+ */
+async function syncRemoteFileFieldsFromYaml(opts: RemoteFileFieldSyncOptions): Promise<PwCommandResult> {
+  const { yamlPath, metaPath, pagePath, dryRun } = opts;
+  const pwPath = process.env.PW_PATH;
+
+  if (!pwPath) {
+    return { success: true, data: { skipped: true, reason: 'PW_PATH not set' } };
+  }
+
+  let meta: PageMetaWithIds;
+  try {
+    meta = JSON.parse(await readFile(metaPath, 'utf-8')) as PageMetaWithIds;
+  } catch {
+    return { success: false, error: 'Failed to read page.meta.json for remote file field sync' };
+  }
+
+  const localPageId = meta.ids?.local?.id ?? meta.pageId;
+  if (!localPageId) {
+    return { success: true, data: { skipped: true, reason: 'no local page id in meta' } };
+  }
+
+  let fields: FieldValue;
+  try {
+    fields = await parsePageYaml(yamlPath);
+  } catch (err) {
+    return {
+      success: false,
+      error: `Failed to parse page.yaml for file field sync: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const uploads: Array<{ fieldName: string; filename: string; success: boolean; action?: string; error?: string }> = [];
+
+  for (const [fieldName, value] of Object.entries(fields)) {
+    if (!Array.isArray(value) || value.length === 0) continue;
+    const first = value[0] as Record<string, unknown>;
+    if (!first || typeof first.filename !== 'string') continue;
+
+    for (const item of value as Array<{ filename: string; description?: string }>) {
+      const filename = item.filename;
+      const localFull = path.join(pwPath, 'site', 'assets', 'files', String(localPageId), filename);
+      if (!existsSync(localFull)) continue;
+
+      // Skip if already attached on remote.
+      const inv = await runRemoteCommand('file:inventory', [pagePath]);
+      const fieldInv = (inv.data as { fields?: Record<string, { files?: string[] }> })?.fields?.[fieldName];
+      if (fieldInv?.files?.includes(filename)) {
+        uploads.push({ fieldName, filename, success: true, action: 'already_attached' });
+        continue;
+      }
+
+      if (dryRun) {
+        uploads.push({ fieldName, filename, success: true, action: 'would_upload' });
+        continue;
+      }
+
+      try {
+        const buf = await readFile(localFull);
+        const result = await runRemoteCommand(
+          'file:upload',
+          [pagePath, '--dry-run=0'],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            fieldName,
+            filename,
+            data: buf.toString('base64'),
+            description: item.description ?? undefined,
+          },
+        );
+        uploads.push({
+          fieldName,
+          filename,
+          success: result.success,
+          action: result.success ? 'uploaded' : undefined,
+          error: result.error,
+        });
+        if (!result.success) {
+          return { success: false, error: result.error, data: { uploads } };
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        uploads.push({ fieldName, filename, success: false, error: msg });
+        return { success: false, error: msg, data: { uploads } };
+      }
+    }
+  }
+
+  if (uploads.length === 0) {
+    return { success: true, data: { skipped: true, reason: 'no file field binaries to sync' } };
+  }
+
+  return { success: true, data: { uploads } };
 }
 
 // ============================================================================

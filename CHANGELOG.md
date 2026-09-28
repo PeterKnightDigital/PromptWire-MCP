@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.4 (28 Sep 2026)
+
+- **New: `files:push` can deploy guard `.htaccess` files under `site/assets/`.** Exact-path allowlist for `site/assets/.htaccess` and `site/assets/files/.htaccess` only — not the whole `site/assets/` tree. Enables pushing Apache rules that block direct HTTP access to release ZIPs while member downloads still stream via PHP `readfile()`. Deploy the updated `CommandRouter.php` first, then the guard file (OPcache may need the router update before the second push is accepted).
+- **Fixed: remote `pw_page_push` now attaches `FieldtypeFile` / `FieldtypeImage` binaries after `page:update`.** `page-assets` sync copies bytes into `site/assets/files/{pageId}/` but does not register Pagefiles entries, so production admin fields (e.g. `release_file` on download pages) stayed empty. After a successful remote push, the MCP server walks `page.yaml` file-field inventories and calls `file:upload` for any binary present in the local page assets directory.
+- **Fixed: remote `page:update` calls `$page->of(false)` before file-field handling.** Unformatted values are required for Pagefiles detection and disk registration during cross-environment pushes.
+- **New: remote `page:update` accepts an optional `sort` value** and saves sibling order when it changes.
+- **Module + MCP server version bumped to 1.13.4.**
+
 ## 1.13.3 (11 Sep 2026)
 
 - **Fixed: the YAML reader now decodes the escapes the writers emit, so a pull/push cycle no longer writes escape sequences into a field.** `SyncManager::parseYamlValue()` stripped a double-quoted scalar's surrounding quotes and returned the body verbatim, leaving `\"` and `\\` inside the value. v1.13.1 taught both *writers* to escape exactly those two sequences — nothing taught the *reader* to reverse them — so the escapes came back as content, `normalizeForComparison()` saw a difference on a field nobody had edited, and the next push applied it. Each further cycle doubled the backslashes. A blog summary ending `…is "How much does a basement conversion cost to build?"` round-tripped to `…is \"How much…?\"` (ensoul, 11 Sep 2026), and the result reads as an editorial mistake rather than a tooling fault. Single-quoted scalars now collapse `''` → `'` too, which they previously did not.

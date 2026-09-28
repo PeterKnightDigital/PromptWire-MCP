@@ -648,6 +648,9 @@ if ($command === 'page:update') {
     $fields  = $pageData['fields'] ?? [];
     $changes = [];
 
+    // Unformatted values required for Pagefiles detection and disk registration.
+    $page->of(false);
+
     // Collect changes and resolve page references before applying.
     // _pageRef values are resolved to remote IDs via path-first lookup so
     // cross-environment pushes don't write the wrong page ID.
@@ -718,8 +721,21 @@ if ($command === 'page:update') {
 
     $publish = !empty($pageData['publish']);
 
+    // Optional sibling sort order (pages.sort — not a custom field).
+    if (array_key_exists('sort', $pageData) && is_numeric($pageData['sort'])) {
+        $newSort = (int) $pageData['sort'];
+        if ((int) $page->sort !== $newSort) {
+            $changes['sort'] = ['from' => (int) $page->sort, 'to' => $newSort];
+        }
+    }
+
+    $sortChanged = array_key_exists('sort', $changes);
+
     if (!$dryRun) {
         $page->of(false);
+        if ($sortChanged) {
+            $page->sort = (int) $pageData['sort'];
+        }
         // Apply resolved field values
         foreach ($fieldValues as $fieldName => $resolvedValue) {
             $page->set($fieldName, $resolvedValue);
@@ -732,7 +748,7 @@ if ($command === 'page:update') {
         if ($publish && $page->isUnpublished()) {
             $page->removeStatus(\ProcessWire\Page::statusUnpublished);
         }
-        if (!empty($fieldValues) || !empty($fileMetadata) || $publish) {
+        if (!empty($fieldValues) || !empty($fileMetadata) || $publish || $sortChanged) {
             $wire->pages->save($page);
         }
     }
