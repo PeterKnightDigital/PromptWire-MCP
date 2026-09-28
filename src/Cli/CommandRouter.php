@@ -2936,6 +2936,11 @@ class CommandRouter {
             'site/finished.php',
             'promptwire-api.php',
         ];
+        // Guard files only — never the whole site/assets/ tree (uploads, cache, etc.).
+        $allowedExactPaths = [
+            'site/assets/.htaccess',
+            'site/assets/files/.htaccess',
+        ];
 
         $results   = [];
         $written   = 0;
@@ -2957,11 +2962,13 @@ class CommandRouter {
                 continue;
             }
 
-            $allowed = false;
-            foreach ($allowedPrefixes as $prefix) {
-                if (strpos($relPath, $prefix) === 0) {
-                    $allowed = true;
-                    break;
+            $allowed = in_array($relPath, $allowedExactPaths, true);
+            if (!$allowed) {
+                foreach ($allowedPrefixes as $prefix) {
+                    if (strpos($relPath, $prefix) === 0) {
+                        $allowed = true;
+                        break;
+                    }
                 }
             }
 
