@@ -176,8 +176,8 @@ Guard `.htaccess` files under `site/assets/` can be deployed via `files:push` (e
 | `pw_inspect_template` | Like `pw_get_template` but each field comes back as `{name, type, label}`, sized for fieldgroup-diff workflows across environments |
 | `pw_list_fields`      | List all fields                                                                                   |
 | `pw_get_field`        | Get field details (type, settings)                                                                |
-| `pw_get_page`         | Get a page by ID or path with full field content                                                  |
-| `pw_query_pages`      | Query pages with ProcessWire selectors                                                            |
+| `pw_get_page`         | Get a page by ID or path with full field content. Pass `site: "remote"` or `"both"` to read production |
+| `pw_query_pages`      | Query pages with ProcessWire selectors. Pass `site: "remote"` or `"both"` to read production      |
 | `pw_search`           | Search page content by keyword                                                                    |
 | `pw_search_files`     | Search PHP/template files in the site directory                                                   |
 | `pw_modules_list`     | List installed modules with version, file path, and install state. Pass `site: "both"` to compare |

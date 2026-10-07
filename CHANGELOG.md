@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.5 (7 Oct 2026)
+
+- **New: read tools accept `site: "local" | "remote" | "both"`.** `pw_get_page`, `pw_query_pages`, `pw_search`, `pw_search_files`, `pw_list_templates`, `pw_get_template`, `pw_list_fields`, `pw_get_field`, and `pw_export_schema` now route through the same `runOnSite()` as `pw_health`, so one MCP entry with `PW_PATH` + `PW_REMOTE_URL` can read local, production, or both side by side. Default stays `local`. A separate remote-only entry (no `PW_PATH`) keeps working as before.
+- **Changed: unknown tool arguments are rejected instead of ignored.** Every tool call is checked against the tool's declared schema; an argument it does not declare returns an error naming it and listing the allowed arguments. Previously an unsupported option (e.g. `source: "remote"` on `pw_query_pages`) was dropped silently and the call ran against local, returning plausible but wrong data. All 48 tools were checked: no handler reads an argument its schema does not declare.
+- **Fixed: `pw_file_sync` never uploaded anything.** The field → filename map was built inverted (filename → field), so every local file was classed as unmatched and skipped, and the dry run reported `toUpload: 0` even for a new release ZIP. Files now match their field from `page.yaml` and are compared by MD5 as intended. Remote `pw_page_push` (which has attached file-field binaries itself since 1.13.4) was not affected.
+- **Module + MCP server version bumped to 1.13.5.**
+
 ## 1.13.4 (28 Sep 2026)
 
 - **New: `files:push` can deploy guard `.htaccess` files under `site/assets/`.** Exact-path allowlist for `site/assets/.htaccess` and `site/assets/files/.htaccess` only — not the whole `site/assets/` tree. Enables pushing Apache rules that block direct HTTP access to release ZIPs while member downloads still stream via PHP `readfile()`. Deploy the updated `CommandRouter.php` first, then the guard file (OPcache may need the router update before the second push is accepted).

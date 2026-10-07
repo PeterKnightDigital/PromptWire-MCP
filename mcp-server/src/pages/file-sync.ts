@@ -140,9 +140,10 @@ export async function syncFiles(opts: FileSyncOptions): Promise<PwCommandResult>
 
   // Field/file mapping from YAML (field name, filename, optional description)
   const fieldFileDetails = await getFieldFileDetails(yamlPath);
-  const fieldFileMap = Object.fromEntries(
-    Object.entries(fieldFileDetails).map(([filename, detail]) => [filename, [detail.fieldName]]),
-  ) as Record<string, string[]>;
+  const fieldFileMap: Record<string, string[]> = {};
+  for (const [filename, detail] of Object.entries(fieldFileDetails)) {
+    (fieldFileMap[detail.fieldName] ??= []).push(filename);
+  }
 
   // Build local inventory
   const localInventory = await buildLocalInventory(localFileDir, fieldFileMap, fieldFileDetails);

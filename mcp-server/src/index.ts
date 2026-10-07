@@ -47,6 +47,13 @@ import { syncPageAssets, compareSiteAssets } from './sync/page-assets.js';
 // These define the MCP tools that Cursor can invoke. Each tool maps to a
 // CLI command in the ProcessWire module.
 
+const SITE_READ_PROPERTY = {
+  type: 'string',
+  enum: ['local', 'remote', 'both'],
+  description: 'Which site to read. Defaults to "local". "remote" reads production; "both" returns { local, remote } side by side. "remote"/"both" require PW_REMOTE_URL + PW_REMOTE_KEY in env.',
+  default: 'local',
+};
+
 const tools = [
   {
     name: 'pw_health',
@@ -68,7 +75,9 @@ const tools = [
     description: 'List all ProcessWire templates with field counts and page counts',
     inputSchema: {
       type: 'object' as const,
-      properties: {},
+      properties: {
+        site: SITE_READ_PROPERTY,
+      },
     },
   },
   {
@@ -81,6 +90,7 @@ const tools = [
           type: 'string',
           description: 'Template name',
         },
+        site: SITE_READ_PROPERTY,
       },
       required: ['name'],
     },
@@ -96,6 +106,7 @@ const tools = [
           description: 'Include list of templates that use each field (slower on large sites)',
           default: false,
         },
+        site: SITE_READ_PROPERTY,
       },
     },
   },
@@ -109,6 +120,7 @@ const tools = [
           type: 'string',
           description: 'Field name',
         },
+        site: SITE_READ_PROPERTY,
       },
       required: ['name'],
     },
@@ -138,6 +150,7 @@ const tools = [
           description: 'Return field structure only (types and labels), no content values',
           default: false,
         },
+        site: SITE_READ_PROPERTY,
       },
       required: ['idOrPath'],
     },
@@ -152,6 +165,7 @@ const tools = [
           type: 'string',
           description: 'ProcessWire selector string (e.g., "template=blog-post, parent=/blog/, sort=-created")',
         },
+        site: SITE_READ_PROPERTY,
       },
       required: ['selector'],
     },
@@ -168,6 +182,7 @@ const tools = [
           description: 'Output format (default: json)',
           default: 'json',
         },
+        site: SITE_READ_PROPERTY,
       },
     },
   },
@@ -186,6 +201,7 @@ const tools = [
           description: 'Maximum results to return (default: 20)',
           default: 20,
         },
+        site: SITE_READ_PROPERTY,
       },
       required: ['query'],
     },
@@ -205,6 +221,7 @@ const tools = [
           description: 'Maximum results to return (default: 20)',
           default: 20,
         },
+        site: SITE_READ_PROPERTY,
       },
       required: ['query'],
     },
@@ -1282,7 +1299,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
  * Each tool maps to a specific CLI command with appropriate arguments.
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  const { name } = request.params;
+  const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+  // Unknown arguments are rejected rather than ignored: a silently dropped
+  // option (e.g. a guessed site/source flag) runs the call against the wrong
+  // environment and returns plausible but wrong data.
+  const toolDef = tools.find(t => t.name === name);
+  if (toolDef) {
+    const allowed = Object.keys((toolDef.inputSchema as { properties?: Record<string, unknown> }).properties ?? {});
+    const unknown = Object.keys(args).filter(k => !allowed.includes(k));
+    if (unknown.length > 0) {
+      return formatToolResponse({
+        success: false,
+        error: `${name} does not accept: ${unknown.join(', ')}. Allowed arguments: ${allowed.length ? allowed.join(', ') : '(none)'}.`,
+      });
+    }
+  }
 
   switch (name) {
     // Health check - verify connection and get site info
@@ -1294,39 +1327,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // List all templates
     case 'pw_list_templates': {
-      const result = await runPwCommand('list-templates');
+      const { site } = args as { site?: Site };
+      const result = await runOnSite(site, 'list-templates');
       return formatToolResponse(result);
     }
 
     // Get template details
     case 'pw_get_template': {
-      const templateName = (args as { name: string }).name;
-      const result = await runPwCommand('get-template', [templateName]);
+      const { name: templateName, site } = args as { name: string; site?: Site };
+      const result = await runOnSite(site, 'get-template', [templateName]);
       return formatToolResponse(result);
     }
 
     // List all fields (optionally with usage info)
     case 'pw_list_fields': {
-      const includeUsage = (args as { includeUsage?: boolean }).includeUsage;
+      const { includeUsage, site } = args as { includeUsage?: boolean; site?: Site };
       const cmdArgs = includeUsage ? ['--include=usage'] : [];
-      const result = await runPwCommand('list-fields', cmdArgs);
+      const result = await runOnSite(site, 'list-fields', cmdArgs);
       return formatToolResponse(result);
     }
 
     // Get field details
     case 'pw_get_field': {
-      const fieldName = (args as { name: string }).name;
-      const result = await runPwCommand('get-field', [fieldName]);
+      const { name: fieldName, site } = args as { name: string; site?: Site };
+      const result = await runOnSite(site, 'get-field', [fieldName]);
       return formatToolResponse(result);
     }
 
     // Get page by ID or path
     case 'pw_get_page': {
-      const { idOrPath, includeFiles, truncate, summary } = args as {
+      const { idOrPath, includeFiles, truncate, summary, site } = args as {
         idOrPath: string;
         includeFiles?: boolean;
         truncate?: number;
         summary?: boolean;
+        site?: Site;
       };
       const cmdArgs = [idOrPath];
       if (includeFiles) {
@@ -1338,44 +1373,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (summary) {
         cmdArgs.push('--summary');
       }
-      const result = await runPwCommand('get-page', cmdArgs);
+      const result = await runOnSite(site, 'get-page', cmdArgs);
       return formatToolResponse(result);
     }
 
     // Query pages with selector
     case 'pw_query_pages': {
-      const selector = (args as { selector: string }).selector;
-      const result = await runPwCommand('query-pages', [selector]);
+      const { selector, site } = args as { selector: string; site?: Site };
+      const result = await runOnSite(site, 'query-pages', [selector]);
       return formatToolResponse(result);
     }
 
     // Export full schema
     case 'pw_export_schema': {
-      const format = (args as { format?: string }).format || 'json';
+      const { format, site } = args as { format?: string; site?: Site };
       const cmdArgs = format === 'yaml' ? ['--format=yaml'] : [];
-      const result = await runPwCommand('export-schema', cmdArgs);
+      const result = await runOnSite(site, 'export-schema', cmdArgs);
       return formatToolResponse(result);
     }
 
     // Search page content
     case 'pw_search': {
-      const { query, limit } = args as { query: string; limit?: number };
+      const { query, limit, site } = args as { query: string; limit?: number; site?: Site };
       const cmdArgs = [query];
       if (limit) {
         cmdArgs.push(`--limit=${limit}`);
       }
-      const result = await runPwCommand('search', cmdArgs);
+      const result = await runOnSite(site, 'search', cmdArgs);
       return formatToolResponse(result);
     }
 
     // Search files/images
     case 'pw_search_files': {
-      const { query, limit } = args as { query: string; limit?: number };
+      const { query, limit, site } = args as { query: string; limit?: number; site?: Site };
       const cmdArgs = [query];
       if (limit) {
         cmdArgs.push(`--limit=${limit}`);
       }
-      const result = await runPwCommand('search-files', cmdArgs);
+      const result = await runOnSite(site, 'search-files', cmdArgs);
       return formatToolResponse(result);
     }
 
